@@ -18,3 +18,4 @@ Desktop.ini
 uploads/
 output/*.dxf
 output/*.json
+_flask_err.log
