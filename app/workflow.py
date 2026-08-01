@@ -222,10 +222,10 @@ def _rule_based_response(state, user_message):
     msg = user_message.strip().lower()
 
     if state.step == "idle":
-        if '\u6392\u677f' in msg or 'nest' in msg:
+        if "排板" in msg or "nest" in msg:
             state.step = "dimensions"
-            return "Please enter slab dimensions (width height thickness in mm), e.g.: 3200 1800 18"
-        return "Welcome! Type 'nest' or click the Nest button to start."
+            return "请输入大板尺寸（宽 高 厚，单位mm），例如：3200 1800 18"
+        return "欢迎使用人造石排板系统！输入“排板”或点击排板按钮开始。"
 
     if state.step == "dimensions":
         parts = msg.split()
@@ -235,42 +235,39 @@ def _rule_based_response(state, user_message):
                 state.sheet_height = float(parts[1])
                 state.sheet_thickness = float(parts[2]) if len(parts) >= 3 else 18.0
                 state.step = "dxf"
-                return (f"Dimensions confirmed: {state.sheet_width:.0f} x "
-                       f"{state.sheet_height:.0f} x {state.sheet_thickness:.0f} mm. "
-                       f"Please upload the DXF file.")
+                return f"大板尺寸已确认：{state.sheet_width:.0f} x {state.sheet_height:.0f} x {state.sheet_thickness:.0f} mm。请上传规格板DXF文件。"
             except ValueError:
                 pass
-        return "Invalid format. Enter three numbers: width height thickness, e.g.: 3200 1800 18"
+        return "格式不正确。请输入三个数字（宽 高 厚），例如：3200 1800 18"
 
     if state.step == "dxf":
         state.step = "numbered"
-        return "DXF received. Generate numbered parts DXF for inspection? (yes/no)"
+        return "DXF文件已接收。是否需要生成带编号的纯规格板DXF文件以便检查？（是/否）"
 
     if state.step == "numbered":
-        if msg in ("yes", "y", "\u662f", "\u8981", "\u9700\u8981"):
+        if msg in ("yes", "y", "是", "要", "需要"):
             state.step = "numbering_mode"
-            return "Numbering mode:\n1 - Keep original numbers\n2 - Renumber all (default P-0001)"
+            return "请选择编号规则：\n1 - 保留原编号\n2 - 重新编号（默认 P-0001）"
         else:
             state.step = "check"
-            return "Please check the parts. Type 'start nesting' when ready, or describe changes."
+            return "请检查规格板文件。满意后输入“开始排板”，如需修改请说明。"
 
     if state.step == "numbering_mode":
-        if msg in ("1", "keep", "original"):
+        if msg in ("1", "keep", "original", "保留", "原编号"):
             state.numbering_mode = "keep_original"
             state.step = "check"
             if state.dxf_path:
                 try:
                     out = _generate_numbered_dxf(state.dxf_path, "keep_original", "")
                     state.numbered_dxf_path = out
-                    return (f"Numbered DXF generated: {out}\n"
-                            f"Please check. Type 'start nesting' or describe changes.")
+                    return f"带编号的规格板DXF已生成：{out}\n请检查。满意后输入“开始排板”，如需修改请说明。"
                 except Exception as e:
-                    return f"Generation failed: {e}"
-        elif msg in ("2", "renumber", "new"):
+                    return f"生成失败：{e}"
+        elif msg in ("2", "renumber", "new", "重新", "新编号"):
             state.numbering_mode = "new"
             state.step = "number_format"
-            return "Enter number format (default P-{index:04d}), e.g.: P-0001 or A-{index:03d}"
-        return "Select 1 (keep original) or 2 (renumber)"
+            return "请输入编号格式（默认 P-{index:04d}），例如：P-{index:04d} 或 A-{index:03d}"
+        return "请选择 1（保留原编号）或 2（重新编号）"
 
     if state.step == "number_format":
         fmt = msg.strip() or "P-{index:04d}"
@@ -280,30 +277,30 @@ def _rule_based_response(state, user_message):
                 out = _generate_numbered_dxf(state.dxf_path, "new", fmt)
                 state.numbered_dxf_path = out
                 state.step = "check"
-                return (f"Numbered DXF generated (format: {fmt}): {out}\n"
-                        f"Please check. Type 'start nesting' or describe changes.")
+                return f"带编号的规格板DXF已生成（格式：{fmt}）：{out}\n请检查。满意后输入“开始排板”，如需修改请说明。"
             except Exception as e:
-                return f"Generation failed: {e}"
+                return f"生成失败：{e}"
         state.step = "check"
-        return f"Format set to {fmt}. DXF generated. Type 'start nesting' or describe changes."
+        return f"编号格式已设为 {fmt}。规格板DXF已生成，请检查。满意后输入“开始排板”，如需修改请说明。"
 
     if state.step == "check":
-        if "nesting" in msg or "start" in msg or "satisfied" in msg or msg == "ok":
+        if "nesting" in msg or "start" in msg or "排板" in msg or "满意" in msg or msg == "ok":
             state.step = "nesting"
             dxf = state.numbered_dxf_path or state.dxf_path
             if not dxf:
-                return "Error: no DXF file found."
+                return "错误：未找到规格板DXF文件。"
             try:
                 report = _run_nesting(dxf, state.sheet_width, state.sheet_height,
                                      state.sheet_thickness, state.unit)
                 state.step = "done"
-                return (f"Nesting complete!\n"
-                        f"- Sheets used: {report['sheets']}\n"
-                        f"- Yield rate: {report['yield']}%\n"
-                        f"- Result DXF: {report['dxf_output']}\n"
-                        f"- Report JSON: {report['json_output']}")
+                return (f"排板完成！\n"
+                        f"- 使用了 {report['sheets']} 张大板（{state.sheet_width:.0f}x{state.sheet_height:.0f}mm）\n"
+                        f"- 共 {report['parts']} 块规格板\n"
+                        f"- 出材率：{report['yield']}%\n"
+                        f"- 排板DXF：{report['dxf_output']}\n"
+                        f"- 报告JSON：{report['json_output']}")
             except Exception as e:
-                return f"Nesting failed: {e}"
-        return "Describe changes needed, or type 'start nesting' if satisfied."
+                return f"排板失败：{e}"
+        return "规格板DXF如有问题请说明具体修改要求。满意后输入“开始排板”。"
 
-    return "Type 'nest' or click the Nest button to begin."
+    return "请确认当前状态，或输入“排板”重新开始。"
