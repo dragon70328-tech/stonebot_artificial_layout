@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>人造石排板系统</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <img src="/static/logo.png" alt="Logo" class="logo">
+    <h1>人造石排板系统</h1>
+    <button id="btn-reset" class="btn-icon" title="重新开始">↺</button>
+  </header>
+
+  <main class="chat-area">
+    <div id="chat-messages" class="messages">
+      <div class="msg system">
+        <div class="bubble">
+          欢迎使用人造石排板系统。点击下方 <b>排板</b> 按钮开始，或输入"排板"。
+        </div>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="input-row">
+        <input type="file" id="file-input" accept=".dxf" hidden>
+        <button id="btn-upload" class="btn-tool" title="上传DXF文件">📎</button>
+        <input type="text" id="msg-input" class="msg-input" placeholder="输入消息..." autofocus>
+        <button id="btn-send" class="btn-send">发送</button>
+        <button id="btn-nest" class="btn-nest">排板</button>
+      </div>
+      <div id="upload-hint" class="upload-hint"></div>
+    </div>
+  </main>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

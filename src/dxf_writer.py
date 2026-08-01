@@ -117,3 +117,63 @@ def _label_point(part: Part) -> tuple[float, float]:
         return pt.x, pt.y
     except Exception:
         return part.label_position
+
+
+def write_numbered_parts_dxf(parts: list, output_path: str,
+                             unit_system: str = "metric") -> None:
+    """生成排板前的规格板带编号检查 DXF（网格排列，每板一图一女号）"""
+    doc = ezdxf.new()
+    if unit_system == "imperial":
+        doc.units = units.Imperial
+    else:
+        doc.units = units.MM
+    msp = doc.modelspace()
+    layer = "PARTS_CHECK"
+    doc.layers.add(layer)
+
+    # 计算最大包围盒，用作网格格子尺寸
+    max_w = max_h = 0.0
+    for p in parts:
+        b = p.outer_polygon.bounds
+        max_w = max(max_w, b[2] - b[0])
+        max_h = max(max_h, b[3] - b[1])
+    cell_w = max_w + 120.0
+    cell_h = max_h + 120.0
+
+    COLS = 5
+    for i, part in enumerate(parts):
+        col = i % COLS
+        row = i // COLS
+        ox = col * cell_w
+        oy = row * cell_h
+        b = part.outer_polygon.bounds
+        bx, by = b[0], b[1]
+
+        # 外轮廓
+        ext = part.outer_polygon.exterior
+        if ext is not None:
+            pts = [(x - bx + ox, y - by + oy) for x, y in ext.coords]
+            msp.add_lwpolyline(pts, dxfattribs={'layer': layer})
+
+        # 挖孔
+        for h in part.holes:
+            he = h.exterior
+            if he is not None:
+                pts = [(x - bx + ox, y - by + oy) for x, y in he.coords]
+                msp.add_lwpolyline(pts, dxfattribs={'layer': layer})
+
+        # 编号（置于板件几何中心）
+        cx, cy = _label_point(part)
+        cx_moved = cx - bx + ox
+        cy_moved = cy - by + oy
+        bbox_w, bbox_h = b[2] - b[0], b[3] - b[1]
+        h = max(30.0, min(min(bbox_w, bbox_h) * 0.25, 80.0))
+        text_h = min(h, bbox_w / (0.72 * max(len(part.number), 1)))
+        label = msp.add_text(part.number, dxfattribs={
+            'layer': layer,
+            'height': text_h,
+        })
+        label.set_placement((cx_moved, cy_moved),
+                           align=TextEntityAlignment.MIDDLE_CENTER)
+
+    doc.saveas(output_path)

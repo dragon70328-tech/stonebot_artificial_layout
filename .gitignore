@@ -13,3 +13,8 @@ _backup_*.zip
 # OS
 Thumbs.db
 Desktop.ini
+
+# runtime
+uploads/
+output/*.dxf
+output/*.json
