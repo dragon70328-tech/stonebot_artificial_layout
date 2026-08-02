@@ -98,7 +98,7 @@ Rules: one question at a time. Short, professional Chinese replies.
 
 def _get_llm_client():
     api_key = os.environ.get("OPENAI_API_KEY", "")
-    base_url = os.environ.get("OPENAI_BASE_URL", "")
+    base_url = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com")
     if not api_key:
         return None
     try:
@@ -155,7 +155,7 @@ def llm_chat(state, user_message):
     }]
 
     try:
-        model = os.environ.get("OPENAI_MODEL", "gpt-4o")
+        model = os.environ.get("OPENAI_MODEL", "deepseek-chat")
         response = client.chat.completions.create(
             model=model, messages=messages, tools=tools,
             tool_choice="auto", temperature=0.3,

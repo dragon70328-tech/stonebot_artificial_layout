@@ -1,23 +1,26 @@
-"""Flask 服务器 — 人造石排板系统前端 + API"""
+﻿# -*- coding: utf-8 -*-
+"""Flask 服务器 - 人造石排板系统前端 + API"""
 
 import json
 import os
 import uuid
 from pathlib import Path
 
-from flask import (Flask, Response, jsonify, render_template, request,
-                   send_file, session, stream_with_context)
+from flask import (Flask, jsonify, render_template, request,
+                   send_file, session)
 
 from app.workflow import SessionState, llm_chat
 
-app = Flask(__name__)
+app = Flask(__name__,
+            template_folder=os.path.join(os.path.dirname(__file__), 'templates'),
+            static_folder=os.path.join(os.path.dirname(__file__), 'static'),
+            static_url_path='/static')
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "stonebot-dev-key")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = PROJECT_ROOT / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-# 内存中的会话状态（keyed by session id）
 SESSIONS: dict[str, SessionState] = {}
 
 
@@ -45,7 +48,7 @@ def index():
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
-    """处理对话消息。支持 JSON 和多部分表单上传。"""
+    """处理对话消息，支持 JSON 和多部分表单上传"""
     state = _get_state()
 
     if request.is_json:
@@ -59,7 +62,7 @@ def chat():
     if not msg and "file" not in request.files:
         return jsonify({"error": "empty message"}), 400
 
-    # 如果附带 DXF 文件
+    # DXF 文件上传
     dxf_file = request.files.get("file") if "file" in request.files else None
     if dxf_file and dxf_file.filename and dxf_file.filename.lower().endswith(".dxf"):
         fname = f"{uuid.uuid4().hex[:8]}_{dxf_file.filename}"
@@ -67,7 +70,10 @@ def chat():
         dxf_file.save(str(save_path))
         state.dxf_path = str(save_path)
         state.step = "numbered"
-        reply = f"DXF 文件已上传：{dxf_file.filename}。是否需要生成带编号的纯规格板DXF文件以便检查？（是/否）"
+        reply = (
+            f"DXF 文件已上传：{dxf_file.filename}。\n"
+            "是否需要生成带编号的纯规格板 DXF 文件以便检查？（是/否）"
+        )
         state.messages.append({"role": "user", "content": f"[上传了 {dxf_file.filename}]"})
         state.messages.append({"role": "assistant", "content": reply})
         return jsonify({"reply": reply})
@@ -88,7 +94,6 @@ def download_file(filename):
     """下载生成的文件"""
     from urllib.parse import unquote
     filename = unquote(filename)
-    # 优先从 output/ 查找，其次从 uploads/
     for base in (PROJECT_ROOT / "output", UPLOAD_DIR):
         p = base / Path(filename).name
         if p.exists():

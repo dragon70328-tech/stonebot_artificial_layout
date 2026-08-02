@@ -24,3 +24,5 @@ output/*.json
 !output/*_numbered_原位.dxf
 !output/*_nested_*.dxf
 !output/*_report_*.json
+
+.env

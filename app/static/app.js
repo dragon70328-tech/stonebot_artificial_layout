@@ -1,133 +1,144 @@
-/** 人造石排板系统 — 前端交互 */
+﻿// StoneBot Chat Frontend
+const chatContainer = document.getElementById('chatContainer');
+const msgInput = document.getElementById('msgInput');
+const fileInput = document.getElementById('fileInput');
+let isWaiting = false;
 
-const chatMsgs = document.getElementById('chat-messages');
-const msgInput = document.getElementById('msg-input');
-const btnSend = document.getElementById('btn-send');
-const btnNest = document.getElementById('btn-nest');
-const btnUpload = document.getElementById('btn-upload');
-const fileInput = document.getElementById('file-input');
-const btnReset = document.getElementById('btn-reset');
-const uploadHint = document.getElementById('upload-hint');
-
-let waiting = false;
-
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
-
-function addBubble(role, text) {
+// ── Helpers ──
+function addMessage(role, html) {
   const div = document.createElement('div');
-  div.className = 'msg ' + role;
-  const b = document.createElement('div');
-  b.className = 'bubble';
-  b.textContent = text;
-  div.appendChild(b);
-  chatMsgs.appendChild(div);
-  chatMsgs.scrollTop = chatMsgs.scrollHeight;
+  div.className = `message ${role}`;
+  div.innerHTML = `
+    <div class="avatar">${role === 'user' ? '👤' : '🤖'}</div>
+    <div class="bubble">${html}</div>`;
+  chatContainer.appendChild(div);
+  chatContainer.scrollTop = chatContainer.scrollHeight;
+  return div;
 }
 
 function addTyping() {
   const div = document.createElement('div');
-  div.className = 'msg assistant typing-msg';
-  const b = document.createElement('div');
-  b.className = 'bubble typing';
-  b.textContent = ' ';
-  div.appendChild(b);
-  chatMsgs.appendChild(div);
-  chatMsgs.scrollTop = chatMsgs.scrollHeight;
-  return div;
+  div.className = 'message assistant typing';
+  div.id = 'typingIndicator';
+  div.innerHTML = '<div class="avatar">🤖</div><div class="bubble"></div>';
+  chatContainer.appendChild(div);
+  chatContainer.scrollTop = chatContainer.scrollHeight;
 }
 
-function enableInput(v) {
-  btnSend.disabled = !v;
-  btnNest.disabled = !v;
-  btnUpload.disabled = !v;
-  msgInput.disabled = !v;
+function removeTyping() {
+  const t = document.getElementById('typingIndicator');
+  if (t) t.remove();
 }
 
-async function sendMsg(msg) {
-  if (waiting) return;
-  waiting = true;
-  enableInput(false);
-  addBubble('user', msg);
-  const typing = addTyping();
+function setInputEnabled(enabled) {
+  msgInput.disabled = !enabled;
+  document.querySelector('.btn-send').disabled = !enabled;
+  isWaiting = !enabled;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function formatReply(text) {
+  let html = escapeHtml(text);
+  html = html.replace(/\n/g, '<br>');
+  // Convert file paths to download links
+  html = html.replace(/([^\s]+\.(dxf|json))/gi, (match) => {
+    const fname = match.replace(/^.*[\\/]/, '');
+    return `<a class="download-link" href="/api/download/${encodeURIComponent(fname)}" download>${match}</a>`;
+  });
+  return html;
+}
+
+// ── Send Message ──
+async function sendMessage() {
+  const msg = msgInput.value.trim();
+  if (!msg || isWaiting) return;
+
+  addMessage('user', `<p>${escapeHtml(msg)}</p>`);
+  msgInput.value = '';
+  setInputEnabled(false);
+  addTyping();
 
   try {
-    const r = await fetch('/api/chat', {
+    const resp = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: msg }),
+      body: JSON.stringify({ message: msg })
     });
-    typing.remove();
-    if (!r.ok) throw new Error(r.statusText);
-    const data = await r.json();
-    addBubble('assistant', data.reply || '(no response)');
+    const data = await resp.json();
+    removeTyping();
+
+    if (data.error) {
+      addMessage('assistant', `<p>❌ ${escapeHtml(data.error)}</p>`);
+    } else {
+      addMessage('assistant', `<p>${formatReply(data.reply)}</p>`);
+      updateDownloadLinks();
+    }
   } catch (e) {
-    typing.remove();
-    addBubble('system', '错误: ' + e.message);
+    removeTyping();
+    addMessage('assistant', `<p>❌ 网络错误，请重试。</p>`);
   }
-  waiting = false;
-  enableInput(true);
+  setInputEnabled(true);
   msgInput.focus();
 }
 
-// ---------------------------------------------------------------------------
-// events
-// ---------------------------------------------------------------------------
-
-msgInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    sendMsg(msgInput.value);
-    msgInput.value = '';
-  }
-});
-
-btnSend.addEventListener('click', () => {
-  const v = msgInput.value.trim();
-  if (v) { sendMsg(v); msgInput.value = ''; }
-});
-
-btnNest.addEventListener('click', () => {
-  sendMsg('排板');
-});
-
-btnUpload.addEventListener('click', () => {
-  fileInput.click();
-});
-
-fileInput.addEventListener('change', async () => {
+// ── Upload File ──
+async function uploadFile() {
   const file = fileInput.files[0];
   if (!file) return;
-  uploadHint.textContent = '正在上传 ' + file.name + ' ...';
-  if (waiting) return;
-  waiting = true;
-  enableInput(false);
-  addBubble('user', '[上传了 ' + file.name + ']');
-  const typing = addTyping();
 
-  const fd = new FormData();
-  fd.append('file', file);
-  fd.append('message', '上传');
+  addMessage('user', `<p>📎 上传了 ${escapeHtml(file.name)}</p>`);
+  setInputEnabled(false);
+  addTyping();
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('message', '上传DXF文件');
 
   try {
-    const r = await fetch('/api/chat', { method: 'POST', body: fd });
-    typing.remove();
-    const data = await r.json();
-    addBubble('assistant', data.reply || '(no response)');
-    uploadHint.textContent = '';
-  } catch (e) {
-    typing.remove();
-    addBubble('system', '上传失败: ' + e.message);
-    uploadHint.textContent = '';
-  }
-  waiting = false;
-  enableInput(true);
-  fileInput.value = '';
-});
+    const resp = await fetch('/api/chat', { method: 'POST', body: formData });
+    const data = await resp.json();
+    removeTyping();
 
-btnReset.addEventListener('click', async () => {
+    if (data.error) {
+      addMessage('assistant', `<p>❌ ${escapeHtml(data.error)}</p>`);
+    } else {
+      addMessage('assistant', `<p>${formatReply(data.reply)}</p>`);
+      updateDownloadLinks();
+    }
+  } catch (e) {
+    removeTyping();
+    addMessage('assistant', `<p>❌ 上传失败，请重试。</p>`);
+  }
+  setInputEnabled(true);
+  fileInput.value = '';
+  msgInput.focus();
+}
+
+// ── Download Links ──
+function updateDownloadLinks() {
+  document.querySelectorAll('.download-link').forEach(link => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      const href = link.getAttribute('href');
+      window.open(href, '_blank');
+    });
+  });
+}
+
+// ── Reset ──
+async function resetChat() {
+  if (!confirm('确定要重新开始？对话记录将被清除。')) return;
   await fetch('/api/reset', { method: 'POST' });
-  chatMsgs.innerHTML = `<div class="msg system"><div class="bubble">
-    已重置。点击 <b>排板</b> 按钮开始。</div></div>`;
-});
+  chatContainer.innerHTML = '';
+  addMessage('assistant', `<p>对话已重置。欢迎使用人造石排板系统！</p><p>请输入大板尺寸开始，例如：<code>3200 1800 18</code></p>`);
+  msgInput.focus();
+}
+
+// ── Init ──
+msgInput.focus();
+updateDownloadLinks();
