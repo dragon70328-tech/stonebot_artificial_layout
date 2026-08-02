@@ -1,0 +1,10 @@
+{
+  "sheets": 25,
+  "parts": 100,
+  "yield": 80.49,
+  "sheet_area": 144000000.0,
+  "part_area": 115899717.77306284,
+  "errors": 0,
+  "dxf_output": "C:\\Users\\drago\\stonebot_artificial_layout\\output\\f8b3bb19_countertop1_clean_numbered_nested_3200x1800.dxf",
+  "json_output": "C:\\Users\\drago\\stonebot_artificial_layout\\output\\f8b3bb19_countertop1_clean_numbered_report_3200x1800.json"
+}

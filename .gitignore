@@ -16,6 +16,11 @@ Desktop.ini
 
 # runtime
 uploads/
+_flask_err.log
+
+# output: only keep numbered inspection, nesting result, report
 output/*.dxf
 output/*.json
-_flask_err.log
+!output/*_numbered_原位.dxf
+!output/*_nested_*.dxf
+!output/*_report_*.json
