@@ -177,3 +177,194 @@ def write_numbered_parts_dxf(parts: list, output_path: str,
                            align=TextEntityAlignment.MIDDLE_CENTER)
 
     doc.saveas(output_path)
+
+
+def write_inplace_check_dxf(parts, original_dxf_path, output_path,
+                             unit_system="metric") -> None:
+    """Generate in-place numbering check DXF.
+
+    Parts stay at original coordinates. Each panel + holes + number
+    forms a GROUP for easy selection in CAD.
+
+    Layers:
+      - OUTER: panel outer contours (black)
+      - HOLES: faucet/sink holes (blue)
+      - NUMBERS: part numbers (green)
+    """
+    import ezdxf
+    from ezdxf import units
+    from ezdxf.enums import TextEntityAlignment
+    from shapely.ops import polylabel
+
+    # Read original DXF to copy entities by handle
+    orig_doc = ezdxf.readfile(original_dxf_path)
+    orig_msp = orig_doc.modelspace()
+
+    # Build handle -> entity map
+    handle_map = {}
+    for e in orig_msp:
+        handle_map[e.dxf.handle] = e
+
+    # Create output DXF
+    doc = ezdxf.new()
+    if unit_system == "imperial":
+        doc.units = units.Imperial
+    else:
+        doc.units = units.MM
+    msp = doc.modelspace()
+
+    # Layers
+    layer_outer = "OUTER"
+    layer_holes = "HOLES"
+    layer_numbers = "NUMBERS"
+    for name, color in [(layer_outer, 7), (layer_holes, 5), (layer_numbers, 3)]:
+        if name not in [l.dxf.name for l in doc.layers]:
+            doc.layers.add(name, dxfattribs={"color": color})
+
+    for part in parts:
+        group_entities = []
+
+        # Copy outer contour from original
+        outer_handle = part.outer_handle if hasattr(part, "outer_handle") else None
+        if outer_handle and outer_handle in handle_map:
+            src = handle_map[outer_handle]
+            copied = _copy_entity(src, doc, msp, layer_outer)
+            if copied:
+                group_entities.append(copied)
+        else:
+            # Fallback: write from polygon
+            ext = part.outer_polygon.exterior
+            if ext is not None:
+                pts = [(x, y) for x, y in ext.coords]
+                e = msp.add_lwpolyline(pts, dxfattribs={"layer": layer_outer})
+                group_entities.append(e)
+
+        # Copy holes from original
+        hole_handles = part.hole_handles if hasattr(part, "hole_handles") else []
+        if hole_handles:
+            for hh in hole_handles:
+                if hh in handle_map:
+                    src = handle_map[hh]
+                    copied = _copy_entity(src, doc, msp, layer_holes)
+                    if copied:
+                        group_entities.append(copied)
+        else:
+            # Fallback: write from polygon
+            for hole in part.holes:
+                h_ext = hole.exterior
+                if h_ext is not None:
+                    pts = [(x, y) for x, y in h_ext.coords]
+                    e = msp.add_lwpolyline(pts, dxfattribs={"layer": layer_holes})
+                    group_entities.append(e)
+
+        # Number text at centroid
+        cx, cy = _label_point(part)
+        b = part.outer_polygon.bounds
+        bw, bh = b[2] - b[0], b[3] - b[1]
+        height = max(30.0, min(min(bw, bh) * 0.25, 80.0))
+        height = min(height, bw / (0.72 * max(len(part.number), 1)))
+        label = msp.add_text(
+            part.number,
+            dxfattribs={
+                "layer": layer_numbers,
+                "height": height,
+            }
+        )
+        label.set_placement(
+            (cx, cy),
+            align=TextEntityAlignment.MIDDLE_CENTER,
+        )
+        group_entities.append(label)
+
+        # Create GROUP
+        if group_entities:
+            group_name = f"PART_{part.number}"
+            try:
+                doc.groups.new(group_name, group_entities)
+            except Exception:
+                pass
+
+    doc.saveas(output_path)
+
+
+def _copy_entity(src_entity, target_doc, target_msp, target_layer):
+    """Copy a single DXF entity from source doc to target doc.
+
+    Supports LWPOLYLINE (with bulges), CIRCLE, LINE, ARC.
+    Returns the new entity or None.
+    """
+    try:
+        etype = src_entity.dxftype()
+        if etype == "LWPOLYLINE":
+            pts = []
+            try:
+                with src_entity.points() as sp:
+                    for p in sp:
+                        pts.append((p[0], p[1], p[3] if len(p) > 3 else 0.0, p[4] if len(p) > 4 else 0.0))
+            except Exception:
+                pts2 = list(src_entity.get_points())
+                pts = []
+                for p in pts2:
+                    x, y = p[0], p[1]
+                    bulge = p[4] if len(p) > 4 else 0.0
+                    pts.append((x, y, 0.0, bulge))
+
+            e = target_msp.add_lwpolyline(
+                [(x, y) for x, y, _, _ in pts],
+                dxfattribs={"layer": target_layer}
+            )
+            # Set bulges
+            for i, (_, _, _, bulge) in enumerate(pts):
+                if bulge != 0.0:
+                    try:
+                        e.set_bulge(i, bulge)
+                    except Exception:
+                        pass
+            # Copy closed flag
+            if src_entity.closed:
+                e.closed = True
+            return e
+
+        elif etype == "CIRCLE":
+            cx = src_entity.dxf.center.x
+            cy = src_entity.dxf.center.y
+            r = src_entity.dxf.radius
+            return target_msp.add_circle(
+                (cx, cy), r,
+                dxfattribs={"layer": target_layer}
+            )
+
+        elif etype == "LINE":
+            sx = src_entity.dxf.start.x
+            sy = src_entity.dxf.start.y
+            ex = src_entity.dxf.end.x
+            ey = src_entity.dxf.end.y
+            return target_msp.add_line(
+                (sx, sy), (ex, ey),
+                dxfattribs={"layer": target_layer}
+            )
+
+        elif etype == "ARC":
+            cx = src_entity.dxf.center.x
+            cy = src_entity.dxf.center.y
+            r = src_entity.dxf.radius
+            sa = src_entity.dxf.start_angle
+            ea = src_entity.dxf.end_angle
+            return target_msp.add_arc(
+                (cx, cy), r, sa, ea,
+                dxfattribs={"layer": target_layer}
+            )
+
+        elif etype == "SPLINE":
+            # Approximate with polyline
+            pts = list(src_entity.flattening(0.1))
+            coords = [(p.x, p.y) for p in pts]
+            if len(coords) >= 2:
+                return target_msp.add_lwpolyline(
+                    coords,
+                    dxfattribs={"layer": target_layer}
+                )
+
+    except Exception:
+        pass
+    return None

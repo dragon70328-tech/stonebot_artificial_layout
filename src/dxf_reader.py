@@ -97,30 +97,73 @@ def _is_closed(entity) -> bool:
     return False
 
 
-def extract_closed_polygons(doc: ezdxf.document.Drawing) -> list[Polygon]:
-    """从 DXF 文档中提取所有封闭图形"""
-    polygons = []
+# ============================================================
+# Line type filtering helpers
+# ============================================================
+DEFAULT_EXCLUDE_LINETYPES = {"ZIGZAG", "DASHED", "MOBIAN", "DASHDOT", "DASHDOT2",
+                              "DIVIDE", "CENTER", "CENTER2", "BORDER", "HIDDEN", "PHANTOM"}
+
+
+def _linetype_name(entity, doc):
+    lt = getattr(entity.dxf, "linetype", "BYLAYER") or "BYLAYER"
+    lt_upper = lt.upper()
+    if lt_upper == "BYLAYER":
+        layer_name = getattr(entity.dxf, "layer", "0") or "0"
+        try:
+            layer = doc.layers.get(layer_name)
+            if layer:
+                ll = getattr(layer.dxf, "linetype", "CONTINUOUS") or "CONTINUOUS"
+                return ll.upper()
+        except Exception:
+            pass
+        return "CONTINUOUS"
+    return lt_upper
+
+
+
+
+def extract_closed_polygons(doc,
+                             panel_layers = None,
+                             exclude_layers = None,
+                             exclude_linetypes = None):
+    if exclude_linetypes is None:
+        exclude_linetypes = DEFAULT_EXCLUDE_LINETYPES
+    results = []
     msp = doc.modelspace()
 
     for entity in msp:
+        layer = getattr(entity.dxf, "layer", "0") or "0"
+
+        if panel_layers is not None and layer not in panel_layers:
+            continue
+        if exclude_layers is not None and layer in exclude_layers:
+            continue
+
+        lt = _linetype_name(entity, doc)
+        if lt in exclude_linetypes:
+            continue
+
         if not _is_closed(entity):
             continue
         poly = _entity_to_polygon(entity)
         if poly is not None and not poly.is_empty and poly.area > 0.01:
-            polygons.append(poly)
+            handle = entity.dxf.handle
+            results.append((poly, handle))
 
-    return polygons
+    return results
 
-
-def _build_part_hierarchy(polygons: list[Polygon]) -> list[dict]:
+def _build_part_hierarchy(polygons: list) -> list[dict]:
     """
     判断内外包含关系，构建规格板层级结构。
     返回：每个大封闭图形及其内部挖孔
     """
     n = len(polygons)
+    # polygons is now list of (Polygon, handle) tuples
+    polys_only = [p for p, h in polygons]
+    handles = [h for p, h in polygons]
     # 按面积降序排列
-    sorted_indices = sorted(range(n), key=lambda i: polygons[i].area, reverse=True)
-    sorted_polys = [polygons[i] for i in sorted_indices]
+    sorted_indices = sorted(range(n), key=lambda i: polys_only[i].area, reverse=True)
+    sorted_polys = [polys_only[i] for i in sorted_indices]
 
     children = [[] for _ in range(n)]  # children[i] = 直接包含的挖孔索引
     parent = [-1] * n                    # parent[i] = 直接包含 i 的父图形索引
@@ -148,6 +191,7 @@ def _build_part_hierarchy(polygons: list[Polygon]) -> list[dict]:
             "orig_index": sorted_indices[i],
             "children": children[i],
             "parent": parent[i],
+            "handle": handles[sorted_indices[i]],
         }
         for i in range(n)
     ]
@@ -155,16 +199,22 @@ def _build_part_hierarchy(polygons: list[Polygon]) -> list[dict]:
 
 def find_number_labels(doc: ezdxf.document.Drawing,
                        centroid: tuple[float, float],
-                       search_radius: float = 50.0) -> str | None:
+                       search_radius: float = 5000.0) -> str | None:
     """
     在指定几何中心附近查找 TEXT 或 MTEXT 编号。
     search_radius：搜索半径（单位与 DXF 一致）
     """
+    num_layers = [
+        layer.dxf.name for layer in doc.layers
+        if any(ord(c) == 32534 for c in layer.dxf.name)
+    ]
     msp = doc.modelspace()
     cx, cy = centroid
 
     for entity in msp:
         if entity.dxftype() not in ('TEXT', 'MTEXT'):
+            continue
+        if num_layers and entity.dxf.layer not in num_layers:
             continue
         try:
             if entity.dxftype() == 'TEXT':
@@ -185,7 +235,125 @@ def find_number_labels(doc: ezdxf.document.Drawing,
     return None
 
 
-def read_dxf(filepath: str) -> tuple[list[dict], ezdxf.document.Drawing]:
+
+def _collect_number_texts(doc,
+                         number_layer = None):
+    if number_layer is not None:
+        num_layers = [number_layer]
+    else:
+        num_layers = [
+            layer.dxf.name for layer in doc.layers
+            if any(ord(c) == 32534 for c in layer.dxf.name)
+        ]
+    texts = []
+    msp = doc.modelspace()
+    for entity in msp:
+        if entity.dxftype() not in ("TEXT", "MTEXT"):
+            continue
+        if num_layers and entity.dxf.layer not in num_layers:
+            continue
+        try:
+            tx = entity.dxf.insert.x
+            ty = entity.dxf.insert.y
+            if entity.dxftype() == "TEXT":
+                t = entity.dxf.text
+            else:
+                t = entity.plain_text() if hasattr(entity, "plain_text") else entity.dxf.text
+            if t and t.strip():
+                texts.append((tx, ty, t.strip()))
+        except Exception:
+            continue
+    return texts
+
+
+def _assign_unique_number(
+    doc,
+    centroid,
+    used_numbers,
+    number_pool,
+    search_radius = 20000.0,
+):
+    cx, cy = centroid
+    best_dist = float("inf")
+    best_idx = -1
+
+    for i, (tx, ty, text) in enumerate(number_pool):
+        if text in used_numbers:
+            continue
+        d = ((tx - cx) ** 2 + (ty - cy) ** 2) ** 0.5
+        if d < search_radius and d < best_dist:
+            best_dist = d
+            best_idx = i
+
+    if best_idx >= 0:
+        _, _, text = number_pool[best_idx]
+        used_numbers.add(text)
+        return text
+    return None
+
+def _assign_numbers_by_containment(parts_data: list[dict],
+                                    number_pool: list) -> dict:
+    """Assign numbers using point-in-polygon containment as primary method.
+
+    1. For each number text, check which panel's polygon contains it.
+    2. If a text is inside exactly one panel, assign it (highest confidence).
+    3. For remaining unmatched, fall back to nearest-centroid distance.
+    
+    Returns dict: part_index -> number
+    """
+    from shapely.geometry import Point
+
+    used_numbers = set()
+    assignments = {}
+
+    if not number_pool:
+        return assignments
+
+    # Step 1: Containment-based matching
+    for tx, ty, text in number_pool:
+        pt = Point(tx, ty)
+        containing = []
+        for pd in parts_data:
+            try:
+                if pd["polygon"].contains(pt):
+                    containing.append(pd)
+            except Exception:
+                continue
+        if len(containing) == 1:
+            pd = containing[0]
+            ai = pd["index"]
+            if ai not in assignments:
+                assignments[ai] = text
+                used_numbers.add(text)
+
+    # Step 2: Distance-based fallback for unmatched parts
+    for pd in parts_data:
+        ai = pd["index"]
+        if ai in assignments:
+            continue
+        cx, cy = pd.get("centroid", (0, 0))
+        best_dist = float("inf")
+        best_text = None
+        for tx, ty, text in number_pool:
+            if text in used_numbers:
+                continue
+            d = ((tx - cx) ** 2 + (ty - cy) ** 2) ** 0.5
+            if d < 20000.0 and d < best_dist:
+                best_dist = d
+                best_text = text
+        if best_text is not None:
+            assignments[ai] = best_text
+            used_numbers.add(best_text)
+
+    return assignments
+
+
+def read_dxf(filepath: str,
+            panel_layers = None,
+            exclude_layers = None,
+            exclude_linetypes = None,
+            number_layer = None):
+
     """
     读取 DXF 文件，提取所有规格板信息。
 
@@ -194,30 +362,36 @@ def read_dxf(filepath: str) -> tuple[list[dict], ezdxf.document.Drawing]:
     - doc：ezdxf 文档对象（用于后续写回）
     """
     doc = ezdxf.readfile(filepath)
-    polygons = extract_closed_polygons(doc)
+    polygons = extract_closed_polygons(doc,
+                                        panel_layers=panel_layers,
+                                        exclude_layers=exclude_layers,
+                                        exclude_linetypes=exclude_linetypes)
 
     if not polygons:
         return [], doc
 
     hierarchy = _build_part_hierarchy(polygons)
 
+    # Pre-collect numbering layer texts for 1:1 matching
+    number_pool = _collect_number_texts(doc, number_layer=number_layer)
+
+    # --- Build parts_data list first (before numbering) ---
     parts_data = []
     part_index = 0
 
     for item in hierarchy:
         if item["parent"] != -1:
-            # 这是一个挖孔，跳过（它将在父图形中处理）
             continue
 
         outer_poly = item["poly"]
         orig_idx = item["orig_index"]
+        outer_handle = item.get("handle")
         holes = [hierarchy[h]["poly"] for h in item["children"]]
+        hole_handles = [hierarchy[h].get("handle") for h in item["children"]]
 
-        # 构建带洞多边形
         if holes:
             combined_poly = outer_poly.difference(unary_union(holes))
             if isinstance(combined_poly, MultiPolygon):
-                # 取面积最大的部分
                 combined_poly = max(combined_poly.geoms, key=lambda g: g.area)
         else:
             combined_poly = outer_poly
@@ -226,18 +400,23 @@ def read_dxf(filepath: str) -> tuple[list[dict], ezdxf.document.Drawing]:
             continue
 
         centroid = combined_poly.centroid
-        number = find_number_labels(doc, (centroid.x, centroid.y))
-
         part_data = {
             "polygon": combined_poly,
             "outer_polygon": outer_poly,
             "holes": holes,
             "centroid": (centroid.x, centroid.y),
             "area": combined_poly.area,
-            "original_number": number,
+            "original_number": None,  # assigned later by containment
             "index": part_index,
+            "outer_handle": outer_handle,
+            "hole_handles": hole_handles,
         }
         parts_data.append(part_data)
         part_index += 1
+
+    # --- Number assignment: containment-first, then distance fallback ---
+    assigned_numbers = _assign_numbers_by_containment(parts_data, number_pool)
+    for pd in parts_data:
+        pd["original_number"] = assigned_numbers.get(pd["index"])
 
     return parts_data, doc

@@ -6,6 +6,8 @@ import json
 import time
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+
 from src.units import UnitSystem, UNIT_LABELS, convert_to_mm
 from src.dxf_reader import read_dxf
 from src.numbering import assign_numbers
@@ -154,16 +156,18 @@ def main():
 
     # 8. 写回 DXF
     input_path = Path(dxf_path)
-    output_dxf = input_path.parent / f"{input_path.stem}_nested.dxf"
-    output_dxf = str(output_dxf)
+    output_dir = PROJECT_ROOT / "output"
+    output_dir.mkdir(exist_ok=True)
+    sheet_suffix = f"{int(width)}x{int(height)}"
+    output_dxf = str(output_dir / f"{input_path.stem}_nested_{sheet_suffix}.dxf")
 
     print(f"\n正在写入排板结果 DXF：{output_dxf} ...")
     write_nested_dxf(result, output_dxf, unit_system=unit.value)
     print(f"排板结果 DXF 已保存至：{output_dxf}")
 
     # 9. 导出 JSON 报告
-    output_json = input_path.parent / f"{input_path.stem}_report.json"
-    export_json(result, width, height, thickness, unit_label, str(output_json))
+    output_json = str(output_dir / f"{input_path.stem}_report_{sheet_suffix}.json")
+    export_json(result, width, height, thickness, unit_label, output_json)
 
     print("\n排板完成！")
 

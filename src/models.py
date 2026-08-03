@@ -16,6 +16,8 @@ class Part:
     original_number: Optional[str] = None  # DXF 中原有编号
     area: float = 0.0                # 有效面积（外轮廓面积 - 挖孔面积）
     label_position: tuple[float, float] = (0.0, 0.0)  # 编号标注位置
+    outer_handle: str | None = None       # 原DXF中外轮廓实体handle
+    hole_handles: list[str] = field(default_factory=list)  # 原DXF中孔洞实体handle
 
     def __post_init__(self):
         if self.area == 0.0:

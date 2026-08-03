@@ -26,3 +26,4 @@ output/*.json
 !output/*_report_*.json
 
 .env
+

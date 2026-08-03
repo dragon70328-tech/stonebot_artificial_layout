@@ -34,6 +34,8 @@ def assign_numbers(parts_data: list[dict],
             original_number=data.get("original_number"),
             area=data["area"],
             label_position=data["centroid"],
+            outer_handle=data.get("outer_handle"),
+            hole_handles=data.get("hole_handles", []),
         )
         parts.append(part)
 

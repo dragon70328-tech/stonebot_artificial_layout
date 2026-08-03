@@ -379,7 +379,7 @@ def _lns_improve(sheets_pl: list, sheet_w: float, sheet_h: float,
 
         # 10% 概率尝试压缩板数（面积可行时）
         res = None
-        if rng.random() < 0.1 and sub_area <= (k - 1) * sheet_area:
+        if rng.random() < 0.3 and sub_area <= (k - 1) * sheet_area:
             res = _nest_single(sub, sheet_w, sheet_h, sort_key, mode,
                                cache, max_sheets=k - 1)
         if res is None:
@@ -487,7 +487,7 @@ def _compactness(result: NestingResult) -> float:
 def nest_parts(parts: list, sheet_width: float, sheet_height: float,
                sheet_thickness: float, unit: str = "metric",
                configs: list | None = None,
-               improve_budget: float = 40.0,
+               improve_budget: float = 180.0,
                progress=None) -> NestingResult:
     """排板主入口：多轮贪心取最优。
 
