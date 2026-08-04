@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *.pyo
@@ -28,3 +28,6 @@ output/*.json
 .env
 
 output/*.bak
+
+# timestamped output subdirs
+output/*_*/
