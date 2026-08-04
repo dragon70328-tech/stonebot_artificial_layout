@@ -321,8 +321,9 @@ def _make_sort_key(name: str, seed: int):
     raise ValueError(f"未知排序键: {name}")
 
 
-def _default_configs() -> list:
+def _default_configs(base_seed: int = 0) -> list:
     """多轮启动配置：(排序键, 评分模式, 随机种子)"""
+    rng = random.Random(base_seed)
     return [
         ("short", "skyline", 0),
         ("short", "col", 0),
@@ -330,9 +331,9 @@ def _default_configs() -> list:
         ("area", "contact", 0),
         ("long", "col", 0),
         ("long", "skyline", 0),
-        ("jitter", "skyline", 1),
-        ("jitter", "col", 2),
-        ("jitter", "contact", 3),
+        ("jitter", "skyline", rng.randrange(1000)),
+        ("jitter", "col", rng.randrange(1000)),
+        ("jitter", "contact", rng.randrange(1000)),
         ("short", "contact", 0),
     ]
 
@@ -488,42 +489,57 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
                sheet_thickness: float, unit: str = "metric",
                configs: list | None = None,
                improve_budget: float = 180.0,
+               trials: int = 1,
+               seed: int = 0,
                progress=None) -> NestingResult:
-    """排板主入口：多轮贪心取最优。
+    """排板主入口：多轮贪心 + 多次试验取最优。
 
     configs：可选，自定义 [(排序键, 评分模式, 种子)] 列表；
     improve_budget：大邻域搜索的时间预算（秒），设 0 可关闭；
+    trials：独立试验次数（每次不同随机种子），取最优；
+    seed：随机种子基数，保证可复现；
     progress：可选回调 fn(当前轮次, 总轮次, 当前最优板数)。
     """
-    if configs is None:
-        configs = _default_configs()
-
-    cache: dict = {}
-    best_pl = None
+    best_result = None
     best_key = None
+    cache: dict = {}
 
-    for i, (sort_name, mode, seed) in enumerate(configs, start=1):
-        sort_key = _make_sort_key(sort_name, seed)
-        sheets_pl = _nest_single(parts, sheet_width, sheet_height,
-                                 sort_key, mode, cache)
-        # 择优键：先比板数，再比紧凑度（各板最高占用点之和）
-        compact = sum(max((pl.poly.bounds[3] for pl in pls), default=0.0)
-                      for pls in sheets_pl)
-        key = (len(sheets_pl), compact)
-        if best_key is None or key < best_key:
-            best_key = key
-            best_pl = sheets_pl
-        if progress:
-            progress(i, len(configs), best_key[0] if best_key else None)
+    for trial in range(trials):
+        trial_seed = seed + trial
+        trial_configs = _default_configs(trial_seed) if configs is None else configs
+        best_pl = None
+        trial_best_key = None
 
-    # 大邻域搜索：持续提升填充集中度，争取整板释放
-    if improve_budget > 0:
-        best_pl = _lns_improve(best_pl, sheet_width, sheet_height, cache,
-                               budget_s=improve_budget)
+        for i, (sort_name, mode, cfg_seed) in enumerate(trial_configs, start=1):
+            sort_key = _make_sort_key(sort_name, cfg_seed)
+            sheets_pl = _nest_single(parts, sheet_width, sheet_height,
+                                     sort_key, mode, cache)
+            compact = sum(max((pl.poly.bounds[3] for pl in pls), default=0.0)
+                          for pls in sheets_pl)
+            key = (len(sheets_pl), compact)
+            if trial_best_key is None or key < trial_best_key:
+                trial_best_key = key
+                best_pl = sheets_pl
+            total_cfgs = trials * len(trial_configs)
+            cur = i + trial * len(trial_configs)
+            if progress:
+                progress(cur, total_cfgs, best_key[0] if best_key else None)
 
-    result = _materialize(best_pl, sheet_width, sheet_height,
-                          sheet_thickness, unit, len(parts))
-    errors = validate_nesting(result, sheet_width, sheet_height)
-    if errors:
-        raise RuntimeError("排板结果校验失败：" + "; ".join(errors))
-    return result
+        if improve_budget > 0:
+            best_pl = _lns_improve(best_pl, sheet_width, sheet_height, cache,
+                                   budget_s=improve_budget, seed=trial_seed)
+
+        result = _materialize(best_pl, sheet_width, sheet_height,
+                              sheet_thickness, unit, len(parts))
+        errors = validate_nesting(result, sheet_width, sheet_height)
+        if errors:
+            raise RuntimeError("排板结果校验失败：" + "; ".join(errors))
+
+        trial_key = (result.total_sheets, _compactness(result))
+        if best_key is None or trial_key < best_key:
+            best_key = trial_key
+            best_result = result
+
+    if best_result is None:
+        raise RuntimeError("未找到有效排板方案")
+    return best_result
