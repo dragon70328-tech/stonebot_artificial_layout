@@ -1,4 +1,4 @@
-﻿"""DXF 自动排板系统 - 主入口"""
+"""DXF 自动排板系统 - 主入口"""
 
 import sys
 import os
@@ -131,7 +131,7 @@ def main():
     print(f"找到 {len(parts_data)} 个规格板。")
 
     # 5. 编号
-    parts = assign_numbers(parts_data)
+    parts = assign_numbers(parts_data, skip_unnumbered=True)
     for p in parts:
         print(f"  {p.number}: 面积 {p.area:.1f} {unit_label}²")
 
