@@ -1,0 +1,14 @@
+{
+  "sheet_dimensions": {
+    "width": 3200.0,
+    "height": 1800.0,
+    "thickness": 20,
+    "unit": "mm"
+  },
+  "total_sheets": 50,
+  "total_parts": 203,
+  "total_part_area": 210129117.8,
+  "total_sheet_area": 288000000.0,
+  "yield_rate": 72.96,
+  "method": "template_from_v3"
+}

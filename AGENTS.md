@@ -1,4 +1,4 @@
-﻿# Agent Instructions - 人造石台面 DXF 排板系统
+# Agent Instructions - 人造石台面 DXF 排板系统
 
 ## Role
 人造石台面排版系统，读取 CAD 导出的 DXF 文件，识别实线封闭图形作为规格台面板，
@@ -7,9 +7,9 @@
 ## Project Structure
 ```
 stonebot_artificial_layout/
-  agent.md              # 本文件
+  AGENTS.md             # 本文件
   main.py               # CLI 入口（命令行排板）
-  run_app.py            # Web 入口
+  template_v3.py        # 模板排板：以历史排板结果为模板对号入座（老项目改版用）
   requirements.txt      # Python 依赖
   src/
     dxf_reader.py       # DXF 读取：提取封闭图形、构建层级、匹配编号
@@ -18,12 +18,11 @@ stonebot_artificial_layout/
     nesting.py          # 排板引擎：多轮贪心 BFD + LNS 优化
     numbering.py        # 编号管理：保留原编号 / 自动生成
     units.py            # 单位制切换
-  app/
-    server.py           # Flask Web 服务
-    workflow.py         # 对话工作流引擎
-    templates/          # 前端模板
+  sample/               # 输入样本 DXF
   output/               # 输出目录
   tests/                # 测试
+  docs/                 # 文档
+  _analysis/            # 工作日志（worklog）
 ```
 
 ## 工作步骤

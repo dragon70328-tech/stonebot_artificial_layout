@@ -81,12 +81,9 @@ def _is_closed(entity) -> bool:
         try:
             pts = list(entity.get_points())
             if len(pts) >= 3:
-                dx = abs(pts[0][0] - pts[-1][0])
-                dy = abs(pts[0][1] - pts[-1][1])
-                if dx < 0.01 and dy < 0.01:
-                    return True
+                return True
         except Exception:
-            pass
+            return False
         return False
     if isinstance(entity, Polyline):
         return entity.is_closed

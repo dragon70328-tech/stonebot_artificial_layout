@@ -27,3 +27,4 @@ output/*.json
 
 .env
 
+output/*.bak
