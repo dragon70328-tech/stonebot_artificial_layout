@@ -5,6 +5,7 @@ from shapely.geometry import Polygon, Point, MultiPolygon
 from shapely.ops import unary_union
 from ezdxf.entities import LWPolyline, Polyline, Circle, Arc, Spline
 import numpy as np
+import re
 
 
 def _entity_to_polygon(entity, num_segments: int = 64) -> Polygon | None:
@@ -263,6 +264,58 @@ def _collect_number_texts(doc,
     return texts
 
 
+def _collect_room_texts(msp):
+    """Fallback: collect room-type labels from MTEXT entities containing 户型.
+    Returns list of (x, y, normalized_label). Labels are deduplicated by position."""
+    candidates = {}
+    for entity in msp:
+        if entity.dxftype() != "MTEXT":
+            continue
+        try:
+            t = entity.plain_text() if hasattr(entity, "plain_text") else entity.dxf.text
+        except Exception:
+            continue
+        if not t or "户型" not in t:
+            continue
+        if "套" in t:
+            continue
+        t = re.sub(r"\{[^}]*;", "", t).replace("{", "").replace("}", "").strip()
+        t = t.replace("户型：", "").replace("户型:", "").strip()
+        t = re.sub(r"\s+", "", t)
+        t = re.sub(r"^B7a", "B7-a", t)
+        x = entity.dxf.insert.x
+        y = entity.dxf.insert.y
+        key = (round(x / 100), round(y / 100))
+        if key not in candidates:
+            candidates[key] = (x, y, t)
+    return list(candidates.values())
+
+
+def _assign_numbers_by_nearest_room(parts_data, room_labels):
+    from collections import defaultdict
+    panel_labels = []
+    for pd in parts_data:
+        cx, cy = pd["centroid"]
+        best_dist = float("inf")
+        best_label = None
+        for lx, ly, lt in room_labels:
+            d = ((cx - lx) ** 2 + (cy - ly) ** 2) ** 0.5
+            if d < best_dist:
+                best_dist = d
+                best_label = lt
+        panel_labels.append((pd["index"], best_label, cx, cy))
+    label_groups = defaultdict(list)
+    for idx, label, cx, cy in panel_labels:
+        label_groups[label].append((idx, cx, cy))
+    assignments = {}
+    for label in sorted(label_groups.keys()):
+        items = label_groups[label]
+        items.sort(key=lambda x: (-round(x[2] / 500), round(x[1] / 500)))
+        for seq, (idx, cx, cy) in enumerate(items, 1):
+            assignments[idx] = f"{label}-{seq:02d}"
+    return assignments
+
+
 def _assign_unique_number(
     doc,
     centroid,
@@ -372,6 +425,10 @@ def read_dxf(filepath: str,
     # Pre-collect numbering layer texts for 1:1 matching
     number_pool = _collect_number_texts(doc, number_layer=number_layer)
 
+    room_labels = None
+    if not number_pool:
+        room_labels = _collect_room_texts(doc.modelspace())
+
     # --- Build parts_data list first (before numbering) ---
     parts_data = []
     part_index = 0
@@ -412,8 +469,13 @@ def read_dxf(filepath: str,
         part_index += 1
 
     # --- Number assignment: containment-first, then distance fallback ---
-    assigned_numbers = _assign_numbers_by_containment(parts_data, number_pool)
-    for pd in parts_data:
-        pd["original_number"] = assigned_numbers.get(pd["index"])
+    if room_labels:
+        assigned_numbers = _assign_numbers_by_nearest_room(parts_data, room_labels)
+        for pd in parts_data:
+            pd["original_number"] = assigned_numbers.get(pd["index"])
+    else:
+        assigned_numbers = _assign_numbers_by_containment(parts_data, number_pool)
+        for pd in parts_data:
+            pd["original_number"] = assigned_numbers.get(pd["index"])
 
     return parts_data, doc

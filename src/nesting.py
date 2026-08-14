@@ -21,7 +21,7 @@ from shapely.strtree import STRtree
 
 from src.models import Part, Sheet, NestingResult
 
-ALLOWED_ROTATIONS = (0, 90, 180, 270)
+_DEFAULT_ROTATIONS = (0, 90, 180, 270)
 EPS = 1e-6
 # DE-9IM 模式：两多边形内部相交 = 存在面积重叠；边缘贴合（共边）不算重叠
 _OVERLAP_PATTERN = "T********"
@@ -47,7 +47,7 @@ class _Placement:
 # 几何工具
 # ---------------------------------------------------------------------------
 
-def _rotation_forms(part: Part, cache: dict) -> list:
+def _rotation_forms(part: Part, cache: dict, rotations: tuple = _DEFAULT_ROTATIONS) -> list:
     """零件的 4 个旋转形态（绕外轮廓质心旋转），返回 [(rot, polygon, bounds)]"""
     key = id(part)
     forms = cache.get(key)
@@ -55,7 +55,7 @@ def _rotation_forms(part: Part, cache: dict) -> list:
         outer = part.outer_polygon
         origin = (outer.centroid.x, outer.centroid.y)
         forms = []
-        for a in ALLOWED_ROTATIONS:
+        for a in rotations:
             rp = affinity.rotate(outer, a, origin=origin) if a else outer
             forms.append((a, rp, rp.bounds))
         cache[key] = forms
@@ -209,13 +209,13 @@ def _slide(rp: Polygon, rb: tuple, x: float, y: float,
 
 def _find_placement(part: Part, geoms: list, boxes: list, reflex: list,
                     sheet_w: float, sheet_h: float,
-                    mode: str, cache: dict) -> _Placement | None:
+                    mode: str, cache: dict, rotations: tuple = _DEFAULT_ROTATIONS) -> _Placement | None:
     """为单个零件搜索最优放置位置，找不到返回 None"""
     tree = STRtree(geoms) if geoms else None
     best = None
     best_score = None
 
-    for rot, rp, rb in _rotation_forms(part, cache):
+    for rot, rp, rb in _rotation_forms(part, cache, rotations):
         pw, ph = rb[2] - rb[0], rb[3] - rb[1]
         if pw > sheet_w + EPS or ph > sheet_h + EPS:
             continue
@@ -491,6 +491,7 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
                improve_budget: float = 180.0,
                trials: int = 1,
                seed: int = 0,
+               rotations: tuple = _DEFAULT_ROTATIONS,
                progress=None) -> NestingResult:
     """排板主入口：多轮贪心 + 多次试验取最优。
 
