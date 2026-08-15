@@ -4,6 +4,7 @@
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -21,7 +22,7 @@ from src.units import UnitSystem, UNIT_LABELS, convert_to_mm
 from src.dxf_reader import read_dxf
 from src.numbering import assign_numbers
 from src.nesting import nest_parts, validate_nesting
-from src.dxf_writer import write_nested_dxf
+from src.dxf_writer import write_nested_dxf, write_numbered_parts_dxf
 from src.models import NestingResult, Part, Sheet
 from src.constraints import (
     NestingProfile, PROFILES, PROFILE_HELP,
@@ -434,6 +435,14 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     total_area = sum(p.area for p in parts)
     special_w, special_h = special_size if special_size else (None, None)
 
+    stem = Path(dxf_path).stem
+    out_dir = None
+    if not report_only:
+        out_dir = make_output_dir(dxf_path)
+        numbered_check = out_dir / f"{stem}_numbered_原位.dxf"
+        write_numbered_parts_dxf(parts, str(numbered_check),
+                                 unit_system=unit.value)
+
     normal_parts = []
     special_parts = []
     unfit_numbers = []
@@ -453,11 +462,15 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
 
     normal_area = sum(p.area for p in normal_parts)
     special_area = sum(p.area for p in special_parts)
+    normal_sheet_area = width_mm * height_mm
     if special_parts:
-        min_sheets = (-(-int(normal_area) // int(width_mm * height_mm)) +
-                      -(-int(special_area) // int(special_w * special_h)))
+        special_sheet_area = special_w * special_h
+        min_sheets = (math.ceil(normal_area / normal_sheet_area) +
+                      math.ceil(special_area / special_sheet_area))
+        special_pair_min_sheets = math.ceil(len(special_parts) / 2.0)
     else:
-        min_sheets = -(-int(total_area) // int(width_mm * height_mm))
+        min_sheets = math.ceil(total_area / normal_sheet_area)
+        special_pair_min_sheets = None
 
     print(f"{len(parts)} 块零件，总面积 {total_area/1e6:.1f} m2，" 
           f"理论最少 {min_sheets} 张板")
@@ -465,6 +478,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
           f"特殊板 {len(special_parts)} 块")
     if special_parts:
         print(f"特殊板排板尺寸: {special_w:.0f}x{special_h:.0f} mm")
+        print(f"特殊板两两配对理论最少 {special_pair_min_sheets} 张")
 
     # ── 分别排板：普通板用名义尺寸，特殊板用指定大尺寸 ──
     print(f"排板中... ({trials} 次试验 x {budget:.0f}s LNS)")
@@ -522,8 +536,6 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         print(f"  ! {e}")
 
     # ── 输出 ──
-    out_dir = make_output_dir(dxf_path)
-    stem = Path(dxf_path).stem
     if special_w and special_h and special_parts:
         suffix = (f"{int(width_mm)}x{int(height_mm)}"
                   f"+{int(special_w)}x{int(special_h)}")
@@ -546,6 +558,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         "total_sheet_area": result.total_sheet_area,
         "yield_rate": round(result.yield_rate, 2),
         "theoretical_min_sheets": min_sheets,
+        "special_pair_min_sheets": special_pair_min_sheets,
         "elapsed_seconds": round(elapsed, 1),
         "validation_errors": len(errors),
         "profile": {

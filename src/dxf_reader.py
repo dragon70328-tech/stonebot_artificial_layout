@@ -1,21 +1,95 @@
 ﻿"""DXF 文件解析：提取封闭图形，构建规格板（含挖孔）"""
 
 import ezdxf
+import math
 from shapely.geometry import Polygon, Point, MultiPolygon
 from shapely.ops import unary_union
 from ezdxf.entities import LWPolyline, Polyline, Circle, Arc, Spline
+from ezdxf.math import bulge_to_arc
 import numpy as np
 import re
+
+
+def _bulge_arc_points(start_point, end_point, bulge: float,
+                      max_segments: int = 64) -> list:
+    """将 LWPOLYLINE 的 bulge 弧段采样为折线点。
+
+    bulge > 0 表示从 start_point 到 end_point 逆时针走弧；
+    bulge < 0 表示顺时针走弧。返回包含首尾点的点列。
+    """
+    center, start_angle, end_angle, radius = bulge_to_arc(
+        start_point, end_point, bulge
+    )
+    if radius <= 0:
+        return [tuple(start_point), tuple(end_point)]
+
+    sweep = (end_angle - start_angle) % (2 * math.pi)
+    if sweep < 1e-12:
+        sweep = 2 * math.pi
+    segment_count = max(4, min(max_segments,
+                               int(math.ceil(math.degrees(sweep) / 5.0))))
+
+    points = []
+    for i in range(segment_count + 1):
+        angle = start_angle + sweep * i / segment_count
+        points.append((
+            center[0] + radius * math.cos(angle),
+            center[1] + radius * math.sin(angle),
+        ))
+
+    if bulge < 0:
+        points.reverse()
+    return points
+
+
+def _lwpolyline_points(entity: LWPolyline) -> list:
+    """读取 LWPOLYLINE 顶点，并将 bulge 弧段展开为采样折线点。"""
+    raw = entity.get_points("xyseb")
+    if len(raw) < 2:
+        return []
+
+    vertices = [(p[0], p[1], p[4] if len(p) > 4 else 0.0)
+                for p in raw]
+
+    # 首尾重复时去掉最后一个重复点，后续按需闭合。
+    if vertices and len(vertices) > 1:
+        first = vertices[0]
+        last = vertices[-1]
+        if abs(first[0] - last[0]) < 1e-9 and abs(first[1] - last[1]) < 1e-9:
+            vertices = vertices[:-1]
+
+    if len(vertices) < 2:
+        return []
+
+    points = [(vertices[0][0], vertices[0][1])]
+    for i in range(len(vertices) - 1):
+        start = (vertices[i][0], vertices[i][1])
+        end = (vertices[i + 1][0], vertices[i + 1][1])
+        bulge = vertices[i][2]
+        if abs(bulge) > 1e-9:
+            arc_points = _bulge_arc_points(start, end, bulge)
+            points.extend(arc_points[1:])
+        else:
+            points.append(end)
+
+    if entity.closed:
+        start = (vertices[-1][0], vertices[-1][1])
+        end = (vertices[0][0], vertices[0][1])
+        bulge = vertices[-1][2]
+        if abs(bulge) > 1e-9:
+            arc_points = _bulge_arc_points(start, end, bulge)
+            points.extend(arc_points[1:-1])
+        # 闭合边最后一个点就是起点，不重复追加。
+
+    return points
 
 
 def _entity_to_polygon(entity, num_segments: int = 64) -> Polygon | None:
     """将 DXF 实体转换为 Shapely Polygon"""
     try:
         if isinstance(entity, (LWPolyline, Polyline)):
-            points = []
             if isinstance(entity, LWPolyline):
-                with entity.points() as pts:
-                    points = [(p[0], p[1]) for p in pts]
+                points = _lwpolyline_points(entity)
             else:
                 points = [(v.dxf.location.x, v.dxf.location.y)
                           for v in entity.vertices]

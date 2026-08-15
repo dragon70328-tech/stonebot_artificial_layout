@@ -26,7 +26,7 @@ def write_nested_dxf(result: NestingResult,
     每个面板 + 孔洞 + 编号组成 GROUP。
     """
     doc = ezdxf.new()
-    doc.units = units.MM if unit_system != "imperial" else units.Imperial
+    doc.units = units.MM if unit_system != "imperial" else units.IN
 
     msp = doc.modelspace()
 
@@ -135,52 +135,61 @@ def _label_point(part: Part) -> tuple[float, float]:
 
 def write_numbered_parts_dxf(parts: list, output_path: str,
                              unit_system: str = "metric") -> None:
-    """生成排板前的规格板带编号检查 DXF（网格排列）"""
+    """生成排板前的规格板带编号检查 DXF（保持原始坐标）。
+
+    图层：
+    - OUTER：台面板外轮廓
+    - HOLES：盆孔/水龙头孔（蓝色）
+    - NUMBERS：板件编号（居中）
+    """
     doc = ezdxf.new()
-    doc.units = units.MM if unit_system != "imperial" else units.Imperial
+    doc.units = units.MM if unit_system != "imperial" else units.IN
     msp = doc.modelspace()
-    layer = "PARTS_CHECK"
-    doc.layers.add(layer)
 
-    max_w = max_h = 0.0
-    for p in parts:
-        b = p.outer_polygon.bounds
-        max_w = max(max_w, b[2] - b[0])
-        max_h = max(max_h, b[3] - b[1])
-    cell_w = max_w + 120.0
-    cell_h = max_h + 120.0
+    layer_outer = "OUTER"
+    layer_holes = "HOLES"
+    layer_numbers = "NUMBERS"
+    for name in (layer_outer, layer_holes, layer_numbers):
+        doc.layers.add(name)
 
-    COLS = 5
-    for i, part in enumerate(parts):
-        col = i % COLS
-        row = i // COLS
-        ox = col * cell_w
-        oy = row * cell_h
-        b = part.outer_polygon.bounds
-        bx, by = b[0], b[1]
+    for part in parts:
+        group_entities = []
 
         ext = part.outer_polygon.exterior
         if ext is not None:
-            pts = [(x - bx + ox, y - by + oy) for x, y in ext.coords]
-            msp.add_lwpolyline(pts, dxfattribs={"layer": layer})
+            pts = [(x, y) for x, y in ext.coords]
+            entity = msp.add_lwpolyline(pts, dxfattribs={"layer": layer_outer})
+            group_entities.append(entity)
 
         for hole in part.holes:
             h_ext = hole.exterior
             if h_ext is not None:
-                pts = [(x - bx + ox, y - by + oy) for x, y in h_ext.coords]
-                msp.add_lwpolyline(pts, dxfattribs={"layer": layer, "color": BLUE})
+                pts = [(x, y) for x, y in h_ext.coords]
+                entity = msp.add_lwpolyline(
+                    pts,
+                    dxfattribs={"layer": layer_holes, "color": BLUE},
+                )
+                group_entities.append(entity)
 
         cx, cy = _label_point(part)
+        b = part.outer_polygon.bounds
         bw, bh = b[2] - b[0], b[3] - b[1]
-        height = max(20.0, min(min(bw, bh) * 0.25, 60.0))
+        height = max(30.0, min(min(bw, bh) * 0.25, 80.0))
         height = min(height, bw / (0.72 * max(len(part.number), 1)))
         label = msp.add_text(
             part.number,
-            dxfattribs={"layer": layer, "height": height},
+            dxfattribs={"layer": layer_numbers, "height": height},
         )
         label.set_placement(
-            (cx - bx + ox, cy - by + oy),
+            (cx, cy),
             align=TextEntityAlignment.MIDDLE_CENTER,
         )
+        group_entities.append(label)
+
+        if group_entities:
+            try:
+                doc.groups.new(f"PART_{part.number}", group_entities)
+            except Exception:
+                pass
 
     doc.saveas(output_path)
