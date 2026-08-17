@@ -9,8 +9,10 @@ import os
 import sys
 import time
 import itertools
+import re
 from datetime import datetime
 from pathlib import Path
+from collections import Counter
 from shapely import affinity
 from shapely.geometry import Point
 import shapely
@@ -27,10 +29,16 @@ from src.models import NestingResult, Part, Sheet
 from src.constraints import (
     NestingProfile, PROFILES, PROFILE_HELP,
     PROFILE_MIN_SHEETS,
+    PROCESSING_CLASS_BRIDGE,
+    PROCESSING_CLASS_WATERJET_LASER,
+    PROCESSING_CLASS_HELP,
     STANDARD_SHEET_SIZES, STANDARD_THICKNESSES,
     get_sheet_size, get_sheet_size_by_index,
 )
 from src.postprocess import PostProcessor
+from src.deepnest_engine import nest_parts_deepnest
+from src.pairing import nest_parts_deepnest_paired
+from src.drawing_profile import analyze_drawing, load_profiles, rank_profiles
 # ═══════════════════════════════════════════════════════════════
 #  CLI 参数
 # ═══════════════════════════════════════════════════════════════
@@ -63,10 +71,19 @@ def parse_args():
                        f"{k}={v}" for k, v in PROFILE_HELP.items()))
     p.add_argument("--list-profiles", action="store_true",
                    help="列出可用约束模板后退出")
+    p.add_argument("--process", type=str, default=None,
+                   choices=["bridge", "waterjet", "laser"],
+                   help="加工方式：bridge=桥切机，waterjet=水刀，laser=激光")
 
     # 约束覆盖（可与 --profile 组合，也可独立使用）
     p.add_argument("--rotation", type=str, default=None,
                    help="允许的旋转角度，逗号分隔，如 0,90")
+    p.add_argument("--free-rotation", action="store_true",
+                   help="允许任意角度旋转（水刀/激光密集排板）")
+    p.add_argument("--no-rotation", action="store_true",
+                   help="禁止所有旋转，规格板保持原始角度")
+    p.add_argument("--pairing", action="store_true",
+                   help="启用相同形状 180° 共边配对预排（可选增强）")
     p.add_argument("--min-gap", type=float, default=None,
                    help="最小切割间距 mm")
     p.add_argument("--group", type=str, default=None,
@@ -113,6 +130,57 @@ def make_output_dir(dxf_path: str) -> Path:
     return out_dir
 
 
+def resolve_drawing_profile(dxf_path: str):
+    """Match a drawing profile from drawing_profiles by file fingerprint."""
+    try:
+        fingerprint = analyze_drawing(dxf_path)
+        profiles = load_profiles(PROJECT_ROOT / "drawing_profiles")
+        ranked = rank_profiles(fingerprint, profiles)
+    except Exception:
+        return None
+    if not ranked:
+        return None
+    profile, score = ranked[0]
+    if score < MIN_PROFILE_SCORE:
+        return None
+    return profile
+
+
+def material_group_for_number(number: str, drawing_profile) -> str | None:
+    """Return the normalized material prefix when a drawing profile enables it."""
+    if drawing_profile is None or not drawing_profile.material_group_enabled:
+        return None
+    match = re.match(drawing_profile.material_prefix_pattern, number or "")
+    if not match:
+        return None
+    prefix = (
+        match.group("prefix")
+        if "prefix" in match.groupdict()
+        else match.group(0)
+    ).upper()
+    allowed = {value.upper() for value in drawing_profile.allowed_material_prefixes}
+    if allowed and prefix not in allowed:
+        return None
+    return prefix
+
+
+def apply_material_grouping(parts, drawing_profile):
+    """Assign material groups and remove parts without an allowed material prefix."""
+    if drawing_profile is None or not drawing_profile.material_group_enabled:
+        return parts, []
+
+    grouped = []
+    skipped = []
+    for part in parts:
+        prefix = material_group_for_number(part.number, drawing_profile)
+        if prefix is None:
+            skipped.append(part.number)
+            continue
+        part.material_group = prefix
+        grouped.append(part)
+    return grouped, skipped
+
+
 def resolve_sheet_size(args) -> tuple[float, float]:
     """从 --size / 定位参数 解析大板尺寸"""
     if args.size:
@@ -150,12 +218,31 @@ def print_thicknesses():
 
 
 EPS = 1e-6
+MIN_PROFILE_SCORE = 30.0
 QUICK_CONFIGS = [
     ("short", "skyline", 0),
     ("short", "col", 0),
     ("area", "skyline", 0),
     ("long", "col", 0),
 ]
+
+
+def resolve_processing_class(value: str | None) -> str | None:
+    """把 CLI 加工方式映射为 NestingProfile.processing_class。"""
+    if value is None:
+        return None
+    if value == "bridge":
+        return PROCESSING_CLASS_BRIDGE
+    return PROCESSING_CLASS_WATERJET_LASER
+
+
+def default_profile_for_process(value: str | None) -> NestingProfile | None:
+    """未显式选择模板时，按加工方式返回默认模板。"""
+    if value == "waterjet":
+        return PROFILES["waterjet"]
+    if value == "laser":
+        return PROFILES["laser"]
+    return None
 
 
 def parse_special_size(value: str | None) -> tuple[float, float] | None:
@@ -247,6 +334,7 @@ def _place_part_copy(part, angle: float, x: float, y: float):
         outer_polygon=affinity.translate(rotated_outer, xoff=ox, yoff=oy),
         holes=[transform(h) for h in part.holes],
         original_number=part.original_number,
+        material_group=part.material_group,
         area=part.area,
         label_position=(label.x, label.y),
     )
@@ -375,6 +463,84 @@ def combine_nesting_results(results: list) -> NestingResult:
                          total_sheet_area=total_sheet_area)
 
 
+def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
+                    effective_thickness, unit, profile, drawing_profile,
+                    trials, seed, budget, quick, pairing=False):
+    """Nest one material group and return result plus group stats."""
+    normal_parts = []
+    special_parts = []
+    unfit_numbers = []
+    for part in parts:
+        if part_fits(part, width_mm, height_mm, profile.rotation):
+            normal_parts.append(part)
+        elif special_w and special_h and part_fits(
+            part, special_w, special_h, profile.rotation
+        ):
+            special_parts.append(part)
+        else:
+            unfit_numbers.append(part.number)
+
+    if unfit_numbers:
+        raise RuntimeError(
+            "以下零件无法放入可用大板：" + ", ".join(unfit_numbers[:20])
+        )
+
+    group_area = sum(part.area for part in parts)
+    normal_area = sum(part.area for part in normal_parts)
+    special_area = sum(part.area for part in special_parts)
+    normal_sheet_area = width_mm * height_mm
+    if special_parts:
+        special_sheet_area = special_w * special_h
+        min_sheets = (
+            math.ceil(normal_area / normal_sheet_area)
+            + math.ceil(special_area / special_sheet_area)
+        )
+        special_pair_min_sheets = math.ceil(len(special_parts) / 2.0)
+    else:
+        min_sheets = math.ceil(group_area / normal_sheet_area)
+        special_pair_min_sheets = None
+
+    results = []
+    if normal_parts:
+        first_left = bool(
+            drawing_profile is not None
+            and drawing_profile.first_part_left_edge
+        )
+        if profile.uses_deepnest:
+            if pairing:
+                results.append(nest_parts_deepnest_paired(
+                    normal_parts, width_mm, height_mm, effective_thickness,
+                    unit=unit.value, trials=trials, seed=seed,
+                    rotations=profile.rotation,
+                    arbitrary_rotation=profile.arbitrary_rotation,
+                    first_part_left_edge=first_left,
+                    rotation_step=15.0 if quick else 5.0))
+            else:
+                results.append(nest_parts_deepnest(
+                    normal_parts, width_mm, height_mm, effective_thickness,
+                    unit=unit.value, improve_budget=budget,
+                    trials=trials, seed=seed, rotations=profile.rotation,
+                    arbitrary_rotation=profile.arbitrary_rotation,
+                    first_part_left_edge=first_left,
+                    rotation_step=15.0 if quick else 5.0,
+                    configs=QUICK_CONFIGS if quick else None))
+        else:
+            results.append(nest_parts(
+                normal_parts, width_mm, height_mm, effective_thickness,
+                unit=unit.value, improve_budget=budget,
+                trials=trials, seed=seed, rotations=profile.rotation,
+                first_part_left_edge=first_left,
+                configs=QUICK_CONFIGS if quick else None))
+    if special_parts:
+        results.append(nest_special_parts(
+            special_parts, special_w, special_h, effective_thickness,
+            unit=unit.value, rotations=profile.rotation))
+
+    result = combine_nesting_results(results)
+    return (result, len(normal_parts), len(special_parts), min_sheets,
+            special_pair_min_sheets)
+
+
 def validate_mixed_nesting(result: NestingResult) -> list:
     errors = []
     for sheet in result.sheets:
@@ -395,11 +561,13 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         unit: UnitSystem, trials: int, seed: int, budget: float,
         skip_unnumbered: bool, layers: list | None,
         exclude_layers: list | None,
+        drawing_profile=None,
         profile: NestingProfile | None = None,
         confirm_sheet_count: bool = True,
         report_only: bool = False,
         special_size: tuple[float, float] | None = None,
-        quick: bool = False) -> None:
+        quick: bool = False,
+        pairing: bool = False) -> None:
     """核心排板流程"""
     if profile is None:
         profile = PROFILE_MIN_SHEETS
@@ -420,18 +588,60 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     rot_str = ",".join(str(r) for r in profile.rotation)
     print(f"约束: rotation=[{rot_str}], gap={profile.min_gap}mm, "
           f"group={profile.group_mode}, slide={profile.slide_to_edge}, "
-          f"align={profile.align_edges}, thickness={effective_thickness}mm")
+          f"align={profile.align_edges}, thickness={effective_thickness}mm, "
+          f"process={PROCESSING_CLASS_HELP[profile.processing_class]}, "
+          f"free_rotation={profile.arbitrary_rotation}")
 
     # ── 读取 DXF ──
     print(f"读取 DXF: {dxf_path}")
-    parts_data, _doc = read_dxf(dxf_path,
-                                 panel_layers=layers,
-                                 exclude_layers=exclude_layers)
+    if drawing_profile is None:
+        drawing_profile = resolve_drawing_profile(dxf_path)
+    if drawing_profile is not None:
+        print(f"matched drawing profile: {drawing_profile.name} "
+              f"(panel_layer={drawing_profile.panel_layer}, "
+              f"number_layers={len(drawing_profile.number_layers)})")
+        effective_panel_layers = (
+            layers
+            if layers is not None
+            else ([drawing_profile.panel_layer]
+                  if drawing_profile.panel_layer else None)
+        )
+        effective_number_layers = drawing_profile.number_layers or None
+        effective_label_pattern = drawing_profile.label_pattern or None
+        effective_exclude_linetypes = drawing_profile.exclude_linetypes or None
+    else:
+        effective_panel_layers = layers
+        effective_number_layers = None
+        effective_label_pattern = None
+        effective_exclude_linetypes = None
+
+    parts_data, _doc = read_dxf(
+        dxf_path,
+        panel_layers=effective_panel_layers,
+        exclude_layers=exclude_layers,
+        exclude_linetypes=effective_exclude_linetypes,
+        number_layers=effective_number_layers,
+        label_pattern=effective_label_pattern,
+    )
     if not parts_data:
         print("错误：未找到任何封闭图形。")
         sys.exit(1)
 
     parts = assign_numbers(parts_data, skip_unnumbered=skip_unnumbered)
+    skipped_material_numbers = []
+    if drawing_profile is not None and drawing_profile.material_group_enabled:
+        parts, skipped_material_numbers = apply_material_grouping(parts, drawing_profile)
+        if skipped_material_numbers:
+            print(f"已跳过无材料前缀件 {len(skipped_material_numbers)} 个")
+        group_counts = Counter(p.material_group for p in parts)
+        print("材料分组: " + ", ".join(
+            f"{key}: {value} ?" for key, value in sorted(group_counts.items())
+        ))
+
+    if not parts:
+        print("错误：材料分组后没有可排板零件。")
+        sys.exit(1)
+
     total_area = sum(p.area for p in parts)
     special_w, special_h = special_size if special_size else (None, None)
 
@@ -439,66 +649,65 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     out_dir = None
     if not report_only:
         out_dir = make_output_dir(dxf_path)
-        numbered_check = out_dir / f"{stem}_numbered_原位.dxf"
+        numbered_check = out_dir / f"{stem}_numbered_check.dxf"
         write_numbered_parts_dxf(parts, str(numbered_check),
                                  unit_system=unit.value)
 
-    normal_parts = []
-    special_parts = []
-    unfit_numbers = []
-    for p in parts:
-        if part_fits(p, width_mm, height_mm, profile.rotation):
-            normal_parts.append(p)
-        elif special_w and special_h and part_fits(p, special_w, special_h,
-                                                    profile.rotation):
-            special_parts.append(p)
-        else:
-            unfit_numbers.append(p.number)
-
-    if unfit_numbers:
-        print("错误：以下面板无法放入指定大板：")
-        print(", ".join(unfit_numbers[:20]))
-        sys.exit(1)
-
-    normal_area = sum(p.area for p in normal_parts)
-    special_area = sum(p.area for p in special_parts)
-    normal_sheet_area = width_mm * height_mm
-    if special_parts:
-        special_sheet_area = special_w * special_h
-        min_sheets = (math.ceil(normal_area / normal_sheet_area) +
-                      math.ceil(special_area / special_sheet_area))
-        special_pair_min_sheets = math.ceil(len(special_parts) / 2.0)
+    material_group_enabled = bool(
+        drawing_profile is not None and drawing_profile.material_group_enabled
+    )
+    if material_group_enabled:
+        groups = sorted({part.material_group for part in parts})
     else:
-        min_sheets = math.ceil(total_area / normal_sheet_area)
-        special_pair_min_sheets = None
+        groups = [None]
 
-    print(f"{len(parts)} 块零件，总面积 {total_area/1e6:.1f} m2，" 
-          f"理论最少 {min_sheets} 张板")
-    print(f"普通板 {len(normal_parts)} 块 -> {width_mm:.0f}x{height_mm:.0f} mm，"
-          f"特殊板 {len(special_parts)} 块")
-    if special_parts:
-        print(f"特殊板排板尺寸: {special_w:.0f}x{special_h:.0f} mm")
-        print(f"特殊板两两配对理论最少 {special_pair_min_sheets} 张")
+    if profile.uses_deepnest:
+        print(f"开始排板... (DeepNest/BLF, trials={trials})")
+    else:
+        print(f"开始排板... ({trials} 轮 x {budget:.0f}s LNS)")
 
-    # ── 分别排板：普通板用名义尺寸，特殊板用指定大尺寸 ──
-    print(f"排板中... ({trials} 次试验 x {budget:.0f}s LNS)")
     t0 = time.time()
-    results = []
-    if normal_parts:
-        print(f"  普通板排板: {len(normal_parts)} 块, "
-              f"{width_mm:.0f}x{height_mm:.0f}")
-        results.append(nest_parts(
-            normal_parts, width_mm, height_mm, effective_thickness,
-            unit=unit.value, improve_budget=budget,
-            trials=trials, seed=seed, rotations=profile.rotation,
-            configs=QUICK_CONFIGS if quick else None))
-    if special_parts:
-        print(f"  特殊板排板: {len(special_parts)} 块, "
-              f"{special_w:.0f}x{special_h:.0f}")
-        results.append(nest_special_parts(
-            special_parts, special_w, special_h, effective_thickness,
-            unit=unit.value, rotations=profile.rotation))
-    result = combine_nesting_results(results)
+    group_results = []
+    material_summary = []
+    total_min_sheets = 0
+    total_normal_parts = 0
+    total_special_parts = 0
+    total_special_pair_min_sheets = None
+
+    for group in groups:
+        group_parts = (
+            [part for part in parts if part.material_group == group]
+            if group is not None else parts
+        )
+        group_label = group or "ALL"
+        group_result, normal_count, special_count, min_sheets, special_pair_min = (
+            _nest_one_group(
+                group_parts, width_mm, height_mm, special_w, special_h,
+                effective_thickness, unit, profile, drawing_profile,
+                trials, seed, budget, quick, pairing,
+            )
+        )
+        group_results.append(group_result)
+        total_min_sheets += min_sheets
+        total_normal_parts += normal_count
+        total_special_parts += special_count
+        if special_pair_min is not None:
+            total_special_pair_min_sheets = (
+                (total_special_pair_min_sheets or 0) + special_pair_min
+            )
+        material_summary.append({
+            "material_group": group_label,
+            "part_count": len(group_parts),
+            "sheets": group_result.total_sheets,
+            "yield_rate": round(group_result.yield_rate, 2),
+            "theoretical_min_sheets": min_sheets,
+        })
+        print(
+            f"  {group_label}: {len(group_parts)} 件 -> "
+            f"{group_result.total_sheets} 张大板（理论最少 {min_sheets} 张）"
+        )
+
+    result = combine_nesting_results(group_results)
     elapsed = time.time() - t0
 
     # ── 排板完成后先报告板数，确认后再执行后处理 ──
@@ -536,7 +745,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         print(f"  ! {e}")
 
     # ── 输出 ──
-    if special_w and special_h and special_parts:
+    if special_w and special_h and total_special_parts:
         suffix = (f"{int(width_mm)}x{int(height_mm)}"
                   f"+{int(special_w)}x{int(special_h)}")
     else:
@@ -557,11 +766,14 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         "total_part_area": round(result.total_part_area, 1),
         "total_sheet_area": result.total_sheet_area,
         "yield_rate": round(result.yield_rate, 2),
-        "theoretical_min_sheets": min_sheets,
-        "special_pair_min_sheets": special_pair_min_sheets,
+        "theoretical_min_sheets": total_min_sheets,
+        "special_pair_min_sheets": total_special_pair_min_sheets,
+        "material_summary": material_summary,
         "elapsed_seconds": round(elapsed, 1),
         "validation_errors": len(errors),
         "profile": {
+            "processing_class": profile.processing_class,
+            "arbitrary_rotation": profile.arbitrary_rotation,
             "rotation": profile.rotation,
             "min_gap": profile.min_gap,
             "group_mode": profile.group_mode,
@@ -695,13 +907,21 @@ def main():
     if args.profile:
         profile = PROFILES[args.profile]
     else:
-        profile = PROFILE_MIN_SHEETS
+        profile = default_profile_for_process(args.process) or PROFILE_MIN_SHEETS
 
     # 应用覆盖
     overrides = {}
+    processing_class = resolve_processing_class(args.process)
+    if processing_class is not None:
+        overrides["processing_class"] = processing_class
     if args.rotation is not None:
         overrides["rotation"] = [int(x.strip())
                                  for x in args.rotation.split(",")]
+    if args.free_rotation:
+        overrides["arbitrary_rotation"] = True
+    if args.no_rotation:
+        overrides["rotation"] = [0]
+        overrides["arbitrary_rotation"] = False
     if args.min_gap is not None:
         overrides["min_gap"] = args.min_gap
     if args.group is not None:
@@ -724,7 +944,8 @@ def main():
         confirm_sheet_count=not args.no_confirm,
         report_only=args.report_only,
         special_size=parse_special_size(args.special_size),
-        quick=args.quick)
+        quick=args.quick,
+        pairing=args.pairing)
 
 
 if __name__ == "__main__":

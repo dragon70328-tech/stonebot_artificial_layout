@@ -14,6 +14,7 @@ class Part:
     outer_polygon: Polygon           # 外轮廓多边形（不含挖孔）
     holes: list[Polygon] = field(default_factory=list)  # 挖孔列表
     original_number: Optional[str] = None  # DXF 中原有编号
+    material_group: Optional[str] = None   # 材料分组，例如 01B/02B
     area: float = 0.0                # 有效面积（外轮廓面积 - 挖孔面积）
     label_position: tuple[float, float] = (0.0, 0.0)  # 编号标注位置
     outer_handle: str | None = None       # 原DXF中外轮廓实体handle

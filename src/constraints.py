@@ -31,6 +31,15 @@ from typing import Optional, Literal
 GroupMode = Optional[Literal["one_set_per_sheet"]]
 # one_set_per_sheet: 一张大板排一套完整户型（需配合 part.group_id 使用）
 
+# 加工方式
+ProcessingClass = Literal["bridge", "waterjet_laser"]
+PROCESSING_CLASS_BRIDGE = "bridge"
+PROCESSING_CLASS_WATERJET_LASER = "waterjet_laser"
+PROCESSING_CLASS_HELP = {
+    PROCESSING_CLASS_BRIDGE: "桥切机加工（原排板规则）",
+    PROCESSING_CLASS_WATERJET_LASER: "水刀/激光加工（DeepNest 规则）",
+}
+
 
 # ================================================================
 #  标准材料规格
@@ -86,6 +95,9 @@ class NestingProfile:
     # 允许的旋转角度列表，如 [0] 或 [0, 90, 180, 270]
     rotation: list[int] = field(default_factory=lambda: [0, 90, 180, 270])
 
+    # 是否允许任意角度旋转（水刀/激光类用于密集排板）
+    arbitrary_rotation: bool = False
+
     # ---- 切割间距 ----
     # 面板之间最小安全切割间距（mm），0 表示不要求
     min_gap: float = 0.0
@@ -110,9 +122,18 @@ class NestingProfile:
     # 面板距大板边缘最小距离（mm），人造石大板按精确尺寸供货，通常为 0
     edge_margin: float = 0.0
 
+    # ---- 加工方式 ----
+    # bridge: 桥切机加工，使用现有排板策略
+    # waterjet_laser: 水刀/激光加工，使用 DeepNest 规则
+    processing_class: ProcessingClass = PROCESSING_CLASS_BRIDGE
+
     @property
     def thickness_label(self) -> str:
         return f"{self.sheet_thickness:.0f}mm"
+
+    @property
+    def uses_deepnest(self) -> bool:
+        return self.processing_class == PROCESSING_CLASS_WATERJET_LASER
 
     def with_overrides(self, **kwargs) -> "NestingProfile":
         """返回一个覆盖部分字段的新 profile"""
@@ -160,6 +181,26 @@ PROFILE_QUICK = NestingProfile(
     align_edges=False,
 )
 
+PROFILE_WATERJET = NestingProfile(
+    rotation=[0, 90, 180, 270],
+    arbitrary_rotation=True,
+    min_gap=0.0,
+    group_mode=None,
+    slide_to_edge=False,
+    align_edges=False,
+    processing_class=PROCESSING_CLASS_WATERJET_LASER,
+)
+
+PROFILE_LASER = NestingProfile(
+    rotation=[0, 90, 180, 270],
+    arbitrary_rotation=True,
+    min_gap=0.0,
+    group_mode=None,
+    slide_to_edge=False,
+    align_edges=False,
+    processing_class=PROCESSING_CLASS_WATERJET_LASER,
+)
+
 
 # ================================================================
 #  预置模板注册表
@@ -170,6 +211,8 @@ PROFILES: dict[str, NestingProfile] = {
     "min_sheets": PROFILE_MIN_SHEETS,
     "balanced": PROFILE_BALANCED,
     "quick": PROFILE_QUICK,
+    "waterjet": PROFILE_WATERJET,
+    "laser": PROFILE_LASER,
 }
 
 PROFILE_HELP = {
@@ -177,4 +220,6 @@ PROFILE_HELP = {
     "min_sheets": "最少大板数，允许旋转套切，不要求间距",
     "balanced": "折中方案，允许旋转，间距≥6cm",
     "quick": "快速预览，无后处理",
+    "waterjet": "水刀加工：DeepNest 规则，允许任意角度旋转，不推边",
+    "laser": "激光加工：DeepNest 规则，允许任意角度旋转，不推边",
 }

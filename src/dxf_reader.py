@@ -276,65 +276,100 @@ def find_number_labels(doc: ezdxf.document.Drawing,
     在指定几何中心附近查找 TEXT 或 MTEXT 编号。
     search_radius：搜索半径（单位与 DXF 一致）
     """
-    num_layers = [
-        layer.dxf.name for layer in doc.layers
-        if any(ord(c) == 32534 for c in layer.dxf.name)
-    ]
-    msp = doc.modelspace()
     cx, cy = centroid
+    number_pool = _collect_number_texts(doc)
+    best_dist = float("inf")
+    best_text = None
+    for tx, ty, text in number_pool:
+        dist = ((tx - cx) ** 2 + (ty - cy) ** 2) ** 0.5
+        if dist < search_radius and dist < best_dist:
+            best_dist = dist
+            best_text = text
+    return best_text
 
-    for entity in msp:
-        if entity.dxftype() not in ('TEXT', 'MTEXT'):
-            continue
-        if num_layers and entity.dxf.layer not in num_layers:
-            continue
-        try:
-            if entity.dxftype() == 'TEXT':
-                tx = entity.dxf.insert.x if hasattr(entity.dxf, 'insert') else 0
-                ty = entity.dxf.insert.y if hasattr(entity.dxf, 'insert') else 0
-                text = entity.dxf.text
-            else:
-                tx = entity.dxf.insert.x if hasattr(entity.dxf, 'insert') else 0
-                ty = entity.dxf.insert.y if hasattr(entity.dxf, 'insert') else 0
-                text = entity.plain_text() if hasattr(entity, 'plain_text') else entity.dxf.text
 
-            dist = ((tx - cx) ** 2 + (ty - cy) ** 2) ** 0.5
-            if dist < search_radius and text and text.strip():
-                return text.strip()
-        except Exception:
-            continue
 
-    return None
-
+def _looks_like_number(text: str) -> bool:
+    """Return True for common part-number shapes without forcing a single layer."""
+    value = " ".join(text.strip().split())
+    if not value or len(value) > 15:
+        return False
+    markers = (
+        "\u6237\u578b", "\u5957", "\u8bf4\u660e", "\u6750\u6599",
+        "\u77f3\u6750", "\u7f16\u53f7", "\u7bb1\u53f7", "\u6587\u5b57",
+        "\u9762\u79ef", "\u5355\u4f4d", "\u6bd4\u4f8b", "\u8bbe\u8ba1",
+        "\u5ba1\u6838", "\u65e5\u671f", "\u5907\u6ce8", "\u56fe\u540d",
+    )
+    if any(marker in value for marker in markers):
+        return False
+    if re.search(r"\d$", value):
+        return True
+    if re.fullmatch(r"\d+[-_/][A-Za-z]+", value):
+        return True
+    if re.fullmatch(r"[A-Za-z]+[-_/]\d+", value):
+        return True
+    return False
 
 
 def _collect_number_texts(doc,
-                         number_layer = None):
-    if number_layer is not None:
-        num_layers = [number_layer]
-    else:
-        num_layers = [
+                          number_layer = None,
+                          number_layers = None,
+                          label_pattern = None):
+    """Collect candidate part-number texts from TEXT/MTEXT entities.
+
+    Layer selection priority:
+    1. explicit number_layers
+    2. legacy number_layer argument
+    3. layers whose name contains the Chinese character 32534
+    4. all TEXT/MTEXT entities, filtered by common number shape
+    """
+    explicit_layers = None
+    if number_layers is not None:
+        explicit_layers = set(number_layers) if number_layers else None
+    elif number_layer is not None:
+        explicit_layers = {number_layer}
+    elif any(
+        any(ord(c) == 32534 for c in (layer.dxf.name or ""))
+        for layer in doc.layers
+    ):
+        explicit_layers = {
             layer.dxf.name for layer in doc.layers
-            if any(ord(c) == 32534 for c in layer.dxf.name)
-        ]
+            if any(ord(c) == 32534 for c in (layer.dxf.name or ""))
+        }
+
+    pattern = re.compile(label_pattern) if label_pattern else None
     texts = []
+    seen = set()
     msp = doc.modelspace()
     for entity in msp:
         if entity.dxftype() not in ("TEXT", "MTEXT"):
             continue
-        if num_layers and entity.dxf.layer not in num_layers:
+        layer = getattr(entity.dxf, "layer", "0") or "0"
+        if explicit_layers is not None and layer not in explicit_layers:
             continue
         try:
-            tx = entity.dxf.insert.x
-            ty = entity.dxf.insert.y
+            tx = float(entity.dxf.insert.x)
+            ty = float(entity.dxf.insert.y)
             if entity.dxftype() == "TEXT":
-                t = entity.dxf.text
+                raw_text = entity.dxf.text
             else:
-                t = entity.plain_text() if hasattr(entity, "plain_text") else entity.dxf.text
-            if t and t.strip():
-                texts.append((tx, ty, t.strip()))
+                raw_text = entity.plain_text() if hasattr(entity, "plain_text") else entity.dxf.text
         except Exception:
             continue
+
+        text = " ".join(raw_text.strip().split()) if raw_text else ""
+        if not text:
+            continue
+        if pattern is not None and not pattern.match(text):
+            continue
+        if explicit_layers is None and pattern is None and not _looks_like_number(text):
+            continue
+
+        key = (round(tx, 6), round(ty, 6), text)
+        if key in seen:
+            continue
+        seen.add(key)
+        texts.append((tx, ty, text))
     return texts
 
 
@@ -476,7 +511,9 @@ def read_dxf(filepath: str,
             panel_layers = None,
             exclude_layers = None,
             exclude_linetypes = None,
-            number_layer = None):
+            number_layer = None,
+            number_layers = None,
+            label_pattern = None):
 
     """
     读取 DXF 文件，提取所有规格板信息。
@@ -497,11 +534,14 @@ def read_dxf(filepath: str,
     hierarchy = _build_part_hierarchy(polygons)
 
     # Pre-collect numbering layer texts for 1:1 matching
-    number_pool = _collect_number_texts(doc, number_layer=number_layer)
+    number_pool = _collect_number_texts(
+        doc,
+        number_layer=number_layer,
+        number_layers=number_layers,
+        label_pattern=label_pattern,
+    )
 
-    room_labels = None
-    if not number_pool:
-        room_labels = _collect_room_texts(doc.modelspace())
+    room_labels = _collect_room_texts(doc.modelspace())
 
     # --- Build parts_data list first (before numbering) ---
     parts_data = []
@@ -542,14 +582,11 @@ def read_dxf(filepath: str,
         parts_data.append(part_data)
         part_index += 1
 
-    # --- Number assignment: containment-first, then distance fallback ---
-    if room_labels:
+    # --- Number assignment: containment-first, then room-label fallback ---
+    assigned_numbers = _assign_numbers_by_containment(parts_data, number_pool)
+    if room_labels and not assigned_numbers:
         assigned_numbers = _assign_numbers_by_nearest_room(parts_data, room_labels)
-        for pd in parts_data:
-            pd["original_number"] = assigned_numbers.get(pd["index"])
-    else:
-        assigned_numbers = _assign_numbers_by_containment(parts_data, number_pool)
-        for pd in parts_data:
-            pd["original_number"] = assigned_numbers.get(pd["index"])
+    for pd in parts_data:
+        pd["original_number"] = assigned_numbers.get(pd["index"])
 
     return parts_data, doc

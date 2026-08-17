@@ -1,4 +1,4 @@
-"""排板算法：多轮贪心 BFD + 多评分模式 + 滑动压实 + 精确校验
+﻿"""排板算法：多轮贪心 BFD + 多评分模式 + 滑动压实 + 精确校验
 
 核心思路：
 1. 候选位置来自"边对齐"：零件左边贴已放零件右边、底边贴已放零件顶边，
@@ -10,6 +10,7 @@
 4. 每轮结果做精确校验（边界 + 两两重叠），只接受通过的方案。
 """
 
+import math
 import random
 import time
 from dataclasses import dataclass
@@ -37,7 +38,7 @@ _MAX_VALID_PER_ROT = 8
 class _Placement:
     """一次放置记录（引用原始 Part，不做几何修改）"""
     part: Part
-    rot: int                 # 旋转角
+    rot: float               # 旋转角
     x: float                 # 放置后包围盒左下角 x
     y: float                 # 放置后包围盒左下角 y
     poly: Polygon            # 放置后的外轮廓多边形
@@ -49,7 +50,7 @@ class _Placement:
 
 def _rotation_forms(part: Part, cache: dict, rotations: tuple = _DEFAULT_ROTATIONS) -> list:
     """零件的 4 个旋转形态（绕外轮廓质心旋转），返回 [(rot, polygon, bounds)]"""
-    key = id(part)
+    key = (id(part), tuple(rotations))
     forms = cache.get(key)
     if forms is None:
         outer = part.outer_polygon
@@ -60,6 +61,97 @@ def _rotation_forms(part: Part, cache: dict, rotations: tuple = _DEFAULT_ROTATIO
             forms.append((a, rp, rp.bounds))
         cache[key] = forms
     return forms
+
+
+def _edge_segments(poly: Polygon) -> list:
+    """Return exterior segments as ((x0, y0), (x1, y1))."""
+    coords = list(poly.exterior.coords)
+    return [(coords[i], coords[i + 1]) for i in range(len(coords) - 1)]
+
+
+def _edge_length(edge: tuple) -> float:
+    (x0, y0), (x1, y1) = edge
+    return math.hypot(x1 - x0, y1 - y0)
+
+
+def _angle_allowed(angle, rotations):
+    angle %= 360.0
+    return any(abs((allowed % 360.0) - angle) <= 1e-6 or
+               abs((allowed % 360.0) - angle - 360.0) <= 1e-6
+               for allowed in rotations)
+
+
+def _first_part_left_placement(part: Part, sheet_w: float, sheet_h: float,
+                               cache: dict, rotations: tuple) -> _Placement | None:
+    """Place the first part at bottom-left with its longest edge on the left edge."""
+    outer = part.outer_polygon
+    origin = (outer.centroid.x, outer.centroid.y)
+    edges = _edge_segments(outer)
+    if not edges:
+        return None
+    max_len = max(_edge_length(edge) for edge in edges)
+    long_edges = [edge for edge in edges
+                  if abs(_edge_length(edge) - max_len) <= 1e-6]
+
+    best = None
+    best_key = (-1.0, float("inf"), float("inf"))
+
+    for edge in long_edges:
+        (x0, y0), (x1, y1) = edge
+        edge_angle = math.degrees(math.atan2(y1 - y0, x1 - x0))
+        for target_angle in (90.0, -90.0):
+            angle = target_angle - edge_angle
+            if not _angle_allowed(angle, rotations):
+                continue
+            rotated = affinity.rotate(outer, angle, origin=origin)
+            for candidate_edge in _edge_segments(rotated):
+                (cx0, cy0), (cx1, cy1) = candidate_edge
+                if abs(cx0 - cx1) > 1e-6:
+                    continue
+                if abs(_edge_length(candidate_edge) - max_len) > 1e-6:
+                    continue
+                x_on_left = cx0
+                miny = rotated.bounds[1]
+                poly = affinity.translate(
+                    rotated,
+                    xoff=-x_on_left,
+                    yoff=-miny,
+                )
+                poly = shapely.set_precision(poly, 1e-6)
+                b = poly.bounds
+                if b[0] < -1e-6 or b[1] < -1e-6:
+                    continue
+                if b[2] > sheet_w + EPS or b[3] > sheet_h + EPS:
+                    continue
+                key = (-max_len, b[2], b[3])
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best = (angle, poly)
+
+    if best is None:
+        for rot, rp, rb in _rotation_forms(part, cache, rotations):
+            pw = rb[2] - rb[0]
+            ph = rb[3] - rb[1]
+            if pw > sheet_w + EPS or ph > sheet_h + EPS:
+                continue
+            poly = affinity.translate(rp, xoff=-rb[0], yoff=-rb[1])
+            poly = shapely.set_precision(poly, 1e-6)
+            left_len = 0.0
+            for (x0, y0), (x1, y1) in _edge_segments(poly):
+                if abs(x0) <= 1e-6 and abs(x1) <= 1e-6:
+                    left_len = max(left_len, abs(y1 - y0))
+            if left_len + 1e-6 < max_len:
+                continue
+            b = poly.bounds
+            key = (-left_len, b[2], b[3])
+            if best_key is None or key < best_key:
+                best_key = key
+                best = (rot, poly)
+        if best is None:
+            return None
+
+    rot, poly = best
+    return _Placement(part=part, rot=rot, x=poly.bounds[0], y=poly.bounds[1], poly=poly)
 
 
 def _reflex_vertices(poly: Polygon) -> list:
@@ -254,7 +346,9 @@ def _find_placement(part: Part, geoms: list, boxes: list, reflex: list,
 
 def _nest_single(parts: list, sheet_w: float, sheet_h: float,
                  sort_key, mode: str, cache: dict,
-                 max_sheets: int | None = None) -> list | None:
+                 max_sheets: int | None = None,
+                 rotations: tuple = _DEFAULT_ROTATIONS,
+                 first_part_left_edge: bool = False) -> list | None:
     """单轮贪心：按 sort_key 排序，逐张填满大板。
 
     max_sheets：大板数量上限，超过则放弃本轮（返回 None）。
@@ -272,8 +366,20 @@ def _nest_single(parts: list, sheet_w: float, sheet_h: float,
         nxt = []
 
         for part in remaining:
-            pl = _find_placement(part, geoms, boxes, reflex,
-                                 sheet_w, sheet_h, mode, cache)
+            if not cur and first_part_left_edge:
+                pl = _first_part_left_placement(
+                    part, sheet_w, sheet_h, cache, rotations
+                )
+                if pl is None:
+                    pl = _find_placement(
+                        part, geoms, boxes, reflex, sheet_w, sheet_h,
+                        mode, cache, rotations
+                    )
+            else:
+                pl = _find_placement(
+                    part, geoms, boxes, reflex, sheet_w, sheet_h,
+                    mode, cache, rotations
+                )
             if pl is None:
                 nxt.append(part)
                 continue
@@ -350,7 +456,9 @@ def _concentration(sheets_pl: list) -> float:
 
 def _lns_improve(sheets_pl: list, sheet_w: float, sheet_h: float,
                  cache: dict, budget_s: float = 40.0,
-                 seed: int = 0, progress=None) -> list:
+                 seed: int = 0, progress=None,
+                 rotations: tuple = _DEFAULT_ROTATIONS,
+                 first_part_left_edge: bool = False) -> list:
     """大邻域搜索：反复拆除利用率偏低的若干张板并重排，
     同数重排提升填充集中度（中性移动），偶尔直接压缩板数。"""
     rng = random.Random(seed)
@@ -382,10 +490,14 @@ def _lns_improve(sheets_pl: list, sheet_w: float, sheet_h: float,
         res = None
         if rng.random() < 0.3 and sub_area <= (k - 1) * sheet_area:
             res = _nest_single(sub, sheet_w, sheet_h, sort_key, mode,
-                               cache, max_sheets=k - 1)
+                               cache, max_sheets=k - 1,
+                               rotations=rotations,
+                               first_part_left_edge=first_part_left_edge)
         if res is None:
             res = _nest_single(sub, sheet_w, sheet_h, sort_key, mode,
-                               cache, max_sheets=k)
+                               cache, max_sheets=k,
+                               rotations=rotations,
+                               first_part_left_edge=first_part_left_edge)
         if res is None:
             continue
 
@@ -433,9 +545,11 @@ def _materialize(sheets_pl: list, sheet_w: float, sheet_h: float,
                 id=part.id,
                 number=part.number,
                 polygon=tf(part.polygon),
-                outer_polygon=affinity.translate(r_outer, xoff=ox, yoff=oy),
+                # reuse exact collision geometry to avoid float sliver overlap
+                outer_polygon=pl.poly,
                 holes=[tf(h) for h in part.holes],
                 original_number=part.original_number,
+                material_group=part.material_group,
                 area=part.area,
                 label_position=(label_pt.x, label_pt.y),
             )
@@ -463,8 +577,9 @@ def validate_nesting(result: NestingResult, sheet_w: float, sheet_h: float,
                 errors.append(f"Sheet {sheet.index}: {num} 超出大板边界")
         for i in range(len(polys)):
             for j in range(i + 1, len(polys)):
-                if shapely.relate_pattern(polys[i], polys[j], _OVERLAP_PATTERN):
-                    area = polys[i].intersection(polys[j]).area
+                area = polys[i].intersection(polys[j]).area
+                if area > 1e-6 and shapely.relate_pattern(
+                        polys[i], polys[j], _OVERLAP_PATTERN):
                     errors.append(
                         f"Sheet {sheet.index}: {nums[i]} 与 {nums[j]} "
                         f"重叠 {area:.1f} mm²")
@@ -492,6 +607,7 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
                trials: int = 1,
                seed: int = 0,
                rotations: tuple = _DEFAULT_ROTATIONS,
+               first_part_left_edge: bool = False,
                progress=None) -> NestingResult:
     """排板主入口：多轮贪心 + 多次试验取最优。
 
@@ -514,7 +630,9 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
         for i, (sort_name, mode, cfg_seed) in enumerate(trial_configs, start=1):
             sort_key = _make_sort_key(sort_name, cfg_seed)
             sheets_pl = _nest_single(parts, sheet_width, sheet_height,
-                                     sort_key, mode, cache)
+                                     sort_key, mode, cache,
+                                     rotations=rotations,
+                                     first_part_left_edge=first_part_left_edge)
             compact = sum(max((pl.poly.bounds[3] for pl in pls), default=0.0)
                           for pls in sheets_pl)
             key = (len(sheets_pl), compact)
@@ -528,7 +646,9 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
 
         if improve_budget > 0:
             best_pl = _lns_improve(best_pl, sheet_width, sheet_height, cache,
-                                   budget_s=improve_budget, seed=trial_seed)
+                                   budget_s=improve_budget, seed=trial_seed,
+                                   rotations=rotations,
+                                   first_part_left_edge=first_part_left_edge)
 
         result = _materialize(best_pl, sheet_width, sheet_height,
                               sheet_thickness, unit, len(parts))

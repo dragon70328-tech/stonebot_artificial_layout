@@ -1,0 +1,40 @@
+{
+  "name": "dongguan_outlets",
+  "version": "1.0.0",
+  "description": "东莞奥特莱斯石材面板图纸画像：面板边界可来自 HATCH 或 石材分缝 LWPOLYLINE/LINE；编号图层为 石材文字、石材编号、石材箱号。",
+  "panel_layer": "石材分缝",
+  "hatch_layer": "石材填充",
+  "use_hatch": true,
+  "number_layers": [
+    "石材文字",
+    "石材编号",
+    "石材箱号"
+  ],
+  "label_pattern": "^(?P<material>\\d{2}B)-?(?P<shape>\\d+)$",
+  "assignment_mode": "point_then_bbox",
+  "bbox_overlap_threshold": 0.5,
+  "build_hierarchy": false,
+  "conflict_resolution": "random",
+  "closed_tolerance": 1500.0,
+  "exclude_entity_types": [
+    "CIRCLE",
+    "INSERT",
+    "DIMENSION"
+  ],
+  "exclude_linetypes": [
+    "DASH",
+    "PHANTOM"
+  ],
+  "text_height": 40.0,
+  "notes": "ST-* 和区域说明文字不是材料编号。相同形状编号的面板按数量归入同一行。",
+  "material_group_enabled": true,
+  "material_prefix_pattern": "^(?P<prefix>\\d{2}B)",
+  "allowed_material_prefixes": [
+    "01B",
+    "02B",
+    "03B",
+    "04B",
+    "05B"
+  ],
+  "first_part_left_edge": true
+}
