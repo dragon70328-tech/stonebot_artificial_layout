@@ -56,6 +56,7 @@ class DrawingProfile:
     exclude_linetypes: list[str] = field(default_factory=lambda: ["DASH", "PHANTOM"])
     small_area_threshold: float = 100.0
     text_height: float = 40.0
+    low_confidence_threshold: float = 0.8
     notes: str = ""
 
     @classmethod
@@ -461,6 +462,8 @@ def _extract_profile_panels(
                     "centroid": combined.centroid,
                     "area": combined.area,
                     "handle": getattr(entity.dxf, "handle", None),
+                    "source": "hatch",
+                    "confidence": 1.0,
                 }
             )
         if panels:
@@ -499,6 +502,8 @@ def _extract_profile_panels(
                         "centroid": combined.centroid,
                         "area": combined.area,
                         "handle": item.get("handle"),
+                        "source": "closed_polygon",
+                        "confidence": 0.9,
                     }
                 )
         else:
@@ -514,6 +519,8 @@ def _extract_profile_panels(
                         "centroid": polygon.centroid,
                         "area": polygon.area,
                         "handle": handle,
+                        "source": "closed_polygon",
+                        "confidence": 0.9,
                     }
                 )
 
@@ -544,6 +551,8 @@ def _extract_profile_panels(
                 "centroid": polygon.centroid,
                 "area": polygon.area,
                 "handle": None,
+                "source": "line",
+                "confidence": 0.7,
             }
         )
     return panels
@@ -1022,6 +1031,35 @@ def _add_hole_outside_panel_issues(
             )
 
 
+def _add_panel_confidence_issues(
+    panels: list[dict[str, Any]],
+    profile: DrawingProfile,
+    issues: list[DrawingIssue],
+) -> None:
+    source_labels = {
+        "hatch": "HATCH",
+        "closed_polygon": "封闭图形",
+        "line": "LINE 线段",
+    }
+    for panel in panels:
+        confidence = float(panel.get("confidence", 1.0))
+        if confidence >= profile.low_confidence_threshold:
+            continue
+        source = panel.get("source", "unknown")
+        label = source_labels.get(source, source)
+        centroid = panel["centroid"]
+        _make_issue(
+            issues,
+            severity="warning",
+            type_="low_confidence_entity",
+            entity=None,
+            layer=profile.panel_layer or "",
+            coordinates=(float(centroid.x), float(centroid.y)),
+            message=f"面板由 {label} 提取，归属置信度较低 ({confidence:.2f})",
+            suggestion="请人工确认面板边界、孔洞归属及是否需要排板",
+        )
+
+
 def _add_duplicate_text_issues(
     texts: list[dict[str, Any]],
     issues: list[DrawingIssue],
@@ -1172,6 +1210,43 @@ def _add_number_assignment_issues(
             )
 
 
+def _add_material_conflict_issues(
+    panels: list[dict[str, Any]],
+    texts: list[dict[str, Any]],
+    assignments: dict[int, list[int]],
+    profile: DrawingProfile,
+    issues: list[DrawingIssue],
+) -> None:
+    if not profile.material_group_enabled:
+        return
+
+    allowed = {value.upper() for value in profile.allowed_material_prefixes}
+    for panel in panels:
+        panel_index = panel["index"]
+        for text_index in assignments.get(panel_index, []):
+            text = texts[text_index]
+            match = re.match(profile.material_prefix_pattern, text["text"])
+            if match and "prefix" in match.groupdict():
+                prefix = (match.group("prefix") or "").upper()
+            else:
+                prefix = match.group(0).upper() if match else ""
+
+            if not prefix or (allowed and prefix not in allowed):
+                _make_issue(
+                    issues,
+                    severity="warning",
+                    type_="material_conflict",
+                    entity=text["entity"],
+                    layer=text["layer"],
+                    coordinates=text["point"],
+                    message=(
+                        f"编号 '{text['text']}' 的材料前缀 "
+                        f"'{prefix or '未知'}' 不在允许集合内"
+                    ),
+                    suggestion="确认材料编号，或更新画像 allowed_material_prefixes",
+                )
+
+
 def audit_drawing(
     filepath: str | Path,
     profile: DrawingProfile,
@@ -1192,6 +1267,7 @@ def audit_drawing(
     _add_duplicate_panel_issues(panels, profile, issues)
     _add_small_area_issues(panels, profile, issues)
     _add_hole_outside_panel_issues(doc, profile, panels, issues)
+    _add_panel_confidence_issues(panels, profile, issues)
 
     texts = _collect_profile_number_texts(doc, profile)
     _add_duplicate_text_issues(texts, issues)
@@ -1201,6 +1277,13 @@ def audit_drawing(
         texts,
         assignments,
         matched_texts,
+        profile,
+        issues,
+    )
+    _add_material_conflict_issues(
+        panels,
+        texts,
+        assignments,
         profile,
         issues,
     )
@@ -1243,6 +1326,8 @@ _AUDIT_ISSUE_LABELS = {
     "conflicting_number_in_panel": "编号冲突",
     "suspicious_small_area": "面积过小",
     "non_panel_text": "非编号文字",
+    "low_confidence_entity": "低置信度实体",
+    "material_conflict": "材料冲突",
 }
 
 

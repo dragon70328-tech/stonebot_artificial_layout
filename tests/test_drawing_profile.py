@@ -290,3 +290,48 @@ def test_audit_detects_hole_outside_panel(tmp_path):
     _write_dxf(path, add_entities)
     issues = audit_drawing(path, _test_profile())
     assert any(issue.type == "hole_outside_panel" for issue in issues)
+
+
+def test_audit_detects_low_confidence_line_panel(tmp_path):
+    path = tmp_path / "low_confidence_panel.dxf"
+
+    def add_entities(msp):
+        msp.add_line((0, 0), (100, 0), dxfattribs={"layer": "PANEL"})
+        msp.add_line((100, 0), (100, 100), dxfattribs={"layer": "PANEL"})
+        msp.add_line((100, 100), (0, 100), dxfattribs={"layer": "PANEL"})
+        msp.add_line((0, 100), (0, 0), dxfattribs={"layer": "PANEL"})
+        text = msp.add_text("01B-1", dxfattribs={"layer": "NUM"})
+        text.set_placement((50, 50))
+
+    _write_dxf(path, add_entities)
+    issues = audit_drawing(path, _test_profile())
+    assert any(issue.type == "low_confidence_entity" for issue in issues)
+
+
+def test_audit_detects_material_conflict(tmp_path):
+    path = tmp_path / "material_conflict.dxf"
+    profile = DrawingProfile(
+        name="material_test",
+        version="1.0.0",
+        panel_layer="PANEL",
+        use_hatch=False,
+        number_layers=["NUM"],
+        build_hierarchy=False,
+        exclude_entity_types=[],
+        exclude_linetypes=[],
+        material_group_enabled=True,
+        material_prefix_pattern=r"^(?P<prefix>\d{2}B)",
+        allowed_material_prefixes=["01B"],
+    )
+
+    def add_entities(msp):
+        msp.add_lwpolyline(
+            [(0, 0), (100, 0), (100, 100), (0, 100), (0, 0)],
+            dxfattribs={"layer": "PANEL"},
+        )
+        text = msp.add_text("02B-1", dxfattribs={"layer": "NUM"})
+        text.set_placement((50, 50))
+
+    _write_dxf(path, add_entities)
+    issues = audit_drawing(path, profile)
+    assert any(issue.type == "material_conflict" for issue in issues)
