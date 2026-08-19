@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import ezdxf
+from ezdxf.enums import TextEntityAlignment
 
 from src.drawing_profile import (
     DrawingProfile,
@@ -210,3 +211,82 @@ def test_read_dxf_with_profile_reads_hatch_panels(tmp_path):
     assert len(parts) == 1
     assert parts[0]["original_number"] == "01B-1"
     assert parts[0]["outer_polygon"].area > 0
+
+
+def test_audit_detects_open_chain(tmp_path):
+    path = tmp_path / "open_chain.dxf"
+
+    def add_entities(msp):
+        msp.add_line((0, 0), (100, 0), dxfattribs={"layer": "PANEL"})
+
+    _write_dxf(path, add_entities)
+    issues = audit_drawing(path, _test_profile())
+    assert any(issue.type == "open_chain" for issue in issues)
+
+
+def test_audit_detects_self_intersecting_geometry(tmp_path):
+    path = tmp_path / "self_intersecting.dxf"
+
+    def add_entities(msp):
+        msp.add_lwpolyline(
+            [(0, 0), (100, 100), (100, 0), (0, 100), (0, 0)],
+            dxfattribs={"layer": "PANEL"},
+            format="xy",
+        )
+
+    _write_dxf(path, add_entities)
+    issues = audit_drawing(path, _test_profile())
+    assert any(issue.type == "self_intersecting_geometry" for issue in issues)
+
+
+def test_audit_detects_duplicate_label(tmp_path):
+    path = tmp_path / "duplicate_label.dxf"
+
+    def add_entities(msp):
+        msp.add_lwpolyline(
+            [(0, 0), (100, 0), (100, 100), (0, 100), (0, 0)],
+            dxfattribs={"layer": "PANEL"},
+        )
+        msp.add_lwpolyline(
+            [(200, 0), (300, 0), (300, 100), (200, 100), (200, 0)],
+            dxfattribs={"layer": "PANEL"},
+        )
+        text1 = msp.add_text("01B-1", dxfattribs={"layer": "NUM"})
+        text1.set_placement((50, 50))
+        text2 = msp.add_text("01B-1", dxfattribs={"layer": "NUM"})
+        text2.set_placement((250, 50))
+
+    _write_dxf(path, add_entities)
+    issues = audit_drawing(path, _test_profile())
+    assert any(issue.type == "duplicate_label" for issue in issues)
+
+
+def test_audit_detects_number_outside_panel(tmp_path):
+    path = tmp_path / "number_outside_panel.dxf"
+
+    def add_entities(msp):
+        msp.add_lwpolyline(
+            [(0, 0), (100, 0), (100, 100), (0, 100), (0, 0)],
+            dxfattribs={"layer": "PANEL"},
+        )
+        text = msp.add_text("01B-1", dxfattribs={"layer": "NUM"})
+        text.set_placement((100, 50), align=TextEntityAlignment.MIDDLE_CENTER)
+
+    _write_dxf(path, add_entities)
+    issues = audit_drawing(path, _test_profile())
+    assert any(issue.type == "number_outside_panel" for issue in issues)
+
+
+def test_audit_detects_hole_outside_panel(tmp_path):
+    path = tmp_path / "hole_outside_panel.dxf"
+
+    def add_entities(msp):
+        msp.add_lwpolyline(
+            [(0, 0), (100, 0), (100, 100), (0, 100), (0, 0)],
+            dxfattribs={"layer": "PANEL"},
+        )
+        msp.add_circle((300, 300), 20, dxfattribs={"layer": "PANEL"})
+
+    _write_dxf(path, add_entities)
+    issues = audit_drawing(path, _test_profile())
+    assert any(issue.type == "hole_outside_panel" for issue in issues)

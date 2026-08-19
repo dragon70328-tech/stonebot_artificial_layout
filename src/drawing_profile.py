@@ -832,7 +832,7 @@ def _add_line_chain_issues(
             _make_issue(
                 issues,
                 severity="warning",
-                type_="unclosed_geometry",
+                type_="open_chain",
                 entity=line,
                 layer=getattr(line.dxf, "layer", "0") or "0",
                 coordinates=_entity_coordinates(line),
@@ -892,7 +892,7 @@ def _add_invalid_geometry_issues(
                 _make_issue(
                     issues,
                     severity="error",
-                    type_="invalid_geometry",
+                    type_="self_intersecting_geometry",
                     entity=entity,
                     layer=layer,
                     coordinates=_entity_coordinates(entity),
@@ -903,7 +903,7 @@ def _add_invalid_geometry_issues(
                 _make_issue(
                     issues,
                     severity="warning",
-                    type_="invalid_geometry",
+                    type_="self_intersecting_geometry",
                     entity=entity,
                     layer=layer,
                     coordinates=_entity_coordinates(entity),
@@ -973,7 +973,52 @@ def _add_small_area_issues(
                 layer=profile.panel_layer or "",
                 coordinates=(float(centroid.x), float(centroid.y)),
                 message=f"面板面积 {panel['area']:.2f} 小于阈值 {profile.small_area_threshold:.2f}",
-                suggestion="请人工确认它是否需要排板；若为孔洞/辅助线，请排除",
+            suggestion="请人工确认它是否需要排板；若为孔洞/辅助线，请排除",
+        )
+
+
+def _add_hole_outside_panel_issues(
+    doc: ezdxf.document.Drawing,
+    profile: DrawingProfile,
+    panels: list[dict[str, Any]],
+    issues: list[DrawingIssue],
+) -> None:
+    if not panels:
+        return
+
+    excluded_types = set(profile.exclude_entity_types)
+    for entity in doc.modelspace():
+        if entity.dxftype() != "CIRCLE":
+            continue
+        if "CIRCLE" in excluded_types:
+            continue
+
+        hole_polygon = _entity_to_polygon(entity)
+        if hole_polygon is None or hole_polygon.is_empty or hole_polygon.area <= 0.01:
+            continue
+
+        contained = False
+        for panel in panels:
+            if panel["area"] <= hole_polygon.area + 1e-9:
+                continue
+            try:
+                if panel["outer_polygon"].contains(hole_polygon):
+                    contained = True
+                    break
+            except Exception:
+                continue
+
+        if not contained:
+            layer = getattr(entity.dxf, "layer", "0") or "0"
+            _make_issue(
+                issues,
+                severity="warning",
+                type_="hole_outside_panel",
+                entity=entity,
+                layer=layer,
+                coordinates=_entity_coordinates(entity),
+                message="CIRCLE 疑似孔洞，但未包含在任何面板外轮廓内",
+                suggestion="检查孔洞位置、面板边界，或删除多余圆",
             )
 
 
@@ -1046,6 +1091,23 @@ def _add_number_assignment_issues(
             _normalize_label(texts[index]["text"], profile)
             for index in assignments.get(panel_index, [])
         }
+        for text_index in assignments.get(panel_index, []):
+            text = texts[text_index]
+            point = Point(text["point"][0], text["point"][1])
+            try:
+                if not panel["polygon"].contains(point):
+                    _make_issue(
+                        issues,
+                        severity="warning",
+                        type_="number_outside_panel",
+                        entity=text["entity"],
+                        layer=text["layer"],
+                        coordinates=text["point"],
+                        message=f"编号 '{text['text']}' 的插入点不在面板内",
+                        suggestion="确认编号插入点/引线归属；若编号确实属于该面板，可标记已接受",
+                    )
+            except Exception:
+                continue
         if not labels:
             centroid = panel["centroid"]
             _make_issue(
@@ -1070,6 +1132,31 @@ def _add_number_assignment_issues(
                 message=f"同一面板内出现多个不同编号：{', '.join(sorted(labels))}",
                 suggestion="确认编号插入点/引线归属，删除错误编号",
             )
+
+    label_to_panels: dict[str, list[tuple[float, float]]] = {}
+    for panel in panels:
+        panel_index = panel["index"]
+        for text_index in assignments.get(panel_index, []):
+            label = _normalize_label(texts[text_index]["text"], profile)
+            centroid = panel["centroid"]
+            label_to_panels.setdefault(label, []).append(
+                (float(centroid.x), float(centroid.y))
+            )
+
+    for label, panel_coordinates in label_to_panels.items():
+        if len(panel_coordinates) <= 1:
+            continue
+        x, y = panel_coordinates[0]
+        _make_issue(
+            issues,
+            severity="warning",
+            type_="duplicate_label",
+            entity=None,
+            layer=profile.panel_layer or "",
+            coordinates=(x, y),
+            message=f"编号 '{label}' 出现在 {len(panel_coordinates)} 个面板中",
+            suggestion="确认相同编号是否需要合并数量，或改为唯一编号",
+        )
 
     for index, text in enumerate(texts):
         if index not in matched_texts:
@@ -1104,6 +1191,7 @@ def audit_drawing(
     panels = _extract_profile_panels(doc, profile)
     _add_duplicate_panel_issues(panels, profile, issues)
     _add_small_area_issues(panels, profile, issues)
+    _add_hole_outside_panel_issues(doc, profile, panels, issues)
 
     texts = _collect_profile_number_texts(doc, profile)
     _add_duplicate_text_issues(texts, issues)
@@ -1143,10 +1231,15 @@ _AUDIT_ISSUE_LABELS = {
     "excluded_linetype_entity": "辅助线型",
     "unclosed_geometry": "未闭合",
     "invalid_geometry": "无效几何",
+    "self_intersecting_geometry": "自相交",
+    "open_chain": "开放链",
     "duplicate_text": "重复文字",
+    "duplicate_label": "重复编号",
     "duplicate_geometry": "重复图形",
     "panel_without_number": "缺编号",
     "number_without_panel": "编号无面板",
+    "number_outside_panel": "编号在面板外",
+    "hole_outside_panel": "孔洞在面板外",
     "conflicting_number_in_panel": "编号冲突",
     "suspicious_small_area": "面积过小",
     "non_panel_text": "非编号文字",
