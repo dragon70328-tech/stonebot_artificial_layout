@@ -48,6 +48,7 @@ from src.drawing_profile import (
     write_audit_dxf,
 )
 from src.visual_evidence import write_issue_evidence_svg
+from src.visual_renderer import write_dxf_overview_svg
 from src.contracts import (
     DrawingIssue as ContractDrawingIssue,
     IssueSeverity,
@@ -358,6 +359,12 @@ def run_audit(
         encoding="utf-8",
     )
     write_audit_dxf(dxf_path, issues, audit_dxf)
+    overview_svg = out_dir / f"{stem}_overview.svg"
+    try:
+        write_dxf_overview_svg(dxf_path, overview_svg, issues=issues)
+    except Exception as exc:
+        print(f"警告：生成整图检查 SVG 失败 - {exc}")
+        overview_svg = None
 
     review_state = ReviewState(
         review_id=recheck.child_review_id if recheck else f"review_{current_hash[:16]}",
@@ -382,6 +389,8 @@ def run_audit(
         )
     print(f"JSON: {audit_json}")
     print(f"高亮 DXF: {audit_dxf}")
+    if overview_svg is not None:
+        print(f"检查图: {overview_svg}")
     print(f"状态: {state_json}")
     if recheck is not None:
         print(

@@ -92,6 +92,12 @@ def test_run_audit_writes_contract_json(monkeypatch, tmp_path):
     monkeypatch.setattr(app, "audit_drawing", lambda path, prof: [legacy_issue])
     monkeypatch.setattr(app, "make_output_dir", lambda path: tmp_path)
     monkeypatch.setattr(app, "write_issue_evidence_svg", lambda path, issues, out_dir: [])
+    overview_paths = []
+    monkeypatch.setattr(
+        app,
+        "write_dxf_overview_svg",
+        lambda source, output, issues=None: overview_paths.append(Path(output)) or Path(output),
+    )
     written_paths = []
     monkeypatch.setattr(
         app,
@@ -107,6 +113,7 @@ def test_run_audit_writes_contract_json(monkeypatch, tmp_path):
     assert payload["issue_count"] == 1
     assert payload["issues"][0]["issue_type"] == "unclosed_geometry"
     assert len(written_paths) == 1
+    assert overview_paths == [tmp_path / "sample_overview.svg"]
     state_path = tmp_path / "sample_review_state.json"
     assert state_path.exists()
     state_payload = json.loads(state_path.read_text(encoding="utf-8"))
@@ -173,6 +180,11 @@ def test_run_audit_recheck_marks_fixed_and_new(monkeypatch, tmp_path):
     monkeypatch.setattr(app, "audit_drawing", lambda path, prof: current_issues)
     monkeypatch.setattr(app, "make_output_dir", lambda path: tmp_path)
     monkeypatch.setattr(app, "write_issue_evidence_svg", lambda path, issues, out_dir: [])
+    monkeypatch.setattr(
+        app,
+        "write_dxf_overview_svg",
+        lambda source, output, issues=None: Path(output),
+    )
     monkeypatch.setattr(
         app,
         "write_audit_dxf",
