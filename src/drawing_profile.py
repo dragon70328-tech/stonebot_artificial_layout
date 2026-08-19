@@ -348,10 +348,17 @@ def _hatch_edge_points(path, arc_segments: int = 32) -> list[tuple[float, float]
     return deduped
 
 
-def _hatch_polygon_from_paths(paths) -> tuple[Polygon, list[Polygon]] | None:
+def _hatch_polygon_from_paths(paths) -> tuple[Polygon, list[Polygon], Polygon] | None:
     path_polygons: list[Polygon] = []
     for path in paths:
-        points = _hatch_edge_points(path)
+        if hasattr(path, "vertices"):
+            points = [
+                (float(vertex[0]), float(vertex[1]))
+                for vertex in path.vertices
+                if len(vertex) >= 2
+            ]
+        else:
+            points = _hatch_edge_points(path)
         if len(points) < 4:
             continue
         polygon = Polygon(points)
@@ -370,7 +377,7 @@ def _hatch_polygon_from_paths(paths) -> tuple[Polygon, list[Polygon]] | None:
         combined = outer.difference(unary_union(holes))
         if isinstance(combined, MultiPolygon):
             combined = max(combined.geoms, key=lambda geom: geom.area)
-    return combined, holes
+    return combined, holes, outer
 
 
 def _polygons_from_line_entities(line_entities) -> list[Polygon]:
@@ -420,9 +427,13 @@ def _has_hatch_entities(
 def _extract_profile_panels(
     doc: ezdxf.document.Drawing,
     profile: DrawingProfile,
+    panel_layer_override: list[str] | None = None,
+    exclude_layers: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     panel_layer = profile.panel_layer or None
-    panel_layers = [panel_layer] if panel_layer else None
+    panel_layers = panel_layer_override or ([panel_layer] if panel_layer else None)
+    allowed_panel_layers = set(panel_layers) if panel_layers else None
+    excluded_layers = {value for value in (exclude_layers or [])}
     panels: list[dict[str, Any]] = []
 
     if profile.use_hatch:
@@ -431,19 +442,21 @@ def _extract_profile_panels(
             if entity.dxftype() != "HATCH":
                 continue
             layer = getattr(entity.dxf, "layer", "0") or "0"
+            if layer in excluded_layers:
+                continue
             if hatch_layer is not None and layer != hatch_layer:
                 continue
             result = _hatch_polygon_from_paths(entity.paths)
             if result is None:
                 continue
-            combined, holes = result
+            combined, holes, outer = result
             if combined.is_empty or combined.area <= 0.01:
                 continue
             panels.append(
                 {
                     "index": len(panels),
                     "polygon": combined,
-                    "outer_polygon": combined,
+                    "outer_polygon": outer,
                     "holes": holes,
                     "centroid": combined.centroid,
                     "area": combined.area,
@@ -456,6 +469,7 @@ def _extract_profile_panels(
     polygon_items = extract_closed_polygons(
         doc,
         panel_layers=panel_layers,
+        exclude_layers=exclude_layers,
         exclude_linetypes=profile.exclude_linetypes,
     )
     if polygon_items:
@@ -509,7 +523,9 @@ def _extract_profile_panels(
         if entity.dxftype() != "LINE":
             continue
         layer = getattr(entity.dxf, "layer", "0") or "0"
-        if panel_layer and layer != panel_layer:
+        if layer in excluded_layers:
+            continue
+        if allowed_panel_layers and layer not in allowed_panel_layers:
             continue
         linetype = _linetype_name(entity, doc).upper()
         if linetype in excluded_linetypes:
@@ -536,8 +552,10 @@ def _extract_profile_panels(
 def _collect_profile_number_texts(
     doc: ezdxf.document.Drawing,
     profile: DrawingProfile,
+    exclude_layers: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     allowed_layers = set(profile.number_layers)
+    excluded_layers = {value for value in (exclude_layers or [])}
     pattern = profile.compiled_label_pattern()
     texts: list[dict[str, Any]] = []
 
@@ -545,6 +563,8 @@ def _collect_profile_number_texts(
         if entity.dxftype() not in ("TEXT", "MTEXT"):
             continue
         layer = getattr(entity.dxf, "layer", "0") or "0"
+        if layer in excluded_layers:
+            continue
         if allowed_layers and layer not in allowed_layers:
             continue
         try:
@@ -635,6 +655,59 @@ def _assign_texts_to_panels(
             matched_texts.add(best_index)
 
     return assignments, matched_texts
+
+
+def read_dxf_with_profile(
+    filepath: str | Path,
+    profile: DrawingProfile,
+    panel_layers: list[str] | None = None,
+    exclude_layers: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], ezdxf.document.Drawing]:
+    """按图纸画像读取 DXF 并返回与 read_dxf 相同结构的 parts_data。
+
+    面板来源优先使用画像中的 HATCH/LINE 规则；编号归属使用
+    point_then_bbox：编号插入点优先，其次用文字包围盒与面板的重叠比例补配。
+    """
+    filepath = Path(filepath)
+    doc = ezdxf.readfile(str(filepath))
+    panels = _extract_profile_panels(
+        doc,
+        profile,
+        panel_layer_override=panel_layers,
+        exclude_layers=exclude_layers,
+    )
+    texts = _collect_profile_number_texts(
+        doc,
+        profile,
+        exclude_layers=exclude_layers,
+    )
+    assignments, _ = _assign_texts_to_panels(panels, texts, profile)
+
+    parts_data: list[dict[str, Any]] = []
+    for panel in panels:
+        text_indexes = assignments.get(panel["index"], [])
+        original_number = None
+        if text_indexes:
+            original_number = _normalize_label(
+                texts[text_indexes[0]]["text"],
+                profile,
+            )
+
+        centroid = panel["centroid"]
+        parts_data.append(
+            {
+                "polygon": panel["polygon"],
+                "outer_polygon": panel["outer_polygon"],
+                "holes": panel["holes"],
+                "centroid": (float(centroid.x), float(centroid.y)),
+                "area": panel["area"],
+                "original_number": original_number,
+                "index": panel["index"],
+                "outer_handle": panel.get("handle"),
+                "hole_handles": [],
+            }
+        )
+    return parts_data, doc
 
 
 def _add_entity_filter_issues(

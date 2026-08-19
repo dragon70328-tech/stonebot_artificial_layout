@@ -1,25 +1,40 @@
-﻿# Agent Instructions - 人造石台面 DXF 排板系统
+﻿# Agent Instructions - 人造石加工规划系统
 
 ## Role
-人造石台面排版系统，读取 CAD 导出的 DXF 文件，识别实线封闭图形作为规格台面板，
-自动匹配原始编号，在指定尺寸大板内进行二维不规则排样，输出排板 DXF 和出材率报告。
+人造石加工规划系统，读取 CAD 导出的 DXF 文件，识别实线封闭图形作为规格件
+（台面板、挡水条、异形件等），自动匹配原始编号，在指定尺寸大板内进行二维不规则
+排样，输出排板 DXF 和出材率报告。仅接受 DXF 输入，其他格式须先由用户自行转为 DXF。
+
+## 长期目标
+SaaS 化人造石加工规划系统围绕五个支柱建设：项目架构约束、本体/数据契约、工具/确定性执行、
+调度循环、边界。AI 只生成结构化意图和配置，不直接执行生产代码；真实执行由可信
+Python 工具完成，工作流状态机统一调度。详见 `docs/saas-architecture-goal.md`。
+
+当前读图范围仅 DXF 一种格式；DWG 转换与 PDF/手绘草图读图均已放弃
+（2026-08-19 范围调整，相关代码归档于 `_archive/legacy/intake_dwg_pdf/`）。
 
 ## Project Structure
 ```
 stonebot_artificial_layout/
   AGENTS.md             # 本文件
   main.py               # CLI 入口（命令行排板）
-  template_v3.py        # 模板排板：以历史排板结果为模板对号入座（老项目改版用）
   requirements.txt      # Python 依赖
+  _archive/             # 归档遗留脚本、环境文件、备份与散落输出
   src/
     dxf_reader.py       # DXF 读取：提取封闭图形、构建层级、匹配编号
     dxf_writer.py       # DXF 写入：排板结果、编号检查文件
     models.py           # 数据模型：Part / Sheet / NestingResult
+    contracts.py        # 读图数据契约（Pydantic，审图/复检状态）
     nesting.py          # 排板引擎：多轮贪心 BFD + LNS 优化
+    deepnest_engine.py  # 水刀/激光 DeepNest/BLF 排板引擎
+    pairing.py          # 相同形状 180° 共边配对预排（可选增强）
+    drawing_profile.py  # 图纸画像匹配、结构化读图与编号识别
+    visual_evidence.py  # 审图问题视觉证据（SVG 高亮）
     numbering.py        # 编号管理
     postprocess.py       # 后处理：四边压实、边缘对齐、间距强制；不改角度与板归属
     constraints.py      # 本体约束：工艺规则、材料规格、排板策略
     units.py            # 单位制切换
+  drawing_profiles/     # 项目级图纸画像 JSON
   sample/               # 输入样本 DXF
   output/               # 输出目录
   tests/                # 测试
@@ -36,6 +51,9 @@ stonebot_artificial_layout/
    排除 ZIGZAG（大样图标记）、DASHED（虚线）等非规格板图形
 3. 封闭判断：LWPolyline.closed=True 或首尾点距离 < 0.01
 4. 实体转 Polygon：LWPolyline -> 顶点坐标；Circle -> 64段近似；Spline -> flattening(0.1)
+5. 若自动匹配到 `drawing_profiles/*.json` 图纸画像，则 `panel_layer`、
+   `hatch_layer`、`use_hatch`、`exclude_entity_types`、`closed_tolerance`
+   由画像提供，覆盖上述通用默认值。
 
 ### Step 2: 构建面板层级（外轮廓 vs 孔洞）
 
@@ -50,10 +68,20 @@ stonebot_artificial_layout/
 
 ### Step 3: 匹配原始编号
 
-1. 从"编号"层收集短文本（<15 字符）作为候选池
-2. 每个外轮廓取最近未用编号（距离 < 5000 单位）
-3. 贪心 1:1 匹配保证唯一性
-4. 无匹配的自动编号 P-XXXX
+自动匹配 `drawing_profiles/*.json` 图纸画像时，使用画像中的编号识别规则：
+
+1. `number_layers`：从指定的多个 TEXT/MTEXT 图层收集候选编号
+2. `label_pattern`：按正则识别并清洗编号，具体格式由画像定义
+3. `assignment_mode=point_then_bbox`：先用编号点落入面板判断归属，
+   再用文本包围盒与面板重叠比例补配
+4. 贪心 1:1 匹配保证唯一性，冲突按 `conflict_resolution` 处理
+5. 无匹配时保持原编号为空，由 `assign_numbers` 决定跳过或自动编号 `P-XXXX`
+
+未匹配到图纸画像时，保留旧回退逻辑：
+
+- 从含“编”字的图层收集短文本，或从所有 TEXT/MTEXT 中按常见编号形态过滤
+- 每个外轮廓取最近未用编号，默认搜索半径可随图面坐标偏移调整（如 5000）
+- 无匹配的自动编号 `P-XXXX`
 
 ### Step 4: 生成编号检查 DXF（原位）
 
@@ -64,11 +92,30 @@ stonebot_artificial_layout/
 - 坐标保持原位，不做平移旋转
 - 用途：用户检查面板识别和编号准确性
 
+### Step 4.5: 材料分组（仅启用图纸画像的项目）
+
+启用 `material_group_enabled` 的图纸画像，按材料前缀分别排板：
+
+- `material_prefix_pattern` 提取材料前缀
+- `allowed_material_prefixes` 限定允许排板的材料前缀集合
+- 无允许材料前缀的零件不排板，直接跳过
+- 每种材料单独进入排板引擎，不同材料绝不共板
+- 报告中按 `material_group` 输出每组的件数、板数、出材率
+
 ### Step 5: 排板
 
 后处理由独立的 PostProcessor 在校验前执行（可选），与排板算法解耦。
 
-算法：多轮贪心 BFD + 大邻域搜索（LNS）
+加工方式由 `--process` 或 `NestingProfile.processing_class` 决定：
+
+- `bridge`：走 `src/nesting.py`，多轮贪心 BFD + 大邻域搜索（LNS）
+- `waterjet` / `laser`：走 `src/deepnest_engine.py`，Bottom-Left Fill + 滑动压实
+- `--pairing`：水刀 DeepNest 分支先做相同形状 180° 共边配对预排
+- `--no-rotation`：强制 `rotation=[0]`、`arbitrary_rotation=False`
+- `first_part_left_edge=True` 时，每张板首件最长直边贴大板左边缘；
+  禁止旋转时若原图最长边不是竖直方向，该规则无法保证，会回退为普通左下放置
+
+桥切机原算法：
 
 1. 创建 Part 对象：outer_polygon 用于碰撞，holes 跟随变换
 2. 多轮配置：sort（short/area/long/jitter）× mode（skyline/column/contact）× seed
@@ -97,12 +144,15 @@ stonebot_artificial_layout/
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | rotation | list[int] | 允许的旋转角度，如 [0] 或 [0,90,180,270] |
+| arbitrary_rotation | bool | 是否允许任意角度旋转（水刀/激光 DeepNest） |
 | min_gap | float | 最小切割间距 mm，0=不要求 |
 | group_mode | str/None | "one_set_per_sheet" 或 None |
 | slide_to_edge | bool | 排板后推边压实，空出内部切割通道 |
 | align_edges | bool | 推边时尽量对齐相邻面板边缘 |
 | sheet_thickness | float | 大板厚度 mm（记录用） |
 | edge_margin | float | 面板距板边最小距离，通常 0 |
+| processing_class | str | `bridge` 或 `waterjet_laser` |
+| uses_deepnest | bool | 由 processing_class 推导，水刀/激光为 True |
 
 ### 预置模板
 
@@ -112,6 +162,8 @@ stonebot_artificial_layout/
 | min_sheets | [0,90,180,270] | 0 | 无 | 允许 | 最少板数 |
 | balanced | [0,90,180,270] | 60mm | 无 | 允许 | 折中 |
 | quick | [0,90,180,270] | 0 | 无 | 允许 | 快速预览 |
+| waterjet | [0,90,180,270] | 0 | 无 | 允许 | 水刀 DeepNest |
+| laser | [0,90,180,270] | 0 | 无 | 允许 | 激光 DeepNest |
 
 ### 使用方式
 
@@ -134,6 +186,18 @@ python main.py input.dxf 3200 1600 20 --quick --special-size 3225x1625 --report-
 
 # 特殊板会自动尝试两张头尾相接共用一张；确认板数后继续后处理
 python main.py input.dxf 3200 1600 20 --profile min_sheets --special-size 3225x1625 --quick --budget 30 --no-confirm
+
+# 水刀 DeepNest（自动旋转）
+python main.py input.dxf 3200 1600 20 --process waterjet --quick --budget 0 --no-confirm
+
+# 水刀 DeepNest + 相同形状共边配对（可选增强）
+python main.py input.dxf 3200 1600 20 --process waterjet --pairing --quick --budget 0 --no-confirm
+
+# 水刀 DeepNest，禁止旋转但启用共边配对
+python main.py input.dxf 3200 1600 20 --process waterjet --no-rotation --pairing --quick --budget 0 --no-confirm
+
+# 水刀 DeepNest，禁止旋转且不配对
+python main.py input.dxf 3200 1600 20 --process waterjet --no-rotation --quick --budget 0 --no-confirm
 ```
 
 ## 关键经验
@@ -147,6 +211,19 @@ ZIGZAG 线型的大样图标记必须排除，否则会被误识别为规格板�
 
 ### 编号匹配需考虑坐标偏移
 原图坐标可能很大（几十万单位），search_radius 默认 50 不够。按实际情况调整（如 5000）。
+
+### 多编号图层不能只靠“编”字图层
+同一图纸可能同时存在多个编号相关图层，必须用
+`DrawingProfile.number_layers` 显式指定，不能只依赖图层名含“编”的旧逻辑。
+
+### 材料前缀决定是否排板
+启用 `material_group_enabled` 后，允许材料前缀集合由
+`DrawingProfile.allowed_material_prefixes` 决定；没有允许材料前缀的零件
+即使识别为封闭图形也不排板。
+
+### 禁止旋转时首件左贴边可能不满足
+`first_part_left_edge` 要求首件最长直边贴大板左边缘；若 `--no-rotation`
+且原图最长边不是竖直方向，系统会回退为普通左下放置，此时不能保证该规则。
 
 ### CIRCLE 实体单独处理
 CIRCLE 永远是孔洞（水龙头/盆孔），不能作为外轮廓，但必须包含在层级检测中。

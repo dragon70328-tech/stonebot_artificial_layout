@@ -5,6 +5,7 @@ __pycache__/
 
 # backups
 _backup_*.zip
+_archive/
 
 # IDE
 .vscode/

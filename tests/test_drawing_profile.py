@@ -9,6 +9,7 @@ from src.drawing_profile import (
     load_profile,
     match_profile,
     rank_profiles,
+    read_dxf_with_profile,
     write_audit_json,
 )
 
@@ -158,3 +159,54 @@ def test_write_audit_json(tmp_path):
     output = write_audit_json(issues, tmp_path / "audit.json")
     assert output.exists()
     assert output.read_text(encoding="utf-8").startswith("{")
+
+
+def test_read_dxf_with_profile_reads_line_panels_and_numbers(tmp_path):
+    path = tmp_path / "line_panel.dxf"
+    doc = ezdxf.new("R2010")
+    doc.layers.add("PANEL")
+    doc.layers.add("NUM")
+    msp = doc.modelspace()
+    msp.add_line((0, 0), (100, 0), dxfattribs={"layer": "PANEL"})
+    msp.add_line((100, 0), (100, 100), dxfattribs={"layer": "PANEL"})
+    msp.add_line((100, 100), (0, 100), dxfattribs={"layer": "PANEL"})
+    msp.add_line((0, 100), (0, 0), dxfattribs={"layer": "PANEL"})
+    text = msp.add_text("01B-1", dxfattribs={"layer": "NUM"})
+    text.set_placement((50, 50))
+    doc.saveas(path)
+
+    parts, _ = read_dxf_with_profile(path, _test_profile())
+    assert len(parts) == 1
+    assert parts[0]["original_number"] == "01B-1"
+
+
+def test_read_dxf_with_profile_reads_hatch_panels(tmp_path):
+    path = tmp_path / "hatch_panel.dxf"
+    profile = DrawingProfile(
+        name="hatch_test",
+        version="1.0.0",
+        panel_layer="PANEL",
+        hatch_layer="HATCH",
+        use_hatch=True,
+        number_layers=["NUM"],
+        build_hierarchy=False,
+        exclude_entity_types=[],
+        exclude_linetypes=[],
+    )
+    doc = ezdxf.new("R2010")
+    doc.layers.add("HATCH")
+    doc.layers.add("NUM")
+    msp = doc.modelspace()
+    hatch = msp.add_hatch(dxfattribs={"layer": "HATCH"})
+    hatch.paths.add_polyline_path(
+        [(0, 0), (100, 0), (100, 100), (0, 100)],
+        is_closed=True,
+    )
+    text = msp.add_text("01B-1", dxfattribs={"layer": "NUM"})
+    text.set_placement((50, 50))
+    doc.saveas(path)
+
+    parts, _ = read_dxf_with_profile(path, profile)
+    assert len(parts) == 1
+    assert parts[0]["original_number"] == "01B-1"
+    assert parts[0]["outer_polygon"].area > 0
