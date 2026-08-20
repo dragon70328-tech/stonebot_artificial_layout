@@ -12,6 +12,14 @@ BLUE = 5
 WHITE = 7
 
 
+def _largest_polygon(geom):
+    if geom is None:
+        return None
+    if geom.geom_type == "MultiPolygon":
+        return max(geom.geoms, key=lambda polygon: polygon.area)
+    return geom
+
+
 def write_nested_dxf(result: NestingResult,
                      output_path: str,
                      unit_system: str = "metric") -> None:
@@ -85,7 +93,8 @@ def _write_part_group(msp, part: Part, ox: float, oy: float,
     group_entities = []
 
     # 外轮廓
-    ext = part.outer_polygon.exterior
+    outer = _largest_polygon(part.outer_polygon)
+    ext = outer.exterior if outer is not None else None
     if ext is not None:
         pts = [(x + ox, y + oy) for x, y in ext.coords]
         e = msp.add_lwpolyline(pts, dxfattribs={"layer": layer_outer})
@@ -101,7 +110,7 @@ def _write_part_group(msp, part: Part, ox: float, oy: float,
 
     # 编号标注
     cx, cy = _label_point(part)
-    b = part.outer_polygon.bounds
+    b = outer.bounds if outer is not None else part.outer_polygon.bounds
     bw, bh = b[2] - b[0], b[3] - b[1]
     height = max(30.0, min(min(bw, bh) * 0.25, 80.0))
     height = min(height, bw / (0.72 * max(len(part.number), 1)))
@@ -155,7 +164,8 @@ def write_numbered_parts_dxf(parts: list, output_path: str,
     for part in parts:
         group_entities = []
 
-        ext = part.outer_polygon.exterior
+        outer = _largest_polygon(part.outer_polygon)
+        ext = outer.exterior if outer is not None else None
         if ext is not None:
             pts = [(x, y) for x, y in ext.coords]
             entity = msp.add_lwpolyline(pts, dxfattribs={"layer": layer_outer})
@@ -172,7 +182,7 @@ def write_numbered_parts_dxf(parts: list, output_path: str,
                 group_entities.append(entity)
 
         cx, cy = _label_point(part)
-        b = part.outer_polygon.bounds
+        b = outer.bounds if outer is not None else part.outer_polygon.bounds
         bw, bh = b[2] - b[0], b[3] - b[1]
         height = max(30.0, min(min(bw, bh) * 0.25, 80.0))
         height = min(height, bw / (0.72 * max(len(part.number), 1)))

@@ -1,0 +1,42 @@
+{
+  "case_id": "mercury",
+  "profile_name": "mercury",
+  "fingerprint": {
+    "path": "C:\\Users\\drago\\Desktop\\临时文件\\水星项目户型及排板.dxf",
+    "dxf_version": "AC1032",
+    "insunits": 1,
+    "entity_counts": {
+      "LWPOLYLINE": 1264,
+      "DIMENSION": 2522,
+      "MTEXT": 682
+    },
+    "layer_counts": {
+      "0": 4468
+    },
+    "linetype_counts": {
+      "BYLAYER": 4468
+    },
+    "has_hatch": false,
+    "has_lwpolyline": true,
+    "has_line": false,
+    "has_circle": false
+  },
+  "expected_counts": {
+    "panels": 1258,
+    "holes": 0,
+    "numbers": 1258
+  },
+  "audit_ignore_rules": [
+    {
+      "issue_type": [
+        "invalid_geometry",
+        "unclosed_geometry"
+      ],
+      "entity_type": "LWPOLYLINE",
+      "vertex_count_max": 2,
+      "action": "ignore"
+    }
+  ],
+  "source_sha256": "20c4112632a3071214d4075487447adb509259d1bf750d1fcade821027e66c26",
+  "notes": "水星项目户型及排板已验证读图案例"
+}

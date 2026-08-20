@@ -40,9 +40,11 @@ def _entity_visible(entity, min_x, min_y, max_x, max_y) -> bool:
         extents = bbox.extents([entity])
     except Exception:
         return False
-    if not extents:
+    if not isinstance(extents, tuple) or len(extents) != 2:
         return False
     ex_min, ex_max = extents
+    if ex_min is None or ex_max is None:
+        return False
     return not (
         ex_max[0] < min_x
         or ex_min[0] > max_x

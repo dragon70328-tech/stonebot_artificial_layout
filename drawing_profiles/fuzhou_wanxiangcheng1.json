@@ -1,0 +1,70 @@
+{
+  "name": "fuzhou_wanxiangcheng1",
+  "version": "1.0.0",
+  "description": "福州万象城1.dxf 读图画像：区域用料大面板不作为规格板，仅提取 ST-01水刀、ST-02整砖、ST-12整砖 图层内的封闭图形；圆孔仅认 d地面疏散指示开孔165mm 且真正落在规格板内的孔。",
+  "panel_layer": "ST-01水刀",
+  "panel_layers": [
+    "ST-01水刀",
+    "ST-02整砖",
+    "ST-12整砖"
+  ],
+  "hole_layers": [
+    "d地面疏散指示开孔165mm"
+  ],
+  "hatch_layer": null,
+  "use_hatch": false,
+  "number_layers": [
+    "0"
+  ],
+  "label_pattern": "^ST-(?P<material>\\d+)",
+  "zone_layers": [
+    "0"
+  ],
+  "zone_label_pattern": "^(?P<zone>\\d+#)$",
+  "zone_max_distance": 100000.0,
+  "material_prefix_pattern": "^(?P<prefix>ST-\\d+)",
+  "allowed_material_prefixes": [],
+  "assignment_mode": "panel_layer",
+  "room_number_format": "4F-{zone}-ST-{unit}-{index:03d}",
+  "room_max_distance": 50000.0,
+  "number_fallback_radius": 0.0,
+  "bbox_overlap_threshold": 0.5,
+  "build_hierarchy": false,
+  "conflict_resolution": "random",
+  "closed_tolerance": 1000.0,
+  "exclude_entity_types": [],
+  "exclude_entity_handles": [],
+  "exclude_linetypes": [
+    "DASH",
+    "PHANTOM"
+  ],
+  "small_area_threshold": 0.0,
+  "text_height": 40.0,
+  "low_confidence_threshold": 0.8,
+  "material_group_enabled": false,
+  "first_part_left_edge": false,
+  "expected_counts": {
+    "panels": 133,
+    "holes": 36,
+    "numbers": 133
+  },
+  "audit_ignore_rules": [
+    {
+      "issue_type": "hole_outside_panel",
+      "action": "ignore"
+    },
+    {
+      "issue_type": "duplicate_text",
+      "action": "ignore"
+    },
+    {
+      "issue_type": "open_chain",
+      "action": "ignore"
+    },
+    {
+      "issue_type": "self_intersecting_geometry",
+      "action": "ignore"
+    }
+  ],
+  "notes": "区域用料指示面板（F-地材填充/造型线）不排板；ST-02算量/ST-12算量为重复算量图层，不提取。规格板 133 件：ST-01水刀 28、ST-02整砖 86、ST-12整砖 19；孔洞 36 个。编号按最近中庭/分区标签（1#-6#）+面板图层材料生成 4F-分区-ST-材料-序号。"
+}

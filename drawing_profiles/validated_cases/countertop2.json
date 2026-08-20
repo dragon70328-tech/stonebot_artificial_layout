@@ -1,0 +1,40 @@
+{
+  "case_id": "countertop2",
+  "profile_name": "countertop2",
+  "fingerprint": {
+    "path": "C:\\Users\\drago\\Desktop\\临时文件\\countertop2.dxf",
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+      "TEXT": 153,
+      "LWPOLYLINE": 199,
+      "DIMENSION": 434,
+      "LINE": 19,
+      "MTEXT": 6
+    },
+    "layer_counts": {
+      "0": 154,
+      "毫米": 217,
+      "大样": 99,
+      "英寸": 217,
+      "D- text": 24,
+      "编号": 100
+    },
+    "linetype_counts": {
+      "BYLAYER": 706,
+      "ZIGZAG": 105
+    },
+    "has_hatch": false,
+    "has_lwpolyline": true,
+    "has_line": true,
+    "has_circle": false
+  },
+  "expected_counts": {
+    "panels": 100,
+    "holes": 0,
+    "numbers": 100
+  },
+  "audit_ignore_rules": [],
+  "source_sha256": "898edef031e1ef07140a65cfd23b05100a61bbe9751363e688a7b502b4b73bab",
+  "notes": "countertop2 已验证读图案例"
+}

@@ -32,3 +32,4 @@ output/*.bak
 
 # timestamped output subdirs
 output/*_*/
+output/.cache/

@@ -1,0 +1,48 @@
+{
+  "name": "cgr45",
+  "version": "1.0.0",
+  "description": "CGR45final.dxf 读图画像：面板边界在图层 0，编号在 编号 图层，大样/尺寸标注不参与排板；需构建孔洞层级。",
+  "panel_layer": "0",
+  "hatch_layer": null,
+  "use_hatch": false,
+  "number_layers": [
+    "编号"
+  ],
+  "label_pattern": "^(?P<material>\\d{3})-(?P<shape>[A-Z])$",
+  "material_prefix_pattern": "^\\d{3}",
+  "allowed_material_prefixes": [],
+  "assignment_mode": "point_then_bbox",
+  "bbox_overlap_threshold": 0.5,
+  "build_hierarchy": true,
+  "conflict_resolution": "random",
+  "closed_tolerance": 0.01,
+  "exclude_entity_types": [],
+  "exclude_linetypes": [
+    "ZIGZAG",
+    "DASH",
+    "PHANTOM",
+    "MOBIAN"
+  ],
+  "text_height": 40.0,
+  "small_area_threshold": 0.0,
+  "material_group_enabled": false,
+  "first_part_left_edge": false,
+  "notes": "CGR45 试点样本：203 个面板、306 个孔洞，编号全部唯一。",
+  "expected_counts": {
+    "panels": 203,
+    "holes": 306,
+    "numbers": 203
+  },
+  "audit_ignore_rules": [
+    {
+      "issue_type": [
+        "unclosed_geometry",
+        "invalid_geometry"
+      ],
+      "entity_type": "LWPOLYLINE",
+      "vertex_count_max": 2,
+      "action": "ignore",
+      "reason": "两点开放 LWPOLYLINE 为残留辅助线，不参与面板提取"
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "case_id": "cgr45",
+  "profile_name": "cgr45",
+  "fingerprint": {
+    "path": "C:\\Users\\drago\\Desktop\\临时文件\\CGR45final.dxf",
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+      "TEXT": 263,
+      "LWPOLYLINE": 709,
+      "DIMENSION": 1266,
+      "LINE": 77,
+      "CIRCLE": 153
+    },
+    "layer_counts": {
+      "0": 1725,
+      "大样": 429,
+      "尺寸标注": 111,
+      "编号": 203
+    },
+    "linetype_counts": {
+      "BYLAYER": 2039,
+      "ZIGZAG": 383,
+      "MOBIAN": 46
+    },
+    "has_hatch": false,
+    "has_lwpolyline": true,
+    "has_line": true,
+    "has_circle": true
+  },
+  "expected_counts": {
+    "panels": 203,
+    "holes": 306,
+    "numbers": 203
+  },
+  "audit_ignore_rules": [
+    {
+      "issue_type": [
+        "unclosed_geometry",
+        "invalid_geometry"
+      ],
+      "entity_type": "LWPOLYLINE",
+      "vertex_count_max": 2,
+      "action": "ignore",
+      "reason": "两点开放 LWPOLYLINE 为残留辅助线，不参与面板提取"
+    }
+  ],
+  "source_sha256": "be46958f652788d692d65d3f10cb38d6a21ebd583321d2544a289b076c16ec02",
+  "notes": "cgr45 已验证读图案例"
+}

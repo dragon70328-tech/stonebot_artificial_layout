@@ -15,7 +15,7 @@ from ezdxf import bbox
 
 
 def _escape_text(value: str | None) -> str:
-    return html.escape(value or "", quote=True)
+    return html.escape("" if value is None else str(value), quote=True)
 
 
 def _world_to_svg(

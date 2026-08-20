@@ -12,6 +12,7 @@
   ],
   "label_pattern": "^(?P<material>\\d{2}B)-?(?P<shape>\\d+)$",
   "assignment_mode": "point_then_bbox",
+  "number_fallback_radius": 1000.0,
   "bbox_overlap_threshold": 0.5,
   "build_hierarchy": false,
   "conflict_resolution": "random",
@@ -36,5 +37,19 @@
     "04B",
     "05B"
   ],
-  "first_part_left_edge": true
+  "first_part_left_edge": true,
+  "audit_ignore_rules": [
+    {
+      "issue_type": "duplicate_label",
+      "action": "ignore"
+    },
+    {
+      "issue_type": "number_outside_panel",
+      "action": "ignore"
+    },
+    {
+      "issue_type": "low_confidence_entity",
+      "action": "ignore"
+    }
+  ]
 }

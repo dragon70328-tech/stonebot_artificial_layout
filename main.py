@@ -47,6 +47,13 @@ from src.drawing_profile import (
     read_dxf_with_profile,
     write_audit_dxf,
 )
+from src.case_library import load_cases, load_case_profile, match_case
+from src.audit_cache import (
+    DEFAULT_CACHE_DIR,
+    audit_cache_key,
+    load_cached_issues,
+    save_cached_issues,
+)
 from src.visual_evidence import write_issue_evidence_svg
 from src.visual_renderer import write_dxf_overview_svg
 from src.contracts import (
@@ -258,10 +265,16 @@ def run_audit(
         sys.exit(1)
 
     print(f"matched drawing profile: {drawing_profile.name}")
-    print("开始审图...")
-    issues = audit_drawing(dxf_path, drawing_profile)
-    contract_issues = [_to_contract_issue(issue) for issue in issues]
     current_hash = _file_sha256(dxf_path)
+    cache_key = audit_cache_key(current_hash, drawing_profile)
+    issues = load_cached_issues(DEFAULT_CACHE_DIR, cache_key)
+    if issues is None:
+        print("开始审图...")
+        issues = audit_drawing(dxf_path, drawing_profile)
+        save_cached_issues(DEFAULT_CACHE_DIR, cache_key, issues)
+    else:
+        print(f"使用审计缓存: {cache_key[:24]}...")
+    contract_issues = [_to_contract_issue(issue) for issue in issues]
 
     previous_state = None
     recheck = None
@@ -320,9 +333,16 @@ def run_audit(
         fixed_issue_ids=fixed_issue_ids or [],
     )
 
-    evidence_results = write_issue_evidence_svg(
-        dxf_path, contract_issues, out_dir
-    )
+    if len(contract_issues) <= MAX_EVIDENCE_ISSUES:
+        evidence_results = write_issue_evidence_svg(
+            dxf_path, contract_issues, out_dir
+        )
+    else:
+        print(
+            f"警告：问题数量 {len(contract_issues)} 超过 "
+            f"{MAX_EVIDENCE_ISSUES}，跳过逐问题 SVG，仅生成整图检查图。"
+        )
+        evidence_results = []
     if evidence_results:
         evidence_by_issue_id = {
             item["issue_id"]: item for item in evidence_results
@@ -402,10 +422,21 @@ def run_audit(
 
 
 def resolve_drawing_profile(dxf_path: str):
-    """Match a drawing profile from drawing_profiles by file fingerprint."""
+    """Match a validated case first, then fall back to profile ranking."""
     try:
         fingerprint = analyze_drawing(dxf_path)
         profiles = load_profiles(PROJECT_ROOT / "drawing_profiles")
+        cases = load_cases(PROJECT_ROOT / "drawing_profiles" / "validated_cases")
+        case_match = match_case(fingerprint, cases, min_score=MIN_CASE_SCORE)
+        if case_match is not None:
+            case, case_score = case_match
+            profile = load_case_profile(case, profiles)
+            if profile is not None:
+                print(
+                    f"matched validated case: {case.case_id} "
+                    f"(score={case_score:.1f}, profile={profile.name})"
+                )
+                return profile
         ranked = rank_profiles(fingerprint, profiles)
     except Exception:
         return None
@@ -490,6 +521,8 @@ def print_thicknesses():
 
 EPS = 1e-6
 MIN_PROFILE_SCORE = 30.0
+MIN_CASE_SCORE = 75.0
+MAX_EVIDENCE_ISSUES = 100
 QUICK_CONFIGS = [
     ("short", "skyline", 0),
     ("short", "col", 0),
@@ -869,13 +902,16 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         drawing_profile = resolve_drawing_profile(dxf_path)
     if drawing_profile is not None:
         print(f"matched drawing profile: {drawing_profile.name} "
-              f"(panel_layer={drawing_profile.panel_layer}, "
+              f"(panel_layers={len(drawing_profile.panel_layers or ([drawing_profile.panel_layer] if drawing_profile.panel_layer else []))}, "
               f"number_layers={len(drawing_profile.number_layers)})")
         effective_panel_layers = (
             layers
             if layers is not None
-            else ([drawing_profile.panel_layer]
-                  if drawing_profile.panel_layer else None)
+            else (
+                drawing_profile.panel_layers
+                or ([drawing_profile.panel_layer]
+                    if drawing_profile.panel_layer else None)
+            )
         )
         effective_number_layers = drawing_profile.number_layers or None
         effective_label_pattern = drawing_profile.label_pattern or None

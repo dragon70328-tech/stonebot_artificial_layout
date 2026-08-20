@@ -46,3 +46,23 @@ def test_write_issue_evidence_svg_skips_missing_coordinates(tmp_path):
     )
     results = write_issue_evidence_svg("missing.dxf", [issue], tmp_path)
     assert results == []
+
+
+def test_write_issue_evidence_svg_skips_region_without_extents(tmp_path):
+    source = tmp_path / "source_with_region.dxf"
+    doc = ezdxf.new("R2010")
+    msp = doc.modelspace()
+    msp.add_line((0, 0), (100, 100))
+    msp.add_region()
+    doc.saveas(source)
+
+    issue = DrawingIssue(
+        issue_id="3",
+        severity=IssueSeverity.WARNING,
+        issue_type="unclosed_geometry",
+        coordinates=(50.0, 50.0),
+        message="unclosed",
+        status=IssueStatus.NEW,
+    )
+    results = write_issue_evidence_svg(source, [issue], tmp_path)
+    assert len(results) == 1

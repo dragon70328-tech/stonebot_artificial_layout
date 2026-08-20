@@ -1,0 +1,30 @@
+{
+  "name": "countertop2",
+  "version": "1.0.0",
+  "description": "countertop2.dxf 读图画像：面板边界位于图层 0，编号位于 编号 图层，尺寸标注为毫米/英寸。",
+  "panel_layer": "0",
+  "hatch_layer": null,
+  "use_hatch": false,
+  "number_layers": [
+    "编号"
+  ],
+  "label_pattern": "^(?P<material>\\d{3})-(?P<shape>[A-Z])$",
+  "material_prefix_pattern": "^\\d{3}",
+  "allowed_material_prefixes": [],
+  "assignment_mode": "point_then_bbox",
+  "bbox_overlap_threshold": 0.5,
+  "build_hierarchy": false,
+  "conflict_resolution": "random",
+  "closed_tolerance": 0.01,
+  "exclude_entity_types": [],
+  "exclude_linetypes": [
+    "ZIGZAG",
+    "DASH",
+    "PHANTOM"
+  ],
+  "text_height": 40.0,
+  "small_area_threshold": 100000.0,
+  "material_group_enabled": false,
+  "first_part_left_edge": false,
+  "notes": "countertop2 试点样本；100 个面板编号，无孔洞。"
+}

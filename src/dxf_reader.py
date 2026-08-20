@@ -148,7 +148,73 @@ def _entity_to_polygon(entity, num_segments: int = 64) -> Polygon | None:
     return None
 
 
-def _is_closed(entity) -> bool:
+def _point_on_segment(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+    tolerance: float = 0.01,
+) -> bool:
+    """Return True when point lies on the finite segment start-end."""
+    ab_x = end[0] - start[0]
+    ab_y = end[1] - start[1]
+    length_sq = ab_x * ab_x + ab_y * ab_y
+    if length_sq <= 1e-18:
+        return math.hypot(point[0] - start[0], point[1] - start[1]) < tolerance
+
+    ap_x = point[0] - start[0]
+    ap_y = point[1] - start[1]
+    cross = abs(ab_x * ap_y - ab_y * ap_x)
+    if cross > tolerance * math.sqrt(length_sq):
+        return False
+    dot = ab_x * ap_x + ab_y * ap_y
+    return -tolerance <= dot <= length_sq + tolerance
+
+
+def _is_recoverable_closed(entity, tolerance: float = 0.01) -> bool:
+    """Detect L-shaped polylines that are geometrically closed but have a
+    redundant trailing vertex on an existing boundary edge.
+
+    These DXF entities often have closed=False and a self-touching outline,
+    while buffer(0) repairs them to the intended polygon.
+    """
+    if not isinstance(entity, (LWPolyline, Polyline)):
+        return False
+
+    try:
+        if isinstance(entity, LWPolyline):
+            points = _lwpolyline_points(entity)
+        else:
+            points = [
+                (float(vertex.dxf.location.x), float(vertex.dxf.location.y))
+                for vertex in entity.vertices
+            ]
+    except Exception:
+        return False
+
+    if len(points) < 3:
+        return False
+
+    first = points[0]
+    last = points[-1]
+    if math.hypot(first[0] - last[0], first[1] - last[1]) < tolerance:
+        return False
+
+    last_on_existing_edge = any(
+        _point_on_segment(last, points[index], points[index + 1], tolerance)
+        for index in range(len(points) - 2)
+    )
+    if not last_on_existing_edge:
+        return False
+
+    polygon = _entity_to_polygon(entity)
+    return (
+        polygon is not None
+        and not polygon.is_empty
+        and polygon.area > 0.01
+    )
+
+
+def _is_closed(entity, tolerance: float = 0.01) -> bool:
     """判断 DXF 实体是否闭合"""
     if isinstance(entity, LWPolyline):
         if entity.closed:
@@ -156,12 +222,37 @@ def _is_closed(entity) -> bool:
         try:
             pts = list(entity.get_points())
             if len(pts) >= 3:
-                return True
+                first = pts[0][:2]
+                last = pts[-1][:2]
+                if math.hypot(
+                    first[0] - last[0],
+                    first[1] - last[1],
+                ) < tolerance:
+                    return True
+                return _is_recoverable_closed(entity, tolerance)
         except Exception:
             return False
         return False
     if isinstance(entity, Polyline):
-        return entity.is_closed
+        if getattr(entity, "is_closed", False):
+            return True
+        try:
+            points = [
+                (float(vertex.dxf.location.x), float(vertex.dxf.location.y))
+                for vertex in entity.vertices
+            ]
+        except Exception:
+            return False
+        if len(points) >= 3:
+            first = points[0]
+            last = points[-1]
+            if math.hypot(
+                first[0] - last[0],
+                first[1] - last[1],
+            ) < tolerance:
+                return True
+            return _is_recoverable_closed(entity, tolerance)
+        return False
     if isinstance(entity, (Circle, Spline)):
         return True
     if isinstance(entity, Arc):
@@ -197,7 +288,9 @@ def _linetype_name(entity, doc):
 def extract_closed_polygons(doc,
                              panel_layers = None,
                              exclude_layers = None,
-                             exclude_linetypes = None):
+                             exclude_linetypes = None,
+                             closed_tolerance: float = 0.01,
+                             exclude_handles = None):
     if exclude_linetypes is None:
         exclude_linetypes = DEFAULT_EXCLUDE_LINETYPES
     results = []
@@ -205,6 +298,8 @@ def extract_closed_polygons(doc,
 
     for entity in msp:
         layer = getattr(entity.dxf, "layer", "0") or "0"
+        if exclude_handles is not None and entity.dxf.handle in exclude_handles:
+            continue
 
         if panel_layers is not None and layer not in panel_layers:
             continue
@@ -215,7 +310,7 @@ def extract_closed_polygons(doc,
         if lt in exclude_linetypes:
             continue
 
-        if not _is_closed(entity):
+        if not _is_closed(entity, closed_tolerance):
             continue
         poly = _entity_to_polygon(entity)
         if poly is not None and not poly.is_empty and poly.area > 0.01:

@@ -1,0 +1,49 @@
+{
+  "name": "mercury",
+  "version": "1.0.0",
+  "description": "水星项目户型及排板.dxf：所有面板和户型标签均位于图层 0，MTEXT 户型标签作为编号来源。",
+  "panel_layer": "0",
+  "hatch_layer": null,
+  "use_hatch": false,
+  "number_layers": [
+    "0"
+  ],
+  "label_pattern": "^户型[:：]\\s*(?P<unit>[A-Za-z0-9\\-]+)\\s*(?P<room>.+)$",
+  "material_prefix_pattern": "^\\d{3}",
+  "allowed_material_prefixes": [],
+  "assignment_mode": "nearest_room",
+  "room_number_format": "{unit}-{room}-{index:02d}",
+  "room_max_distance": 5000.0,
+  "bbox_overlap_threshold": 0.5,
+  "build_hierarchy": false,
+  "conflict_resolution": "random",
+  "closed_tolerance": 0.1,
+  "exclude_entity_types": [],
+  "exclude_linetypes": [
+    "ZIGZAG",
+    "DASH",
+    "PHANTOM",
+    "MOBIAN"
+  ],
+  "text_height": 40.0,
+  "small_area_threshold": 0.0,
+  "material_group_enabled": false,
+  "first_part_left_edge": false,
+  "expected_counts": {
+    "panels": 1258,
+    "holes": 0,
+    "numbers": 1258
+  },
+  "audit_ignore_rules": [
+    {
+      "issue_type": [
+        "invalid_geometry",
+        "unclosed_geometry"
+      ],
+      "entity_type": "LWPOLYLINE",
+      "vertex_count_max": 2,
+      "action": "ignore"
+    }
+  ],
+  "notes": "水星项目户型石材面板：按最近户型标签生成 unit-room-序号 编号。"
+}

@@ -1,0 +1,37 @@
+{
+  "case_id": "dongguan_outlets1",
+  "profile_name": "dongguan_outlets",
+  "fingerprint": {
+    "path": "C:\\Users\\drago\\Desktop\\临时文件\\东莞奥特莱斯1.dxf",
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+      "LWPOLYLINE": 776,
+      "TEXT": 776,
+      "LINE": 5
+    },
+    "layer_counts": {
+      "石材分缝": 781,
+      "石材箱号": 751,
+      "石材编号": 25
+    },
+    "linetype_counts": {
+      "BYLAYER": 1557
+    },
+    "has_hatch": false,
+    "has_lwpolyline": true,
+    "has_line": true,
+    "has_circle": false
+  },
+  "expected_counts": {
+    "panels": 776,
+    "holes": 0,
+    "numbers": 53
+  },
+  "audit_ignore_rules": [],
+  "exclude_entity_handles": [
+    "24E3"
+  ],
+  "source_sha256": "aa2bbfc43910e43adeccb89903299b75c3508b385d2bea4046f9c7a0f7d3ebd1",
+  "notes": "Dongguan Outlets 1 validated read profile; duplicate unlabeled panel 24E3 is excluded."
+}

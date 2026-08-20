@@ -1,0 +1,40 @@
+{
+  "case_id": "dongguan_outlets2",
+  "profile_name": "dongguan_outlets",
+  "fingerprint": {
+    "path": "C:\\Users\\drago\\Desktop\\临时文件\\东莞奥特莱斯2.dxf",
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+      "LWPOLYLINE": 1109,
+      "TEXT": 1109,
+      "REGION": 65
+    },
+    "layer_counts": {
+      "石材分缝": 1109,
+      "石材文字": 1043,
+      "石材编号": 66,
+      "石材箱号": 65
+    },
+    "linetype_counts": {
+      "BYLAYER": 2283
+    },
+    "has_hatch": false,
+    "has_lwpolyline": true,
+    "has_line": false,
+    "has_circle": false
+  },
+  "expected_counts": {
+    "panels": 1109,
+    "holes": 0,
+    "numbers": 93
+  },
+  "audit_ignore_rules": [
+    {
+      "issue_type": "duplicate_label",
+      "action": "ignore"
+    }
+  ],
+  "source_sha256": "6b444b236d31a2a5c923ba60651d2265217020c1b0a550446fea6da993ffc504",
+  "notes": "Dongguan Outlets 2 validated read profile; repeated material labels are expected."
+}

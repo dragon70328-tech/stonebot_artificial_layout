@@ -1,0 +1,53 @@
+{
+  "case_id": "fuzhou_wanxiangcheng1",
+  "profile_name": "fuzhou_wanxiangcheng1",
+  "fingerprint": {
+    "path": "C:\\Users\\drago\\Desktop\\临时文件\\福州万象城1.dxf",
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+      "INSERT": 2,
+      "LWPOLYLINE": 225,
+      "LINE": 20,
+      "CIRCLE": 173,
+      "HATCH": 17,
+      "ARC": 1,
+      "LEADER": 36,
+      "TEXT": 65,
+      "DIMENSION": 172
+    },
+    "layer_counts": {
+      "ST-01水刀": 34,
+      "ST-02算量": 12,
+      "现场实际间隔柱定位": 1,
+      "ST-12算量": 44,
+      "0": 71,
+      "灯柱定位线": 3,
+      "F-地材造型线": 72,
+      "DEFPOINTS": 3,
+      "F-地材填充": 21,
+      "d地面疏散指示开孔165mm": 344,
+      "D-智能疏散": 1,
+      "ST-02整砖": 86,
+      "ST-12整砖": 19
+    },
+    "linetype_counts": {
+      "BYLAYER": 661,
+      "EXP JT_LINE": 46,
+      "Continuous": 4
+    },
+    "has_hatch": true,
+    "has_lwpolyline": true,
+    "has_line": true,
+    "has_circle": true
+  },
+  "expected_counts": {
+    "panels": 133,
+    "holes": 36,
+    "numbers": 133
+  },
+  "audit_ignore_rules": [],
+  "exclude_entity_handles": [],
+  "source_sha256": "d85525b01c2a4b453540879b3cea36e1aaf85c79a7b9588f17e6d2fb63c07e49",
+  "notes": "福州万象城1.dxf 已验证读图案例：区域用料面板不排板，仅提取 ST-01水刀/ST-02整砖/ST-12整砖 封闭图形；孔洞仅认规格板内 d地面疏散指示开孔165mm 圆孔。"
+}

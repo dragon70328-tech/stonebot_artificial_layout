@@ -2,7 +2,12 @@ from pathlib import Path
 
 import ezdxf
 
-from src.dxf_reader import _collect_number_texts, _looks_like_number, read_dxf
+from src.dxf_reader import (
+    _collect_number_texts,
+    _looks_like_number,
+    extract_closed_polygons,
+    read_dxf,
+)
 
 
 def _write_panel_dxf(path: Path, number_layers):
@@ -73,3 +78,75 @@ def test_read_dxf_keeps_number_layer_argument_backward_compatible(tmp_path):
 
     parts, _ = read_dxf(str(path), number_layer="my_bian_layer")
     assert parts[0]["original_number"] == "99"
+
+
+def test_extract_closed_polygons_recovers_l_shaped_self_touching_outline(tmp_path):
+    path = tmp_path / "l_shape_self_touch.dxf"
+    doc = ezdxf.new("R2010")
+    doc.layers.add("PANEL")
+    msp = doc.modelspace()
+    msp.add_lwpolyline(
+        [
+            (0, 0),
+            (100, 0),
+            (100, 100),
+            (70, 100),
+            (70, 150),
+            (0, 150),
+            (0, 0),
+            (70, 0),
+        ],
+        dxfattribs={"layer": "PANEL"},
+    )
+    doc.saveas(path)
+
+    doc = ezdxf.readfile(path)
+    polygons = extract_closed_polygons(
+        doc,
+        panel_layers=["PANEL"],
+        exclude_linetypes=[],
+        closed_tolerance=0.1,
+    )
+    assert len(polygons) == 1
+
+
+def test_extract_closed_polygons_does_not_recover_plain_open_polyline(tmp_path):
+    path = tmp_path / "plain_open.dxf"
+    doc = ezdxf.new("R2010")
+    doc.layers.add("PANEL")
+    msp = doc.modelspace()
+    msp.add_lwpolyline(
+        [(0, 0), (100, 0), (100, 100)],
+        dxfattribs={"layer": "PANEL"},
+    )
+    doc.saveas(path)
+
+    doc = ezdxf.readfile(path)
+    polygons = extract_closed_polygons(
+        doc,
+        panel_layers=["PANEL"],
+        exclude_linetypes=[],
+        closed_tolerance=0.1,
+    )
+    assert polygons == []
+
+
+def test_extract_closed_polygons_excludes_handles(tmp_path):
+    path = tmp_path / "exclude_handle.dxf"
+    doc = ezdxf.new("R2010")
+    doc.layers.add("PANEL")
+    msp = doc.modelspace()
+    entity = msp.add_lwpolyline(
+        [(0, 0), (100, 0), (100, 100), (0, 100), (0, 0)],
+        dxfattribs={"layer": "PANEL"},
+    )
+    doc.saveas(path)
+
+    doc = ezdxf.readfile(path)
+    polygons = extract_closed_polygons(
+        doc,
+        panel_layers=["PANEL"],
+        exclude_linetypes=[],
+        exclude_handles={entity.dxf.handle},
+    )
+    assert polygons == []
