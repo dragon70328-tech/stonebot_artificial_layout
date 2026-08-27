@@ -562,6 +562,9 @@ def _extract_profile_panels(
 
                 outer = item["poly"]
                 holes = [hierarchy[child]["poly"] for child in item["children"]]
+                hole_handles = [
+                    hierarchy[child].get("handle") for child in item["children"]
+                ]
                 combined = outer
                 if holes:
                     combined = outer.difference(unary_union(holes))
@@ -577,6 +580,7 @@ def _extract_profile_panels(
                         "polygon": combined,
                         "outer_polygon": outer,
                         "holes": holes,
+                        "hole_handles": hole_handles,
                         "centroid": combined.centroid,
                         "area": combined.area,
                         "handle": item.get("handle"),
@@ -597,6 +601,7 @@ def _extract_profile_panels(
                         "polygon": polygon,
                         "outer_polygon": polygon,
                         "holes": [],
+                        "hole_handles": [],
                         "centroid": polygon.centroid,
                         "area": polygon.area,
                         "handle": handle,
@@ -633,6 +638,7 @@ def _extract_profile_panels(
                 "polygon": polygon,
                 "outer_polygon": polygon,
                 "holes": [],
+                "hole_handles": [],
                 "centroid": polygon.centroid,
                 "area": polygon.area,
                 "handle": None,
@@ -657,19 +663,29 @@ def _assign_profile_holes(
     if not hole_layers or not panels:
         return
 
+    assigned_handles: set[str] = set()
     for entity in doc.modelspace():
-        if entity.dxftype() != "CIRCLE":
+        dtype = entity.dxftype()
+        if dtype == "CIRCLE":
+            hole_polygon = _entity_to_polygon(entity)
+        elif dtype in ("LWPOLYLINE", "POLYLINE"):
+            if not _entity_is_closed(entity, profile.closed_tolerance):
+                continue
+            hole_polygon = _entity_to_polygon(entity)
+        else:
             continue
         layer = getattr(entity.dxf, "layer", "0") or "0"
         if layer in excluded_layers or layer not in hole_layers:
             continue
-        hole_polygon = _entity_to_polygon(entity)
         if hole_polygon is None or hole_polygon.is_empty or hole_polygon.area <= 0.01:
             continue
+        handle = str(getattr(entity.dxf, "handle", None))
 
         for panel in panels:
             if panel["area"] <= hole_polygon.area + 1e-9:
                 continue
+            if handle in panel.get("hole_handles", []):
+                break
             try:
                 if not panel["outer_polygon"].contains(hole_polygon):
                     continue
@@ -683,13 +699,18 @@ def _assign_profile_holes(
                 continue
 
             panel["holes"].append(hole_polygon)
-            panel["hole_handles"] = panel.get("hole_handles", []) + [
-                getattr(entity.dxf, "handle", None)
-            ]
+            panel["hole_handles"] = panel.get("hole_handles", []) + [handle]
             panel["polygon"] = combined
             panel["area"] = combined.area
             panel["centroid"] = combined.centroid
+            assigned_handles.add(handle)
             break
+
+    if assigned_handles:
+        panels[:] = [
+            panel for panel in panels
+            if str(panel.get("handle")) not in assigned_handles
+        ]
 
 
 def _collect_profile_number_texts(

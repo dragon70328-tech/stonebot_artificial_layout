@@ -1,0 +1,63 @@
+{
+  "name": "canada3l",
+  "version": "1.0.0",
+  "description": "加拿大3L.dxf 读图画像：面板边界位于图层 0，编号位于图层 编号；大样、标注、说明、框不参与排板。孔洞同时位于图层 0，包含圆孔与内部闭合 LWPOLYLINE。",
+  "panel_layer": "0",
+  "panel_layers": [
+    "0"
+  ],
+  "hole_layers": [
+    "0"
+  ],
+  "hatch_layer": null,
+  "use_hatch": false,
+  "number_layers": [
+    "编号"
+  ],
+  "label_pattern": "^(?P<zone>\\d+)-(?P<part>[A-Z])$",
+  "material_prefix_pattern": "^\\d+",
+  "allowed_material_prefixes": [],
+  "assignment_mode": "point_then_bbox",
+  "bbox_overlap_threshold": 0.5,
+  "build_hierarchy": true,
+  "conflict_resolution": "random",
+  "closed_tolerance": 0.01,
+  "exclude_entity_types": [],
+  "exclude_linetypes": [
+    "ZIGZAG",
+    "DASH",
+    "PHANTOM"
+  ],
+  "text_height": 40.0,
+  "small_area_threshold": 0.0,
+  "material_group_enabled": false,
+  "first_part_left_edge": false,
+  "expected_counts": {
+    "panels": 96,
+    "holes": 144,
+    "numbers": 96
+  },
+  "audit_ignore_rules": [
+    {
+      "issue_type": "low_confidence_entity",
+      "action": "ignore",
+      "reason": "317-A、318-B 两件面板由 LINE 链组成，已正确提取，低置信度不阻塞"
+    },
+    {
+      "issue_type": "number_outside_panel",
+      "action": "ignore",
+      "reason": "305-D 编号插入点位于面板边界上，已通过文字包围盒补配"
+    },
+    {
+      "issue_type": "open_chain",
+      "action": "ignore",
+      "reason": "图层 0 的开放 LINE 为辅助线/网格线，不参与面板提取"
+    },
+    {
+      "issue_type": "unclosed_geometry",
+      "action": "ignore",
+      "reason": "图层 0 的开放 LWPOLYLINE 为辅助线，不参与面板提取"
+    }
+  ],
+  "notes": "加拿大3L 试排：识别 96 件面板、144 个孔洞、96 个编号。编号格式为 分区-序号，如 302-A；未启用材料分组。"
+}
