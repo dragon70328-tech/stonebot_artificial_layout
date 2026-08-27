@@ -283,8 +283,6 @@ def _linetype_name(entity, doc):
     return lt_upper
 
 
-
-
 def extract_closed_polygons(doc,
                              panel_layers = None,
                              exclude_layers = None,
@@ -362,26 +360,6 @@ def _build_part_hierarchy(polygons: list) -> list[dict]:
         }
         for i in range(n)
     ]
-
-
-def find_number_labels(doc: ezdxf.document.Drawing,
-                       centroid: tuple[float, float],
-                       search_radius: float = 5000.0) -> str | None:
-    """
-    在指定几何中心附近查找 TEXT 或 MTEXT 编号。
-    search_radius：搜索半径（单位与 DXF 一致）
-    """
-    cx, cy = centroid
-    number_pool = _collect_number_texts(doc)
-    best_dist = float("inf")
-    best_text = None
-    for tx, ty, text in number_pool:
-        dist = ((tx - cx) ** 2 + (ty - cy) ** 2) ** 0.5
-        if dist < search_radius and dist < best_dist:
-            best_dist = dist
-            best_text = text
-    return best_text
-
 
 
 def _looks_like_number(text: str) -> bool:
@@ -519,31 +497,6 @@ def _assign_numbers_by_nearest_room(parts_data, room_labels):
             assignments[idx] = f"{label}-{seq:02d}"
     return assignments
 
-
-def _assign_unique_number(
-    doc,
-    centroid,
-    used_numbers,
-    number_pool,
-    search_radius = 20000.0,
-):
-    cx, cy = centroid
-    best_dist = float("inf")
-    best_idx = -1
-
-    for i, (tx, ty, text) in enumerate(number_pool):
-        if text in used_numbers:
-            continue
-        d = ((tx - cx) ** 2 + (ty - cy) ** 2) ** 0.5
-        if d < search_radius and d < best_dist:
-            best_dist = d
-            best_idx = i
-
-    if best_idx >= 0:
-        _, _, text = number_pool[best_idx]
-        used_numbers.add(text)
-        return text
-    return None
 
 def _assign_numbers_by_containment(parts_data: list[dict],
                                     number_pool: list) -> dict:
