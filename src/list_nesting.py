@@ -2751,21 +2751,36 @@ def build_conclusion_text(
     group_results: list[tuple[str, list[ListItem], Any]],
     sheet_sizes: list[tuple[float, float]],
     show_sheets: bool = False,
+    billing_map: dict[tuple[float, float], tuple[float, float]] | None = None,
 ) -> str:
     """生成可读的排板结论文本。
 
     show_sheets=False 时只输出总板数、总出材率和材料分组；为 True 时附加
     逐板明细。
+    billing_map 提供“可用尺寸 -> 标称计价尺寸”映射时，出材率按计价面积计算。
     """
     lines: list[str] = []
+
+    def billing_area_of(sheet) -> float:
+        if billing_map is None:
+            return sheet.width * sheet.height
+        key = (round(sheet.width, 3), round(sheet.height, 3))
+        width, height = billing_map.get(key, (sheet.width, sheet.height))
+        return width * height
+
     total_parts = sum(
         sum(item.qty for item in group_items) for _, group_items, _ in group_results
     )
     total_sheets = sum(result.total_sheets for _, _, result in group_results)
     total_net_area = sum(result.total_part_area for _, _, result in group_results)
     total_board_area = sum(result.total_sheet_area for _, _, result in group_results)
+    total_billing_area = sum(
+        billing_area_of(sheet)
+        for _, _, result in group_results
+        for sheet in result.sheets
+    )
     total_yield = (
-        total_net_area / total_board_area * 100 if total_board_area else 0.0
+        total_net_area / total_billing_area * 100 if total_billing_area else 0.0
     )
 
     if len(sheet_sizes) == 1:
@@ -2782,8 +2797,13 @@ def build_conclusion_text(
     lines.append(f"可用大板：{size_text}")
     lines.append(f"使用大板：{total_sheets} 张")
     lines.append(f"净面积：{total_net_area / 1e6:.3f} m\u00b2")
-    lines.append(f"大板总面积：{total_board_area / 1e6:.3f} m\u00b2")
-    lines.append(f"总出材率：{total_yield:.1f}%")
+    if billing_map is None:
+        lines.append(f"大板总面积：{total_board_area / 1e6:.3f} m\u00b2")
+        lines.append(f"总出材率：{total_yield:.1f}%")
+    else:
+        lines.append(f"大板总面积（可用）：{total_board_area / 1e6:.3f} m\u00b2")
+        lines.append(f"标称计价面积：{total_billing_area / 1e6:.3f} m\u00b2")
+        lines.append(f"总出材率（按计价面积）：{total_yield:.1f}%")
     lines.append("")
 
     if len(sheet_sizes) > 1:
@@ -2803,9 +2823,12 @@ def build_conclusion_text(
         lines.append("各材料分组：")
         for material, group_items, result in group_results:
             group_parts = sum(item.qty for item in group_items)
+            group_billing_area = sum(
+                billing_area_of(sheet) for sheet in result.sheets
+            )
             group_yield = (
-                result.total_part_area / result.total_sheet_area * 100
-                if result.total_sheet_area
+                result.total_part_area / group_billing_area * 100
+                if group_billing_area
                 else 0.0
             )
             material_display = material or "未分组"
@@ -2949,7 +2972,18 @@ def run_list_nesting(
             str(output_dxf_path),
             unit_system="metric",
         )
-    text = build_conclusion_text(items, group_results, layout_sizes, show_sheets)
+    billing_map = None
+    if oversize_mm > 0:
+        billing_map = {
+            (round(width + oversize_mm, 3), round(height + oversize_mm, 3)): (
+                width,
+                height,
+            )
+            for width, height in billing_sizes
+        }
+    text = build_conclusion_text(
+        items, group_results, layout_sizes, show_sheets, billing_map=billing_map
+    )
     if oversize_mm > 0 or kerf_mm > 0:
         text += _billing_summary_lines(group_results, oversize_mm)
     return text

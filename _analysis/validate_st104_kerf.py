@@ -15,7 +15,9 @@ from src.list_nesting import (  # noqa: E402
     parse_list_file,
 )
 
-FILE = r"C:\Users\drago\Desktop\临时文件\ST-104规格板清单.xlsx"
+FILE = sys.argv[1] if len(sys.argv) > 1 else (
+    r"C:\Users\drago\Desktop\临时文件\ST-104规格板清单.xlsx"
+)
 KERF = 5.0
 OVERSIZE = 30.0
 BILLING = [(2400.0, 1200.0), (2500.0, 1400.0)]
