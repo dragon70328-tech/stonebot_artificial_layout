@@ -26,6 +26,7 @@ from src.dxf_reader import read_dxf
 from src.numbering import assign_numbers
 from src.nesting import nest_parts, validate_nesting
 from src.dxf_writer import write_nested_dxf, write_numbered_parts_dxf
+from src.list_nesting import run_list_nesting
 from src.models import NestingResult, Part, Sheet
 from src.constraints import (
     NestingProfile, PROFILES, PROFILE_HELP,
@@ -123,6 +124,12 @@ def parse_args():
                    help="仅完成排板并报告大板使用量，不执行后处理和输出文件")
     p.add_argument("--special-size", type=str, default=None,
                    help="特殊面板排板尺寸，如 3225x1625")
+    p.add_argument("--sizes", type=str, default=None,
+                   help="清单排板可用大板尺寸，逗号分隔，如 2400x1200,2500x1400")
+    p.add_argument("--output-dxf", type=str, default=None,
+                   help="清单排板结果输出 DXF；相同排板只画一张并标注数量")
+    p.add_argument("--no-dxf", action="store_true",
+                   help="清单排板时不生成 DXF 文件")
 
     # 标准规格快捷选择
     p.add_argument("--list-sizes", action="store_true",
@@ -133,6 +140,8 @@ def parse_args():
     # DXF 读取
     p.add_argument("--audit", action="store_true",
                    help="仅执行读图审图并输出问题报告，不进入排板")
+    p.add_argument("--list-nest", action="store_true",
+                   help="按 Excel/PDF 规格尺寸与数量清单排板，输出文字结论")
     p.add_argument("--previous-state", type=str, default=None,
                    help="上次审图生成的 review_state.json，用于修正重传后的复检")
     p.add_argument("--accept-issue", type=str, default=None,
@@ -548,6 +557,21 @@ def default_profile_for_process(value: str | None) -> NestingProfile | None:
         return PROFILES["laser"]
     return None
 
+
+def parse_sizes_value(value: str | None) -> list[tuple[float, float]]:
+    if not value:
+        return []
+    sizes: list[tuple[float, float]] = []
+    for part in value.split(","):
+        text = part.strip().lower().replace("×", "x").replace("*", "x")
+        if not text:
+            continue
+        match = re.match(r"(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)", text)
+        if not match:
+            print(f"错误：无法识别大板尺寸 '{part}'，示例：2400x1200,2500x1400")
+            sys.exit(1)
+        sizes.append((float(match.group(1)), float(match.group(2))))
+    return sizes
 
 def parse_special_size(value: str | None) -> tuple[float, float] | None:
     if not value:
@@ -1215,6 +1239,68 @@ def main():
             ignore_issue_ids=_split_issue_ids(args.ignore_issue),
             fixed_issue_ids=_split_issue_ids(args.mark_fixed),
         )
+        return
+
+    file_suffix = Path(dxf_path).suffix.lower()
+    if args.list_nest or file_suffix in {".xlsx", ".xls", ".pdf"}:
+        unit = UnitSystem.IMPERIAL if args.imperial else UnitSystem.METRIC
+        if args.sizes:
+            raw_sizes = parse_sizes_value(args.sizes)
+            if not raw_sizes:
+                print("错误：--sizes 至少需要一个尺寸")
+                sys.exit(1)
+            sizes_mm = [
+                (convert_to_mm(width, unit), convert_to_mm(height, unit))
+                for width, height in raw_sizes
+            ]
+        else:
+            width, height = resolve_sheet_size(args)
+            if width is None or height is None:
+                print("错误：清单排板需要指定大板尺寸，"
+                      "如 python main.py input.xlsx 3200 1800 --list-nest")
+                sys.exit(1)
+            sizes_mm = [(convert_to_mm(width, unit), convert_to_mm(height, unit))]
+            special_size = parse_special_size(args.special_size)
+            if special_size:
+                sizes_mm.append(
+                    (
+                        convert_to_mm(special_size[0], unit),
+                        convert_to_mm(special_size[1], unit),
+                    )
+                )
+        thickness_mm = convert_to_mm(args.thickness, unit) if args.thickness else 20.0
+        if args.no_rotation:
+            rotations = [0]
+        elif args.rotation:
+            rotations = [int(x.strip()) for x in args.rotation.split(",")]
+        else:
+            rotations = [0, 90]
+        if args.output_dxf:
+            output_dxf_path = args.output_dxf
+        elif args.no_dxf:
+            output_dxf_path = None
+        else:
+            output_dir = PROJECT_ROOT / "output"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_dxf_path = str(
+                output_dir / f"{Path(dxf_path).stem}_list_nested.dxf"
+            )
+        try:
+            conclusion = run_list_nesting(
+                dxf_path,
+                thickness_mm=thickness_mm,
+                rotations=tuple(rotations),
+                trials=args.trials,
+                seed=args.seed,
+                sheet_sizes=sizes_mm,
+                output_dxf_path=output_dxf_path,
+            )
+            print(conclusion)
+            if output_dxf_path:
+                print(f"DXF 已生成：{output_dxf_path}")
+        except ValueError as exc:
+            print(f"错误：{exc}")
+            sys.exit(1)
         return
 
     width, height = resolve_sheet_size(args)

@@ -61,7 +61,7 @@ def write_nested_dxf(result: NestingResult,
 
 
 def _write_sheet_block(doc, sheet: Sheet, ox: float, oy: float,
-                       lb, lo, lh, ln):
+                       lb, lo, lh, ln, label: str | None = None):
     """将一张大板的排板结果写入 DXF，含图层分离和 GROUP"""
     msp = doc.modelspace()
 
@@ -75,7 +75,7 @@ def _write_sheet_block(doc, sheet: Sheet, ox: float, oy: float,
 
     # 大板编号
     sheet_label = msp.add_text(
-        f"Sheet_{sheet.index}",
+        label if label is not None else f"Sheet_{sheet.index}",
         dxfattribs={"layer": lb, "color": RED, "height": 50.0},
     )
     sheet_label.set_placement(
@@ -85,6 +85,119 @@ def _write_sheet_block(doc, sheet: Sheet, ox: float, oy: float,
 
     for part in sheet.parts:
         _write_part_group(msp, part, ox, oy, lo, lh, ln, doc)
+
+
+def _write_sheet_quantity(doc, sheet: Sheet, ox: float, oy: float,
+                          count: int, layer: str) -> None:
+    """在板图旁边写入该排板模式的数量。"""
+    msp = doc.modelspace()
+    label = msp.add_text(
+        f"数量 x {count}",
+        dxfattribs={"layer": layer, "color": RED, "height": 60.0},
+    )
+    label.set_placement(
+        (ox + sheet.width + 30, oy),
+        align=TextEntityAlignment.BOTTOM_LEFT,
+    )
+
+
+def _layout_signature(sheet: Sheet) -> tuple:
+    """把一个板面的零件布局转成可哈希签名，忽略零件编号顺序。"""
+    parts = []
+    for part in sheet.parts:
+        min_x, min_y, max_x, max_y = part.outer_polygon.bounds
+        parts.append(
+            (
+                round(min_x, 2),
+                round(min_y, 2),
+                round(max_x, 2),
+                round(max_y, 2),
+            )
+        )
+    return (
+        round(sheet.width, 2),
+        round(sheet.height, 2),
+        tuple(sorted(parts)),
+    )
+
+
+def _group_sheets_by_layout(sheets: list[Sheet]) -> list[list[Sheet]]:
+    """把布局完全相同的板归为一组，只保留首张作为代表。"""
+    grouped: dict[tuple, list[Sheet]] = {}
+    for sheet in sheets:
+        grouped.setdefault(_layout_signature(sheet), []).append(sheet)
+    return list(grouped.values())
+
+
+def write_list_nesting_dxf(
+    group_results: list,
+    output_path: str,
+    unit_system: str = "metric",
+) -> None:
+    """将清单排板结果写为 DXF。
+
+    布局完全相同的板只画一张代表图，并在图旁标注数量。
+    group_results 格式与 `nest_list_items` 返回值一致：
+    [(material, group_items, NestingResult), ...]
+    """
+    doc = ezdxf.new()
+    doc.units = units.MM if unit_system != "imperial" else units.IN
+    msp = doc.modelspace()
+
+    layer_border = "SHEET_BORDER"
+    layer_outer = "OUTER"
+    layer_holes = "HOLES"
+    layer_numbers = "NUMBERS"
+    for name in (layer_border, layer_outer, layer_holes, layer_numbers):
+        doc.layers.add(name)
+
+    COLS = 6
+    GAP = 300
+    max_width = max(
+        (sheet.width for _, _, result in group_results for sheet in result.sheets),
+        default=2400.0,
+    )
+    max_height = max(
+        (sheet.height for _, _, result in group_results for sheet in result.sheets),
+        default=1200.0,
+    )
+    col_step = max_width + GAP
+    row_step = max_height + GAP
+    block_index = 0
+    for material, _, result in group_results:
+        for sheets in _group_sheets_by_layout(result.sheets):
+            representative = sheets[0]
+            count = len(sheets)
+            col = block_index % COLS
+            row = block_index // COLS
+            ox = col * col_step
+            oy = row * row_step
+
+            size_label = f"{representative.width:.0f}x{representative.height:.0f}"
+            if material:
+                size_label = f"{material} | {size_label}"
+            _write_sheet_block(
+                doc,
+                representative,
+                ox,
+                oy,
+                layer_border,
+                layer_outer,
+                layer_holes,
+                layer_numbers,
+                label=size_label,
+            )
+            _write_sheet_quantity(
+                doc,
+                representative,
+                ox,
+                oy,
+                count,
+                layer_border,
+            )
+            block_index += 1
+
+    doc.saveas(output_path)
 
 
 def _write_part_group(msp, part: Part, ox: float, oy: float,
