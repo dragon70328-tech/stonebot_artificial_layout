@@ -23,6 +23,7 @@ from xml.etree import ElementTree as ET
 from shapely.geometry import box
 
 from src.models import NestingResult, Part, Sheet
+from src.strip_packing import pack_residual_strips
 
 
 DEFAULT_ROTATIONS = (0, 90)
@@ -1786,6 +1787,7 @@ def _fill_free_rect_renba(
     counts: dict[int, int],
     rect: tuple[float, float, float, float],
     power: float,
+    lane_width: float = 95.0,
 ) -> tuple[dict[int, int], list[list[int]], list[list[int]]]:
     """在一个自由矩形内做“上方横排 + 下方竖列”的窄条填充。"""
     free_width = rect[2]
@@ -1795,7 +1797,7 @@ def _fill_free_rect_renba(
     best_rows: list[list[int]] = []
     best_cols: list[list[int]] = []
 
-    for row_count in range(int(free_height // 95) + 1):
+    for row_count in range(int(free_height // lane_width) + 1):
         counts_after_rows = dict(counts)
         used_rows: dict[int, int] = {}
         rows: list[list[int]] = []
@@ -1821,8 +1823,8 @@ def _fill_free_rect_renba(
         if not rows_ok:
             continue
 
-        bottom_height = free_height - row_count * 95
-        for col_count in range(int(free_width // 95) + 1):
+        bottom_height = free_height - row_count * lane_width
+        for col_count in range(int(free_width // lane_width) + 1):
             counts_after_cols = dict(counts_after_rows)
             used_cols = dict(used_rows)
             cols: list[list[int]] = []
@@ -1967,7 +1969,10 @@ def _fill_strips_into_sheets_renba_uniform(
             break
 
         used, rows, cols = _fill_free_rect_renba(
-            counts, (free_x, free_y, free_width, free_height), power
+            counts,
+            (free_x, free_y, free_width, free_height),
+            power,
+            lane_width=strip_width,
         )
         if not used:
             continue
@@ -2476,6 +2481,64 @@ def _pack_group_large_then_strips_v2(
     )
 
 
+def _pack_group_large_then_strips_v3(
+    items: list[ListItem],
+    start_id: int,
+    sizes: list[tuple[float, float]],
+    thickness_mm: float,
+    rotations: tuple[int, ...],
+) -> NestingResult | None:
+    """大面积优先 + 仁霸式余料填充 + 剩余窄条精确竖列 packer。"""
+    large_items = [item for item in items if not _is_strip_item(item)]
+    strip_items = [item for item in items if _is_strip_item(item)]
+    if not large_items or not strip_items:
+        return None
+
+    large_result = _pack_group_pairing_spread(
+        large_items,
+        start_id=start_id,
+        sizes=sizes,
+        thickness_mm=thickness_mm,
+        rotations=rotations,
+    )
+    if large_result is None:
+        return None
+
+    sheets = list(large_result.sheets)
+    next_id = start_id + sum(item.qty for item in large_items)
+    remaining_strips, next_id = _fill_strips_into_sheets_renba(
+        sheets,
+        strip_items,
+        next_id,
+        rotations,
+    )
+
+    if remaining_strips:
+        residual_sheets, next_id = pack_residual_strips(
+            remaining_strips,
+            sizes,
+            next_id,
+            thickness_mm,
+        )
+        sheets.extend(residual_sheets)
+
+    for index, sheet in enumerate(sheets, start=1):
+        sheet.index = index
+
+    total_part_area = sum(
+        item.length_mm * item.width_mm * max(1, item.qty) for item in items
+    )
+    total_sheet_area = sum(sheet.total_area for sheet in sheets)
+    return NestingResult(
+        sheets=sheets,
+        unit="metric",
+        total_parts=sum(item.qty for item in items),
+        total_sheets=len(sheets),
+        total_part_area=total_part_area,
+        total_sheet_area=total_sheet_area,
+    )
+
+
 def _result_uses_all_sizes(result: NestingResult, sizes: list[tuple[float, float]]) -> bool:
     used: set[tuple[float, float]] = set()
     for sheet in result.sheets:
@@ -2554,6 +2617,16 @@ def _nest_group_rect_multi(
     )
     if large_then_strips_v2_result is not None:
         candidates.append(large_then_strips_v2_result)
+
+    large_then_strips_v3_result = _pack_group_large_then_strips_v3(
+        items,
+        start_id=start_id,
+        sizes=sizes,
+        thickness_mm=thickness_mm,
+        rotations=rotations,
+    )
+    if large_then_strips_v3_result is not None:
+        candidates.append(large_then_strips_v3_result)
 
     for prefer_index in range(len(sizes)):
         candidates.append(
@@ -2766,6 +2839,65 @@ def build_conclusion_text(
     return "\n".join(lines)
 
 
+def _inflate_items(items: list[ListItem], kerf_mm: float) -> list[ListItem]:
+    """锯缝放大：每件 +kerf，配合大板 +kerf 后按零间隙排，等价于件间留缝。"""
+    return [
+        ListItem(
+            item.material,
+            item.length_mm + kerf_mm,
+            item.width_mm + kerf_mm,
+            item.qty,
+            item.source,
+        )
+        for item in items
+    ]
+
+
+def _deflate_results(group_results: list, kerf_mm: float) -> None:
+    """排板结束后把放大坐标系缩回净尺寸：板 -kerf、件 -kerf，位置不变。"""
+    for _, _, result in group_results:
+        for sheet in result.sheets:
+            sheet.width -= kerf_mm
+            sheet.height -= kerf_mm
+            sheet.remaining_area = sheet.width * sheet.height
+            for part in sheet.parts:
+                minx, miny, maxx, maxy = part.polygon.bounds
+                shrunk = box(minx, miny, maxx - kerf_mm, maxy - kerf_mm)
+                part.polygon = shrunk
+                part.outer_polygon = shrunk
+                part.area = shrunk.area
+                part.label_position = (
+                    (minx + maxx - kerf_mm) / 2.0,
+                    (miny + maxy - kerf_mm) / 2.0,
+                )
+        result.total_sheet_area = sum(sheet.total_area for sheet in result.sheets)
+        result.total_part_area = sum(
+            part.area for sheet in result.sheets for part in sheet.parts
+        )
+
+
+def _billing_summary_lines(group_results: list, oversize_mm: float) -> str:
+    """按标称（计价）尺寸统计用板，便于与人工/仁霸口径对比。"""
+    counts: Counter = Counter()
+    for _, _, result in group_results:
+        for sheet in result.sheets:
+            counts[
+                (
+                    round(sheet.width - oversize_mm),
+                    round(sheet.height - oversize_mm),
+                )
+            ] += 1
+    lines = ["", "标称大板口径："]
+    total_area = 0.0
+    total_sheets = 0
+    for (width, height), count in sorted(counts.items(), key=lambda kv: kv[0][0] * kv[0][1]):
+        total_area += width * height * count / 1e6
+        total_sheets += count
+        lines.append(f"  {width:.0f}x{height:.0f}：{count} 张")
+    lines.append(f"  合计：{total_sheets} 张，标称总面积 {total_area:.3f} m²")
+    return "\n".join(lines)
+
+
 def run_list_nesting(
     file_path: str | Path,
     sheet_width_mm: float | None = None,
@@ -2777,20 +2909,38 @@ def run_list_nesting(
     show_sheets: bool = False,
     sheet_sizes: list[tuple[float, float]] | None = None,
     output_dxf_path: str | Path | None = None,
+    kerf_mm: float = 0.0,
+    oversize_mm: float = 0.0,
 ) -> str:
-    """清单排板主入口，返回结论文本。"""
+    """清单排板主入口，返回结论文本。
+
+    kerf_mm: 锯缝宽度。零件按净尺寸输入，内部放大后排板，输出缩回净尺寸。
+    oversize_mm: 大板让尺。可用尺寸 = 标称 + 让尺；报告同时给出标称口径。
+    """
     items = parse_list_file(file_path)
+    billing_sizes = sheet_sizes or [(sheet_width_mm or 0.0, sheet_height_mm or 0.0)]
+    layout_sizes = [
+        (width + oversize_mm, height + oversize_mm) for width, height in billing_sizes
+    ]
+    if kerf_mm > 0:
+        effective_sizes = [
+            (width + kerf_mm, height + kerf_mm) for width, height in layout_sizes
+        ]
+        effective_items = _inflate_items(items, kerf_mm)
+    else:
+        effective_sizes, effective_items = layout_sizes, items
     group_results = nest_list_items(
-        items,
+        effective_items,
         sheet_width_mm=sheet_width_mm,
         sheet_height_mm=sheet_height_mm,
         thickness_mm=thickness_mm,
         rotations=rotations,
         trials=trials,
         seed=seed,
-        sheet_sizes=sheet_sizes,
+        sheet_sizes=effective_sizes,
     )
-    sizes = sheet_sizes or [(sheet_width_mm or 0.0, sheet_height_mm or 0.0)]
+    if kerf_mm > 0:
+        _deflate_results(group_results, kerf_mm)
     if output_dxf_path:
         from src.dxf_writer import write_list_nesting_dxf
 
@@ -2799,4 +2949,7 @@ def run_list_nesting(
             str(output_dxf_path),
             unit_system="metric",
         )
-    return build_conclusion_text(items, group_results, sizes, show_sheets)
+    text = build_conclusion_text(items, group_results, layout_sizes, show_sheets)
+    if oversize_mm > 0 or kerf_mm > 0:
+        text += _billing_summary_lines(group_results, oversize_mm)
+    return text

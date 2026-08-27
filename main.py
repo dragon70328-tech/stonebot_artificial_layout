@@ -142,6 +142,10 @@ def parse_args():
                    help="仅执行读图审图并输出问题报告，不进入排板")
     p.add_argument("--list-nest", action="store_true",
                    help="按 Excel/PDF 规格尺寸与数量清单排板，输出文字结论")
+    p.add_argument("--kerf", type=float, default=0.0,
+                   help="锯缝宽度 mm（清单排板；零件为净尺寸，件间留 kerf）")
+    p.add_argument("--oversize", type=float, default=0.0,
+                   help="大板让尺 mm（清单排板；可用尺寸=标称+让尺）")
     p.add_argument("--previous-state", type=str, default=None,
                    help="上次审图生成的 review_state.json，用于修正重传后的复检")
     p.add_argument("--accept-issue", type=str, default=None,
@@ -1294,6 +1298,8 @@ def main():
                 seed=args.seed,
                 sheet_sizes=sizes_mm,
                 output_dxf_path=output_dxf_path,
+                kerf_mm=args.kerf,
+                oversize_mm=args.oversize,
             )
             print(conclusion)
             if output_dxf_path:

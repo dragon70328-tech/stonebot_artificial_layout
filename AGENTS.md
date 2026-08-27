@@ -276,6 +276,10 @@ python main.py input.pdf 2500 1400 20 --list-nest --no-rotation
 # 总板面积相同时优先多用小尺寸板，再按板数最少选择
 python main.py input.xlsx --sizes 2400x1200,2500x1400 --list-nest
 python main.py input.xlsx 2400 1200 --special-size 2500x1400 --list-nest
+
+# 生产口径：锯缝 5mm（零件为净尺寸），大板让尺 30mm/边
+# 可用尺寸 2430x1230 与 2530x1430，报告同时给出标称计价口径
+python main.py input.xlsx --sizes 2400x1200,2500x1400 --list-nest --kerf 5 --oversize 30
 ```
 
 - Excel 列名支持 材料编号/长度(mm)/宽度(mm)/数量(件) 等自动识别。
@@ -291,8 +295,14 @@ python main.py input.xlsx 2400 1200 --special-size 2500x1400 --list-nest
 - skyline 回退路径按“大件先排 → 剩余空间先填短窄条 → 剩余长窄条短边竖排、
   优先开小尺寸新板”的顺序执行；这适用于 ST-104 这类大面积板 + 大量 95mm 窄条清单。
 - 清单排板新增“大面积规格板先配对 → 窄条填入已排板剩余矩形 → 剩余窄条另排”
-  候选，`ST-104` 当前结果 122 张/98.3%（人工参考 121 张/98.9%），
-  其中 2400x1200 65 张、2500x1400 57 张，体现小尺寸板优先。
+  候选（v3，含 `src/strip_packing.py` 精确剩余窄条 packer），
+  `ST-104` 名义口径当前结果 121 张/98.4%（2400x1200 60 张、2500x1400 61 张，
+  人工参考 121 张/98.9%）；生产口径 `--kerf 5 --oversize 30`
+  结果 122 张（2430x1230 60 张、2530x1430 62 张，标称计价 389.8 m²），
+  几何校验：越界 0、重叠 0、件间净间距恰为 5mm。
+- kerf 化通过放大空间实现：件 +kerf、板 +kerf、零间隙相邻 = 件间 kerf 缝；
+  `_fill_free_rect_renba` 的窄条节距必须用调用方传入的 `lane_width`，
+  不能硬编码 95，否则放大空间会多放一排/一列导致越界和压叠。
 - 窄条填入剩余矩形前，`_subtract_occupied_rect` 使用上下左右四块互不重叠的分区；
   旧的最大矩形表示会重叠，导致个别板件利用率超过 100% 或板件互相压叠。
 - 清单排板默认自动生成 DXF；可用 `--output-dxf` 指定路径，或用 `--no-dxf` 关闭。
