@@ -144,6 +144,18 @@ def _collides(cand, tree: STRtree | None, geoms: list) -> bool:
     return False
 
 
+def _bbox_overlaps_any(cb: tuple, boxes: list) -> bool:
+    """候选包围盒是否与任一已放零件包围盒存在正面积重叠。"""
+    x0, y0, x1, y1 = cb
+    for (px0, py0, px1, py1) in boxes:
+        if x1 <= px0 + EPS or x0 >= px1 - EPS:
+            continue
+        if y1 <= py0 + EPS or y0 >= py1 - EPS:
+            continue
+        return True
+    return False
+
+
 def _candidate_axes(geoms: list, part_w: float, part_h: float,
                     sheet_w: float, sheet_h: float) -> tuple[list, list]:
     """生成候选左下角 x/y 坐标，覆盖板边和已放面板包围盒边缘。"""
@@ -196,6 +208,7 @@ def _find_placement(part: Part, geoms: list, tree: STRtree | None,
                     rotation_step: float = _ARBITRARY_ROTATION_STEP) -> _Placement | None:
     """为单个零件找一个最左下的可行放置。"""
     angles = angle_candidates(rotations, arbitrary_rotation, rotation_step)
+    boxes = [g.bounds for g in geoms]
     best = None
 
     for angle, rotated, rb in _rotation_forms(part, angles, cache):
@@ -209,11 +222,13 @@ def _find_placement(part: Part, geoms: list, tree: STRtree | None,
 
         for y in ys:
             for x in xs:
-                cand = affinity.translate(rotated,
-                                          xoff=x - rb[0],
-                                          yoff=y - rb[1])
-                if _collides(cand, tree, geoms):
-                    continue
+                cb = (x, y, x + part_w, y + part_h)
+                if _bbox_overlaps_any(cb, boxes):
+                    cand = affinity.translate(rotated,
+                                              xoff=x - rb[0],
+                                              yoff=y - rb[1])
+                    if _collides(cand, tree, geoms):
+                        continue
 
                 placed = _slide_down_left(rotated, rb, x, y, tree, geoms,
                                           sheet_w, sheet_h)

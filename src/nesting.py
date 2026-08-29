@@ -185,6 +185,18 @@ def _collides(cand: Polygon, tree: STRtree, geoms: list) -> bool:
     return False
 
 
+def _bbox_overlaps_any(cb: tuple, boxes: list) -> bool:
+    """候选包围盒是否与任一已放零件包围盒存在正面积重叠。"""
+    x0, y0, x1, y1 = cb
+    for (px0, py0, px1, py1) in boxes:
+        if x1 <= px0 + EPS or x0 >= px1 - EPS:
+            continue
+        if y1 <= py0 + EPS or y0 >= py1 - EPS:
+            continue
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # 候选点生成与评分
 # ---------------------------------------------------------------------------
@@ -316,25 +328,26 @@ def _find_placement(part: Part, geoms: list, boxes: list, reflex: list,
 
         valid = []
         for (x, y) in pts:
-            cand = affinity.translate(rp, xoff=x - rb[0], yoff=y - rb[1])
-            if tree is not None and _collides(cand, tree, geoms):
-                continue
-            valid.append((x, y, cand))
+            cb = (x, y, x + pw, y + ph)
+            if tree is not None and _bbox_overlaps_any(cb, boxes):
+                cand = affinity.translate(rp, xoff=x - rb[0], yoff=y - rb[1])
+                if _collides(cand, tree, geoms):
+                    continue
+            valid.append((x, y, cb))
             if len(valid) >= _MAX_VALID_PER_ROT:
                 break
         if not valid:
             continue
 
-        for (x, y, cand) in valid:
-            cb = (x, y, x + pw, y + ph)
+        for (x, y, cb) in valid:
             score = _full_score(mode, cb, boxes, sheet_w, sheet_h)
             if best_score is None or score < best_score:
                 best_score = score
-                best = (rot, x, y, cand, rp, rb)
+                best = (rot, x, y, rp, rb)
 
     if best is None:
         return None
-    rot, x, y, _cand, rp, rb = best
+    rot, x, y, rp, rb = best
     # 滑动压实（只向 -x/-y 移动，不会变差）
     x, y, cand = _slide(rp, rb, x, y, tree, geoms, sheet_w, sheet_h)
     return _Placement(part=part, rot=rot, x=x, y=y, poly=cand)
