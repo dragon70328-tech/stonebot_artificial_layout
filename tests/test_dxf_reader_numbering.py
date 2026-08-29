@@ -3,6 +3,8 @@ from pathlib import Path
 import ezdxf
 
 from src.dxf_reader import (
+    _assign_numbers_by_containment,
+    _build_part_hierarchy,
     _collect_number_texts,
     _looks_like_number,
     extract_closed_polygons,
@@ -150,3 +152,57 @@ def test_extract_closed_polygons_excludes_handles(tmp_path):
         exclude_handles={entity.dxf.handle},
     )
     assert polygons == []
+
+
+def test_build_part_hierarchy_uses_centroid_and_intersection_ratio():
+    from shapely.geometry import Polygon
+
+    outer = Polygon([(0, 0), (100, 0), (100, 100), (0, 100)])
+    inner = Polygon([(50, 50), (101, 50), (101, 60), (50, 60)])
+
+    hierarchy = _build_part_hierarchy([(outer, "A"), (inner, "B")])
+    assert hierarchy[0]["children"] == [1]
+    assert hierarchy[1]["parent"] == 0
+
+
+def test_extract_closed_polygons_excludes_open_spline(tmp_path):
+    path = tmp_path / "open_spline.dxf"
+    doc = ezdxf.new("R2010")
+    doc.layers.add("PANEL")
+    msp = doc.modelspace()
+    msp.add_spline(
+        fit_points=[(0, 0), (20, 40), (40, 0)],
+        dxfattribs={"layer": "PANEL"},
+    )
+    doc.saveas(path)
+
+    doc = ezdxf.readfile(path)
+    polygons = extract_closed_polygons(
+        doc,
+        panel_layers=["PANEL"],
+        exclude_linetypes=[],
+        closed_tolerance=0.01,
+    )
+    assert polygons == []
+
+
+def test_assign_numbers_by_containment_uses_text_bbox_fallback():
+    from shapely.geometry import Polygon
+
+    parts_data = [
+        {
+            "index": 0,
+            "polygon": Polygon([(0, 0), (100, 0), (100, 100), (0, 100)]),
+            "centroid": (50, 50),
+        }
+    ]
+    number_texts = [
+        {
+            "point": (120, 50),
+            "text": "01B-1",
+            "box": Polygon([(50, 45), (110, 45), (110, 55), (50, 55)]),
+        }
+    ]
+
+    assignments = _assign_numbers_by_containment(parts_data, number_texts)
+    assert assignments == {0: "01B-1"}

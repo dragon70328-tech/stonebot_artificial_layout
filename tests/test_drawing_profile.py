@@ -463,6 +463,40 @@ def test_read_dxf_with_profile_reads_hatch_panels(tmp_path):
     assert parts[0]["outer_polygon"].area > 0
 
 
+def test_read_dxf_with_profile_assigns_holes_to_hatch_panels(tmp_path):
+    path = tmp_path / "hatch_panel_with_hole.dxf"
+    profile = DrawingProfile(
+        name="hatch_hole_test",
+        version="1.0.0",
+        panel_layer="PANEL",
+        hatch_layer="HATCH",
+        hole_layers=["HOLES"],
+        use_hatch=True,
+        number_layers=["NUM"],
+        build_hierarchy=False,
+        exclude_entity_types=[],
+        exclude_linetypes=[],
+    )
+    doc = ezdxf.new("R2010")
+    for layer in ("HATCH", "HOLES", "NUM"):
+        doc.layers.add(layer)
+    msp = doc.modelspace()
+    hatch = msp.add_hatch(dxfattribs={"layer": "HATCH"})
+    hatch.paths.add_polyline_path(
+        [(0, 0), (100, 0), (100, 100), (0, 100)],
+        is_closed=True,
+    )
+    msp.add_circle((50, 50), radius=10, dxfattribs={"layer": "HOLES"})
+    text = msp.add_text("01B-1", dxfattribs={"layer": "NUM"})
+    text.set_placement((80, 80))
+    doc.saveas(path)
+
+    parts, _ = read_dxf_with_profile(path, profile)
+    assert len(parts) == 1
+    assert len(parts[0]["holes"]) == 1
+    assert parts[0]["polygon"].area < parts[0]["outer_polygon"].area
+
+
 def test_audit_detects_open_chain(tmp_path):
     path = tmp_path / "open_chain.dxf"
 
@@ -709,3 +743,191 @@ def test_read_dxf_with_profile_hole_layers_only_assigns_contained_circles(tmp_pa
     parts, _ = read_dxf_with_profile(path, profile)
     assert len(parts) == 2
     assert sum(len(part["holes"]) for part in parts) == 1
+
+
+def test_read_dxf_with_profile_grid_mode_reconstructs_rectangular_cells(tmp_path):
+    path = tmp_path / "grid_panels.dxf"
+    doc = ezdxf.new("R2010")
+    doc.layers.add("GRID")
+    doc.layers.add("NUM")
+    msp = doc.modelspace()
+
+    for x in (0, 100, 200):
+        msp.add_lwpolyline(
+            [(x, 0), (x, 200)],
+            dxfattribs={"layer": "GRID"},
+        )
+    for y in (0, 100, 200):
+        msp.add_lwpolyline(
+            [(0, y), (200, y)],
+            dxfattribs={"layer": "GRID"},
+        )
+
+    labels = {
+        (50, 50): "1",
+        (150, 50): "2",
+        (50, 150): "3",
+        (150, 150): "4",
+    }
+    for point, label in labels.items():
+        text = msp.add_text(label, dxfattribs={"layer": "NUM"})
+        text.set_placement(point)
+
+    doc.saveas(path)
+
+    profile = DrawingProfile(
+        name="grid_test",
+        version="1.0.0",
+        panel_layers=["GRID"],
+        use_hatch=False,
+        number_layers=["NUM"],
+        label_pattern=r"^(?P<part>\d+)$",
+        build_hierarchy=False,
+        exclude_entity_types=[],
+        exclude_linetypes=[],
+        grid_mode=True,
+        grid_layer="GRID",
+        grid_min_line_length=50.0,
+        grid_min_area=5000.0,
+        grid_max_area=40000.0,
+        grid_label_margin=200.0,
+    )
+
+    parts, _ = read_dxf_with_profile(path, profile)
+    assert len(parts) == 4
+    assert {part["original_number"] for part in parts} == {"1", "2", "3", "4"}
+    assert all(part["area"] == 10000 for part in parts)
+
+
+def test_audit_drawing_grid_mode_ignores_open_grid_segments(tmp_path):
+    path = tmp_path / "grid_audit.dxf"
+    doc = ezdxf.new("R2010")
+    doc.layers.add("GRID")
+    doc.layers.add("NUM")
+    msp = doc.modelspace()
+    msp.add_lwpolyline([(0, 0), (0, 200)], dxfattribs={"layer": "GRID"})
+    msp.add_lwpolyline([(100, 0), (100, 200)], dxfattribs={"layer": "GRID"})
+    msp.add_lwpolyline([(0, 0), (100, 0)], dxfattribs={"layer": "GRID"})
+    msp.add_lwpolyline([(0, 200), (100, 200)], dxfattribs={"layer": "GRID"})
+    text = msp.add_text("1", dxfattribs={"layer": "NUM"})
+    text.set_placement((50, 100))
+    doc.saveas(path)
+
+    profile = DrawingProfile(
+        name="grid_audit_test",
+        version="1.0.0",
+        panel_layers=["GRID"],
+        use_hatch=False,
+        number_layers=["NUM"],
+        label_pattern=r"^(?P<part>\d+)$",
+        build_hierarchy=False,
+        exclude_entity_types=[],
+        exclude_linetypes=[],
+        grid_mode=True,
+        grid_layer="GRID",
+        grid_min_line_length=50.0,
+        grid_min_area=5000.0,
+        grid_max_area=40000.0,
+        grid_label_margin=200.0,
+    )
+
+    issues = audit_drawing(path, profile)
+    assert not any(
+        issue.type in {"unclosed_geometry", "invalid_geometry", "open_chain"}
+        for issue in issues
+    )
+
+
+def test_read_dxf_with_profile_grid_mode_splits_cell_into_labeled_parts(tmp_path):
+    path = tmp_path / "grid_split_panel.dxf"
+    doc = ezdxf.new("R2010")
+    for layer in ("GRID", "SPLIT", "NUM"):
+        doc.layers.add(layer)
+    msp = doc.modelspace()
+
+    msp.add_lwpolyline([(0, 0), (0, 100)], dxfattribs={"layer": "GRID"})
+    msp.add_lwpolyline([(100, 0), (100, 100)], dxfattribs={"layer": "GRID"})
+    msp.add_lwpolyline([(0, 0), (100, 0)], dxfattribs={"layer": "GRID"})
+    msp.add_lwpolyline([(0, 100), (100, 100)], dxfattribs={"layer": "GRID"})
+
+    msp.add_lwpolyline(
+        [(0, 0), (100, 0), (100, 100), (0, 0)],
+        dxfattribs={"layer": "SPLIT"},
+        format="xy",
+        close=True,
+    )
+    msp.add_lwpolyline(
+        [(0, 0), (100, 100), (0, 100), (0, 0)],
+        dxfattribs={"layer": "SPLIT"},
+        format="xy",
+        close=True,
+    )
+
+    text = msp.add_text("1", dxfattribs={"layer": "NUM"})
+    text.set_placement((50, 50))
+    doc.saveas(path)
+
+    profile = DrawingProfile(
+        name="grid_split_test",
+        version="1.0.0",
+        panel_layers=["GRID"],
+        use_hatch=False,
+        number_layers=["NUM"],
+        label_pattern=r"^(?P<part>\d+)$",
+        build_hierarchy=False,
+        exclude_entity_types=[],
+        exclude_linetypes=[],
+        grid_mode=True,
+        grid_layer="GRID",
+        grid_split_layers=["SPLIT"],
+        grid_min_line_length=50.0,
+        grid_min_area=1000.0,
+        grid_max_area=40000.0,
+        grid_label_margin=200.0,
+    )
+
+    parts, _ = read_dxf_with_profile(path, profile)
+    assert len(parts) == 2
+    assert {part["original_number"] for part in parts} == {"1a", "1b"}
+    assert all(part["area"] == 5000 for part in parts)
+
+
+def test_read_dxf_with_profile_network_mode_filters_gap_and_keeps_curve_split(tmp_path):
+    path = tmp_path / "line_network_panel.dxf"
+    doc = ezdxf.new("R2010")
+    doc.layers.add("NET")
+    msp = doc.modelspace()
+
+    msp.add_line((0, 0), (100, 0), dxfattribs={"layer": "NET"})
+    msp.add_line((100, 0), (100, 100), dxfattribs={"layer": "NET"})
+    msp.add_line((100, 100), (0, 100), dxfattribs={"layer": "NET"})
+    msp.add_line((0, 100), (0, 0), dxfattribs={"layer": "NET"})
+    msp.add_line((0, 0), (100, 100), dxfattribs={"layer": "NET"})
+
+    msp.add_line((120, 0), (120, 100), dxfattribs={"layer": "NET"})
+    msp.add_line((122, 0), (122, 100), dxfattribs={"layer": "NET"})
+    msp.add_line((120, 0), (122, 0), dxfattribs={"layer": "NET"})
+    msp.add_line((120, 100), (122, 100), dxfattribs={"layer": "NET"})
+    doc.saveas(path)
+
+    profile = DrawingProfile(
+        name="network_test",
+        version="1.0.0",
+        panel_layers=["NET"],
+        use_hatch=False,
+        number_layers=[],
+        build_hierarchy=False,
+        exclude_entity_types=[],
+        exclude_linetypes=[],
+        network_mode=True,
+        network_layers=["NET"],
+        network_min_area=10.0,
+        network_max_area=100000.0,
+        network_gap_side_tolerance=3.0,
+        network_arc_flattening=1.0,
+    )
+
+    parts, _ = read_dxf_with_profile(path, profile)
+    assert len(parts) == 2
+    assert all(part["area"] == 5000 for part in parts)
+    assert all(part["original_number"] is None for part in parts)

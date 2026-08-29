@@ -1,0 +1,55 @@
+{
+  "name": "blockd_6f_lobby",
+  "version": "1.0.0",
+  "description": "Block D - 6F大堂地台石 廠方切石圖：PDF 导入矩形网格，48 件规格板。",
+  "panel_layer": "PDF_几何图形",
+  "panel_layers": [
+    "PDF_几何图形"
+  ],
+  "hole_layers": [],
+  "hatch_layer": null,
+  "use_hatch": false,
+  "number_layers": [
+    "PDF_文字"
+  ],
+  "label_pattern": "^(?P<part>\\d+)$",
+  "material_prefix_pattern": "^\\d+",
+  "allowed_material_prefixes": [],
+  "assignment_mode": "point_then_bbox",
+  "bbox_overlap_threshold": 0.5,
+  "build_hierarchy": false,
+  "conflict_resolution": "random",
+  "closed_tolerance": 1.0,
+  "exclude_entity_types": [],
+  "exclude_entity_handles": [
+    "182F",
+    "1830"
+  ],
+  "exclude_linetypes": [
+    "DASH",
+    "PHANTOM"
+  ],
+  "small_area_threshold": 100000.0,
+  "text_height": 40.0,
+  "low_confidence_threshold": 0.8,
+  "grid_mode": true,
+  "grid_layer": "PDF_几何图形",
+  "grid_min_line_length": 800.0,
+  "grid_snap_tolerance": 10.0,
+  "grid_min_area": 100000.0,
+  "grid_max_area": 5000000.0,
+  "grid_label_margin": 700.0,
+  "grid_split_layers": [
+    "PDF_几何图形",
+    "0"
+  ],
+  "material_group_enabled": false,
+  "first_part_left_edge": false,
+  "expected_counts": {
+    "panels": 52,
+    "holes": 0,
+    "numbers": 52
+  },
+  "audit_ignore_rules": [],
+  "notes": "PDF 文字层包含编号 1~48 与尺寸标注；标题区 9/1 通过 exclude_entity_handles 排除。面板为 4x12 矩形网格，由 PDF_几何图形 的长横/竖 LWPOLYLINE 网格线重建。"
+}

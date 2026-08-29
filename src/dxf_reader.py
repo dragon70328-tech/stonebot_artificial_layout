@@ -253,8 +253,18 @@ def _is_closed(entity, tolerance: float = 0.01) -> bool:
                 return True
             return _is_recoverable_closed(entity, tolerance)
         return False
-    if isinstance(entity, (Circle, Spline)):
+    if isinstance(entity, Circle):
         return True
+    if isinstance(entity, Spline):
+        try:
+            points = list(entity.flattening(0.1))
+        except Exception:
+            return False
+        if len(points) < 3:
+            return False
+        first = (float(points[0].x), float(points[0].y))
+        last = (float(points[-1].x), float(points[-1].y))
+        return math.hypot(first[0] - last[0], first[1] - last[1]) < tolerance
     if isinstance(entity, Arc):
         return False
     return False
@@ -317,6 +327,37 @@ def extract_closed_polygons(doc,
 
     return results
 
+
+HIERARCHY_CONTAINMENT_RATIO = 0.90
+
+
+def _is_contained_as_hole(outer: Polygon, inner: Polygon,
+                          ratio: float = HIERARCHY_CONTAINMENT_RATIO) -> bool:
+    """Return True when inner should be treated as a hole of outer.
+
+    Shapely's ``contains`` is intentionally avoided because it is too
+    sensitive to tiny boundary/topology differences. The drawing contract
+    requires two independent signals: the inner centroid must be inside the
+    outer polygon, and the intersection area must be at least ``ratio`` of
+    the inner polygon's own area.
+    """
+    if outer.is_empty or inner.is_empty or inner.area <= 0.0:
+        return False
+
+    centroid = inner.centroid
+    if centroid.is_empty:
+        return False
+
+    try:
+        if not outer.covers(centroid):
+            return False
+        intersection_area = outer.intersection(inner).area
+    except Exception:
+        return False
+
+    return intersection_area >= inner.area * ratio
+
+
 def _build_part_hierarchy(polygons: list) -> list[dict]:
     """
     判断内外包含关系，构建规格板层级结构。
@@ -335,20 +376,19 @@ def _build_part_hierarchy(polygons: list) -> list[dict]:
 
     for i in range(n):
         for j in range(i + 1, n):
-            # i 面积更大，检查 j 是否被 i 包含
-            try:
-                if sorted_polys[i].contains(sorted_polys[j]):
-                    # 检查是否有更近的父级
-                    is_direct_child = True
-                    for k in children[i]:
-                        if sorted_polys[k].contains(sorted_polys[j]):
-                            is_direct_child = False
-                            break
-                    if is_direct_child:
-                        children[i].append(j)
-                        parent[j] = i
-            except Exception:
+            # i 通常面积更大，检查 j 是否为 i 的直接孔洞。
+            if not _is_contained_as_hole(sorted_polys[i], sorted_polys[j]):
                 continue
+
+            # 若 j 已经被 i 的某个直接子级包含，则 j 不是 i 的直接孔洞。
+            is_direct_child = True
+            for k in children[i]:
+                if _is_contained_as_hole(sorted_polys[k], sorted_polys[j]):
+                    is_direct_child = False
+                    break
+            if is_direct_child:
+                children[i].append(j)
+                parent[j] = i
 
     return [
         {
@@ -384,10 +424,24 @@ def _looks_like_number(text: str) -> bool:
     return False
 
 
+def _text_box_polygon(entity) -> Polygon | None:
+    """Return the DXF text entity's world-coordinate bounding box."""
+    try:
+        extent = ezdxf.bbox.extents([entity])
+        points = [(vertex.x, vertex.y) for vertex in extent.rect_vertices()]
+        polygon = Polygon(points)
+        if not polygon.is_valid:
+            polygon = polygon.buffer(0)
+        return polygon
+    except Exception:
+        return None
+
+
 def _collect_number_texts(doc,
                           number_layer = None,
                           number_layers = None,
-                          label_pattern = None):
+                          label_pattern = None,
+                          include_boxes = False):
     """Collect candidate part-number texts from TEXT/MTEXT entities.
 
     Layer selection priority:
@@ -442,7 +496,16 @@ def _collect_number_texts(doc,
         if key in seen:
             continue
         seen.add(key)
-        texts.append((tx, ty, text))
+        if include_boxes:
+            texts.append(
+                {
+                    "point": (tx, ty),
+                    "text": text,
+                    "box": _text_box_polygon(entity),
+                }
+            )
+        else:
+            texts.append((tx, ty, text))
     return texts
 
 
@@ -498,59 +561,97 @@ def _assign_numbers_by_nearest_room(parts_data, room_labels):
     return assignments
 
 
-def _assign_numbers_by_containment(parts_data: list[dict],
-                                    number_pool: list) -> dict:
-    """Assign numbers using point-in-polygon containment as primary method.
+def _assign_numbers_by_containment(
+    parts_data: list[dict],
+    number_texts: list[dict],
+    bbox_overlap_threshold: float = 0.5,
+) -> dict:
+    """Assign number texts using point containment, then bbox overlap.
 
-    1. For each number text, check which panel's polygon contains it.
-    2. If a text is inside exactly one panel, assign it (highest confidence).
-    3. For remaining unmatched, fall back to nearest-centroid distance.
-    
-    Returns dict: part_index -> number
+    The legacy path used to fall back to nearest-centroid distance. That
+    caused text labels placed just outside a panel (common with leaders) to
+    be assigned to the wrong nearby panel. This now follows the same
+    ``point_then_bbox`` strategy as the drawing-profile path:
+
+    1. A text insertion point inside exactly one panel wins.
+    2. Unmatched panels use text-bbox / panel overlap ratio.
+    3. Remaining unmatched panels fall back to nearest-centroid distance.
+
+    Returns dict: part_index -> number.
     """
     from shapely.geometry import Point
 
-    used_numbers = set()
-    assignments = {}
+    assignments: dict[int, str] = {}
+    matched_texts: set[int] = set()
 
-    if not number_pool:
+    if not number_texts:
         return assignments
 
-    # Step 1: Containment-based matching
-    for tx, ty, text in number_pool:
-        pt = Point(tx, ty)
+    # Step 1: Point-in-panel containment.
+    for text_index, text in enumerate(number_texts):
+        point = Point(text["point"][0], text["point"][1])
         containing = []
-        for pd in parts_data:
+        for part in parts_data:
             try:
-                if pd["polygon"].contains(pt):
-                    containing.append(pd)
+                if part["polygon"].contains(point):
+                    containing.append(part)
             except Exception:
                 continue
         if len(containing) == 1:
-            pd = containing[0]
-            ai = pd["index"]
-            if ai not in assignments:
-                assignments[ai] = text
-                used_numbers.add(text)
+            part = containing[0]
+            part_index = part["index"]
+            if part_index not in assignments:
+                assignments[part_index] = text["text"]
+                matched_texts.add(text_index)
 
-    # Step 2: Distance-based fallback for unmatched parts
-    for pd in parts_data:
-        ai = pd["index"]
-        if ai in assignments:
+    # Step 2: Text bbox / panel overlap for unmatched panels.
+    for part in parts_data:
+        part_index = part["index"]
+        if part_index in assignments:
             continue
-        cx, cy = pd.get("centroid", (0, 0))
-        best_dist = float("inf")
-        best_text = None
-        for tx, ty, text in number_pool:
-            if text in used_numbers:
+        best_index: int | None = None
+        best_ratio = 0.0
+        for text_index, text in enumerate(number_texts):
+            if text_index in matched_texts:
                 continue
-            d = ((tx - cx) ** 2 + (ty - cy) ** 2) ** 0.5
-            if d < 20000.0 and d < best_dist:
-                best_dist = d
-                best_text = text
-        if best_text is not None:
-            assignments[ai] = best_text
-            used_numbers.add(best_text)
+            box = text.get("box")
+            if box is None or box.is_empty or box.area <= 0:
+                continue
+            try:
+                ratio = part["polygon"].intersection(box).area / box.area
+            except Exception:
+                continue
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_index = text_index
+        if best_index is not None and best_ratio >= bbox_overlap_threshold:
+            assignments[part_index] = number_texts[best_index]["text"]
+            matched_texts.add(best_index)
+
+    # Step 3: Distance-based fallback for any remaining unmatched panels.
+    used_numbers = set(assignments.values())
+    for part in parts_data:
+        part_index = part["index"]
+        if part_index in assignments:
+            continue
+        cx, cy = part.get("centroid", (0, 0))
+        best_index = None
+        best_dist = float("inf")
+        for text_index, text in enumerate(number_texts):
+            if text_index in matched_texts or text["text"] in used_numbers:
+                continue
+            distance = math.hypot(
+                float(cx) - text["point"][0],
+                float(cy) - text["point"][1],
+            )
+            if distance < 20000.0 and distance < best_dist:
+                best_dist = distance
+                best_index = text_index
+        if best_index is not None:
+            text = number_texts[best_index]
+            assignments[part_index] = text["text"]
+            matched_texts.add(best_index)
+            used_numbers.add(text["text"])
 
     return assignments
 
@@ -581,12 +682,13 @@ def read_dxf(filepath: str,
 
     hierarchy = _build_part_hierarchy(polygons)
 
-    # Pre-collect numbering layer texts for 1:1 matching
-    number_pool = _collect_number_texts(
+    # Pre-collect numbering layer texts for 1:1 matching.
+    number_texts = _collect_number_texts(
         doc,
         number_layer=number_layer,
         number_layers=number_layers,
         label_pattern=label_pattern,
+        include_boxes=True,
     )
 
     room_labels = _collect_room_texts(doc.modelspace())
@@ -631,7 +733,7 @@ def read_dxf(filepath: str,
         part_index += 1
 
     # --- Number assignment: containment-first, then room-label fallback ---
-    assigned_numbers = _assign_numbers_by_containment(parts_data, number_pool)
+    assigned_numbers = _assign_numbers_by_containment(parts_data, number_texts)
     if room_labels and not assigned_numbers:
         assigned_numbers = _assign_numbers_by_nearest_room(parts_data, room_labels)
     for pd in parts_data:

@@ -1,0 +1,68 @@
+{
+  "name": "fuzhou_wanxiangcheng1_1",
+  "version": "1.0.0",
+  "description": "福州万象城1.1：由 F-地材填充 LINE 网格和 F-地材造型线曲线共同重建封闭图形；2mm 伸缩缝排除，其余矩形及曲线分割封闭图形作为规格板。",
+  "panel_layer": "F-地材填充",
+  "panel_layers": [
+    "F-地材填充",
+    "F-地材造型线",
+    "0",
+    "灯柱定位线",
+    "现场实际间隔柱定位"
+  ],
+  "hole_layers": [
+    "d地面疏散指示开孔165mm"
+  ],
+  "hatch_layer": null,
+  "use_hatch": false,
+  "number_layers": [
+    "0"
+  ],
+  "label_pattern": "^ST-(?P<material>\\d+)$",
+  "material_prefix_pattern": "^ST-\\d+",
+  "allowed_material_prefixes": [],
+  "assignment_mode": "point_then_bbox",
+  "bbox_overlap_threshold": 0.5,
+  "build_hierarchy": false,
+  "conflict_resolution": "random",
+  "closed_tolerance": 0.5,
+  "exclude_entity_types": [],
+  "exclude_entity_handles": [],
+  "exclude_linetypes": [
+    "DASH",
+    "PHANTOM"
+  ],
+  "small_area_threshold": 1000.0,
+  "text_height": 40.0,
+  "low_confidence_threshold": 0.8,
+  "network_mode": true,
+  "network_layers": [
+    "F-地材填充",
+    "F-地材造型线",
+    "0",
+    "灯柱定位线",
+    "现场实际间隔柱定位"
+  ],
+  "network_min_area": 1000.0,
+  "network_max_area": 50000000.0,
+  "network_gap_side_tolerance": 3.0,
+  "network_arc_flattening": 1.0,
+  "network_snap_tolerance": 1.5,
+  "material_group_enabled": false,
+  "first_part_left_edge": false,
+  "expected_counts": {
+    "panels": 8001,
+    "holes": 171
+  },
+  "audit_ignore_rules": [
+    {
+      "issue_type": "hole_outside_panel",
+      "action": "ignore"
+    },
+    {
+      "issue_type": "duplicate_text",
+      "action": "ignore"
+    }
+  ],
+  "notes": "F-地材填充 的 LINE 网格多边形化后过滤短边≤3mm 的伸缩缝；保留其余封闭图形，包括 F-地材造型线 曲线切分后的非矩形件。编号原图无逐件编号，排板时自动生成 P 编号。"
+}

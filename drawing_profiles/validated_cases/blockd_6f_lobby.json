@@ -1,0 +1,42 @@
+{
+  "case_id": "blockd_6f_lobby",
+  "profile_name": "blockd_6f_lobby",
+  "fingerprint": {
+    "path": "C:\\Users\\drago\\Desktop\\临时文件\\Block D - 6F大堂地台石 廠方切石圖.dxf",
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+      "HATCH": 1549,
+      "SOLID": 52,
+      "LWPOLYLINE": 3625,
+      "MTEXT": 114,
+      "TEXT": 18
+    },
+    "layer_counts": {
+      "PDF_实体填充": 1601,
+      "PDF_几何图形": 3621,
+      "PDF_文字": 114,
+      "0": 4,
+      "MJ": 18
+    },
+    "linetype_counts": {
+      "BYLAYER": 5358
+    },
+    "has_hatch": true,
+    "has_lwpolyline": true,
+    "has_line": false,
+    "has_circle": false
+  },
+  "expected_counts": {
+    "panels": 52,
+    "holes": 0,
+    "numbers": 52
+  },
+  "audit_ignore_rules": [],
+  "exclude_entity_handles": [
+    "182F",
+    "1830"
+  ],
+  "source_sha256": "7284bd94182bf28fcbfd4a7651d4db9eeb83e2612ee874561f234c0b846887af",
+  "notes": "Block D - 6F大堂地台石 廠方切石圖；PDF 导入矩形网格，使用 grid_mode + grid_split_layers 重建 52 块面板，其中 2/3/34/35 各拆为 a/b 两个非矩形件。"
+}

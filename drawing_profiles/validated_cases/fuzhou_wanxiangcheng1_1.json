@@ -1,0 +1,52 @@
+{
+  "case_id": "fuzhou_wanxiangcheng1_1",
+  "profile_name": "fuzhou_wanxiangcheng1_1",
+  "fingerprint": {
+    "path": "C:\\Users\\drago\\Desktop\\临时文件\\福州万象城1.1.dxf",
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+      "LWPOLYLINE": 27,
+      "LINE": 1788,
+      "CIRCLE": 173,
+      "HATCH": 17,
+      "ARC": 1,
+      "TEXT": 32,
+      "DIMENSION": 171
+    },
+    "layer_counts": {
+      "现场实际间隔柱定位": 1,
+      "0": 37,
+      "灯柱定位线": 3,
+      "F-地材造型线": 25,
+      "DEFPOINTS": 3,
+      "F-地材填充": 1797,
+      "d地面疏散指示开孔165mm": 343
+    },
+    "linetype_counts": {
+      "BYLAYER": 429,
+      "Continuous": 1780
+    },
+    "has_hatch": true,
+    "has_lwpolyline": true,
+    "has_line": true,
+    "has_circle": true
+  },
+  "expected_counts": {
+    "panels": 8001,
+    "holes": 171
+  },
+  "audit_ignore_rules": [
+    {
+      "issue_type": "hole_outside_panel",
+      "action": "ignore"
+    },
+    {
+      "issue_type": "duplicate_text",
+      "action": "ignore"
+    }
+  ],
+  "exclude_entity_handles": [],
+  "source_sha256": "bb61cb3f90c4a92215e1af1dd8d9e9d179aaea2bfacf02a56bcbc429d2ae5639",
+  "notes": "福州万象城1.1：F-地材填充 LINE 网格 + F-地材造型线曲线重建封闭图形，排除短边≤3mm 的 2mm 伸缩缝。"
+}

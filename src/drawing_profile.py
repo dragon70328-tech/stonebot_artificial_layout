@@ -69,6 +69,21 @@ class DrawingProfile:
     small_area_threshold: float = 100.0
     text_height: float = 40.0
     low_confidence_threshold: float = 0.8
+    grid_mode: bool = False
+    grid_layer: str | None = None
+    grid_min_line_length: float = 800.0
+    grid_snap_tolerance: float = 10.0
+    grid_min_area: float = 100000.0
+    grid_max_area: float = 5000000.0
+    grid_label_margin: float = 1000.0
+    grid_split_layers: list[str] = field(default_factory=list)
+    network_mode: bool = False
+    network_layers: list[str] = field(default_factory=list)
+    network_min_area: float = 1000.0
+    network_max_area: float = 50000000.0
+    network_gap_side_tolerance: float = 3.0
+    network_arc_flattening: float = 1.0
+    network_snap_tolerance: float = 1.5
     notes: str = ""
     expected_counts: dict[str, int] = field(default_factory=dict)
     audit_ignore_rules: list[dict[str, Any]] = field(default_factory=list)
@@ -473,6 +488,511 @@ def _polygons_from_line_entities(line_entities) -> list[Polygon]:
     ]
 
 
+def _cluster_1d(values: list[float], tolerance: float) -> list[float]:
+    """Cluster nearby 1D coordinates into representative grid lines."""
+    if not values:
+        return []
+    ordered = sorted(values)
+    clusters: list[list[float]] = []
+    current = [ordered[0]]
+    for value in ordered[1:]:
+        if abs(value - current[-1]) <= tolerance:
+            current.append(value)
+        else:
+            clusters.append(current)
+            current = [value]
+    clusters.append(current)
+    return [sum(cluster) / len(cluster) for cluster in clusters]
+
+
+def _extract_grid_panels(
+    doc: ezdxf.document.Drawing,
+    profile: DrawingProfile,
+    panel_layers: list[str] | None,
+    excluded_layers: set[str],
+) -> list[dict[str, Any]]:
+    """Reconstruct axis-aligned rectangular panels from LWPOLYLINE grid lines.
+
+    Some CAD/PDF imports draw panel grids as many open two-point LWPOLYLINEs
+    instead of closed polygons. This mode collects long horizontal/vertical
+    LWPOLYLINE segments, clusters their coordinates into grid lines, forms
+    adjacent rectangles, and keeps only rectangles containing exactly one
+    number label.
+    """
+    layer_names = {profile.grid_layer} if profile.grid_layer else set(
+        panel_layers or _profile_panel_layers(profile)
+    )
+    if not layer_names:
+        return []
+
+    excluded_linetypes = {value.upper() for value in profile.exclude_linetypes}
+    axis_tolerance = max(profile.closed_tolerance, 0.5)
+    segments: list[tuple[str, tuple[tuple[float, float], tuple[float, float]]]] = []
+
+    for entity in doc.modelspace():
+        if entity.dxftype() != "LWPOLYLINE":
+            continue
+        layer = getattr(entity.dxf, "layer", "0") or "0"
+        if layer in excluded_layers or layer not in layer_names:
+            continue
+        linetype = _linetype_name(entity, doc).upper()
+        if linetype in excluded_linetypes:
+            continue
+
+        points = _lwpolyline_points(entity)
+        segment_pairs = list(zip(points, points[1:]))
+        if entity.closed and len(points) >= 3:
+            segment_pairs.append((points[-1], points[0]))
+
+        for start, end in segment_pairs:
+            dx = abs(start[0] - end[0])
+            dy = abs(start[1] - end[1])
+            if dx <= axis_tolerance and dy >= profile.grid_min_line_length:
+                segments.append(("v", (start, end)))
+            elif dy <= axis_tolerance and dx >= profile.grid_min_line_length:
+                segments.append(("h", (start, end)))
+
+    number_texts = _collect_profile_number_texts(
+        doc,
+        profile,
+        exclude_layers=sorted(excluded_layers),
+    )
+    if not number_texts:
+        return []
+
+    label_margin = profile.grid_label_margin
+    label_points = [text["point"] for text in number_texts]
+    label_min_x = min(point[0] for point in label_points) - label_margin
+    label_max_x = max(point[0] for point in label_points) + label_margin
+    label_min_y = min(point[1] for point in label_points) - label_margin
+    label_max_y = max(point[1] for point in label_points) + label_margin
+
+    grid_min_x = float("inf")
+    grid_max_x = float("-inf")
+    grid_min_y = float("inf")
+    grid_max_y = float("-inf")
+    bounded_segments: list[tuple[str, tuple[tuple[float, float], tuple[float, float]]]] = []
+    for direction, (start, end) in segments:
+        min_x, max_x = sorted((start[0], end[0]))
+        min_y, max_y = sorted((start[1], end[1]))
+        if max_x < label_min_x or min_x > label_max_x:
+            continue
+        if max_y < label_min_y or min_y > label_max_y:
+            continue
+        bounded_segments.append((direction, (start, end)))
+        grid_min_x = min(grid_min_x, min_x)
+        grid_max_x = max(grid_max_x, max_x)
+        grid_min_y = min(grid_min_y, min_y)
+        grid_max_y = max(grid_max_y, max_y)
+
+    # Keep only full-span grid lines. Internal decorative lines in this
+    # drawing are shorter than 80% of the overall grid extent; retaining them
+    # would split real cells into false smaller rectangles.
+    min_horizontal_span = (grid_max_x - grid_min_x) * 0.8
+    min_vertical_span = (grid_max_y - grid_min_y) * 0.8
+
+    xs: list[float] = []
+    ys: list[float] = []
+    for direction, (start, end) in bounded_segments:
+        min_x, max_x = sorted((start[0], end[0]))
+        min_y, max_y = sorted((start[1], end[1]))
+        if direction == "h":
+            if max_x - min_x < min_horizontal_span:
+                continue
+            ys.append((start[1] + end[1]) / 2.0)
+        else:
+            if max_y - min_y < min_vertical_span:
+                continue
+            xs.append((start[0] + end[0]) / 2.0)
+
+    xs = _cluster_1d(xs, profile.grid_snap_tolerance)
+    ys = _cluster_1d(ys, profile.grid_snap_tolerance)
+    xs.sort()
+    ys.sort()
+
+    split_layer_names = set(profile.grid_split_layers) if profile.grid_split_layers else set()
+    candidate_layers = set(layer_names) | split_layer_names
+    candidate_polys: list[tuple[Polygon, str, str]] = []
+    for entity in doc.modelspace():
+        if entity.dxftype() != "LWPOLYLINE":
+            continue
+        layer = getattr(entity.dxf, "layer", "0") or "0"
+        if layer in excluded_layers or layer not in candidate_layers:
+            continue
+        linetype = _linetype_name(entity, doc).upper()
+        if linetype in excluded_linetypes:
+            continue
+        if not entity.closed:
+            continue
+        points = _lwpolyline_points(entity)
+        if len(points) < 3:
+            continue
+        try:
+            polygon = Polygon(points)
+            if polygon.is_empty:
+                continue
+            if not polygon.is_valid:
+                polygon = polygon.buffer(0)
+            if polygon.is_empty or polygon.geom_type != "Polygon":
+                continue
+        except Exception:
+            continue
+        candidate_polys.append(
+            (polygon, layer, str(getattr(entity.dxf, "handle", "") or ""))
+        )
+
+    output_layer = (
+        profile.grid_layer
+        or profile.panel_layer
+        or (panel_layers[0] if panel_layers else "")
+    )
+
+    def split_panels_for_cell(
+        rectangle: Polygon,
+        label: str,
+    ) -> list[dict[str, Any]] | None:
+        cell_candidates: list[tuple[Polygon, str, str]] = []
+        for polygon, layer, handle in candidate_polys:
+            if polygon.area < profile.grid_min_area:
+                continue
+            if polygon.area > rectangle.area * 0.98:
+                continue
+            try:
+                if not rectangle.contains(polygon.centroid):
+                    continue
+                if rectangle.intersection(polygon).area < polygon.area * 0.95:
+                    continue
+            except Exception:
+                continue
+            cell_candidates.append((polygon, layer, handle))
+
+        if len(cell_candidates) < 2:
+            return None
+
+        cell_candidates.sort(
+            key=lambda item: (
+                0 if item[1] == output_layer else 1,
+                -item[0].area,
+            )
+        )
+        deduped: list[tuple[Polygon, str, str]] = []
+        for polygon, layer, handle in cell_candidates:
+            duplicate = False
+            for kept, _, _ in deduped:
+                try:
+                    intersection_area = polygon.intersection(kept).area
+                except Exception:
+                    intersection_area = 0.0
+                denominator = min(polygon.area, kept.area)
+                if denominator > 0 and intersection_area / denominator >= 0.9:
+                    duplicate = True
+                    break
+            if not duplicate:
+                deduped.append((polygon, layer, handle))
+
+        if len(deduped) != 2:
+            return None
+
+        try:
+            union = unary_union([deduped[0][0], deduped[1][0]])
+            coverage = union.intersection(rectangle).area / rectangle.area
+        except Exception:
+            coverage = 0.0
+        if coverage < 0.90:
+            return None
+
+        ordered = sorted(
+            deduped,
+            key=lambda item: (
+                float(item[0].centroid.x),
+                float(item[0].centroid.y),
+            ),
+        )
+        parts: list[dict[str, Any]] = []
+        for sub_index, (polygon, layer, handle) in enumerate(ordered):
+            centroid = polygon.centroid
+            parts.append(
+                {
+                    "index": len(panels) + len(parts),
+                    "polygon": polygon,
+                    "outer_polygon": polygon,
+                    "holes": [],
+                    "hole_handles": [],
+                    "centroid": centroid,
+                    "area": polygon.area,
+                    "handle": handle,
+                    "layer": output_layer,
+                    "source": "grid_split",
+                    "confidence": 0.9,
+                    "grid_column": x_index,
+                    "grid_row": y_index,
+                    "original_number": f"{label}{chr(97 + sub_index)}",
+                }
+            )
+        return parts
+
+    panels: list[dict[str, Any]] = []
+    for x_index in range(len(xs) - 1):
+        for y_index in range(len(ys) - 1):
+            min_x, max_x = xs[x_index], xs[x_index + 1]
+            min_y, max_y = ys[y_index], ys[y_index + 1]
+            rectangle = Polygon(
+                [
+                    (min_x, min_y),
+                    (max_x, min_y),
+                    (max_x, max_y),
+                    (min_x, max_y),
+                ]
+            )
+            if not rectangle.is_valid:
+                rectangle = rectangle.buffer(0)
+            if rectangle.is_empty:
+                continue
+            if not (profile.grid_min_area <= rectangle.area <= profile.grid_max_area):
+                continue
+
+            inside = [
+                text
+                for text in number_texts
+                if rectangle.contains(Point(text["point"][0], text["point"][1]))
+            ]
+            if len(inside) != 1:
+                continue
+
+            split_parts = split_panels_for_cell(
+                rectangle,
+                inside[0]["text"],
+            )
+            if split_parts is not None:
+                panels.extend(split_parts)
+                continue
+
+            centroid = rectangle.centroid
+            panels.append(
+                {
+                    "index": len(panels),
+                    "polygon": rectangle,
+                    "outer_polygon": rectangle,
+                    "holes": [],
+                    "hole_handles": [],
+                    "centroid": centroid,
+                    "area": rectangle.area,
+                    "handle": None,
+                    "layer": output_layer,
+                    "source": "grid",
+                    "confidence": 0.95,
+                    "grid_column": x_index,
+                    "grid_row": y_index,
+                    "original_number": inside[0]["text"],
+                }
+            )
+
+    return panels
+
+
+def _snap_line_endpoints(
+    lines: list[LineString],
+    tolerance: float,
+) -> list[LineString]:
+    """Snap nearby line endpoints into a common coordinate.
+
+    CAD/PDF exports often leave tiny gaps between adjacent LINE segments.
+    This clusters endpoints whose distance is within ``tolerance`` and
+    rewrites the line coordinates to the cluster representative before
+    polygonization, so near-closed cells are not lost.
+    """
+    if tolerance <= 0 or not lines:
+        return lines
+
+    unique_points: list[tuple[float, float]] = []
+    seen: set[tuple[float, float]] = set()
+    for line in lines:
+        for x, y in line.coords:
+            key = (float(x), float(y))
+            if key not in seen:
+                seen.add(key)
+                unique_points.append(key)
+
+    if len(unique_points) < 2:
+        return lines
+
+    point_geoms = [Point(x, y) for x, y in unique_points]
+    tree = STRtree(point_geoms)
+    parent = list(range(len(unique_points)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    tolerance_sq = tolerance * tolerance
+    for index, (x, y) in enumerate(unique_points):
+        search_area = Point(x, y).buffer(tolerance)
+        for candidate in tree.query(search_area):
+            candidate = int(candidate)
+            if candidate <= index:
+                continue
+            cx, cy = unique_points[candidate]
+            if (cx - x) ** 2 + (cy - y) ** 2 <= tolerance_sq:
+                union(index, candidate)
+
+    representatives: dict[tuple[float, float], tuple[float, float]] = {}
+    for index, point in enumerate(unique_points):
+        representatives[point] = unique_points[find(index)]
+
+    snapped_lines: list[LineString] = []
+    for line in lines:
+        snapped_lines.append(
+            LineString(
+                [
+                    representatives[(float(x), float(y))]
+                    for x, y in line.coords
+                ]
+            )
+        )
+    return snapped_lines
+
+
+def _extract_line_network_panels(
+    doc: ezdxf.document.Drawing,
+    profile: DrawingProfile,
+    panel_layers: list[str] | None,
+    excluded_layers: set[str],
+) -> list[dict[str, Any]]:
+    """Reconstruct closed panels from an open LINE/LWPOLYLINE network.
+
+    This is used for drawings where tile boundaries are drawn as individual
+    LINE segments instead of closed polygons. Polygonizing the complete
+    network recovers both rectangular tiles and curve-split non-rectangular
+    parts. Thin rectangles caused by expansion joints are filtered out by
+    their bounding-box short side.
+    """
+    layer_names = set(profile.network_layers) if profile.network_layers else set(
+        panel_layers or _profile_panel_layers(profile)
+    )
+    if not layer_names:
+        return []
+
+    excluded_linetypes = {value.upper() for value in profile.exclude_linetypes}
+    lines: list[LineString] = []
+
+    for entity in doc.modelspace():
+        dtype = entity.dxftype()
+        layer = getattr(entity.dxf, "layer", "0") or "0"
+        if layer in excluded_layers or layer not in layer_names:
+            continue
+        linetype = _linetype_name(entity, doc).upper()
+        if linetype in excluded_linetypes:
+            continue
+
+        if dtype == "LINE":
+            start = (float(entity.dxf.start.x), float(entity.dxf.start.y))
+            end = (float(entity.dxf.end.x), float(entity.dxf.end.y))
+            line = LineString([start, end])
+            if line.length > 1e-9:
+                lines.append(line)
+            continue
+
+        if dtype == "LWPOLYLINE":
+            points = _lwpolyline_points(entity)
+            if len(points) < 2:
+                continue
+            points = [(float(x), float(y)) for x, y in points]
+            segment_pairs = list(zip(points, points[1:]))
+            if _is_closed(entity, profile.closed_tolerance):
+                segment_pairs.append((points[-1], points[0]))
+        elif dtype == "ARC":
+            try:
+                raw_points = list(entity.flattening(profile.network_arc_flattening))
+            except Exception:
+                continue
+            points = [(float(point[0]), float(point[1])) for point in raw_points]
+            if len(points) < 2:
+                continue
+            segment_pairs = list(zip(points, points[1:]))
+        else:
+            continue
+
+        for start, end in segment_pairs:
+            line = LineString([start, end])
+            if line.length > 1e-9:
+                lines.append(line)
+
+    if not lines:
+        return []
+
+    if profile.network_snap_tolerance > 0:
+        lines = _snap_line_endpoints(
+            lines,
+            profile.network_snap_tolerance,
+        )
+
+    polygons = list(polygonize(unary_union(lines)))
+    panels: list[dict[str, Any]] = []
+    output_layer = (
+        profile.network_layers[0]
+        if profile.network_layers
+        else (panel_layers[0] if panel_layers else "")
+    )
+
+    for polygon in polygons:
+        if polygon.is_empty:
+            continue
+        if not polygon.is_valid:
+            polygon = polygon.buffer(0)
+        if polygon.is_empty:
+            continue
+
+        candidates: list[Polygon] = []
+        if polygon.geom_type == "Polygon":
+            candidates.append(polygon)
+        elif polygon.geom_type in {"MultiPolygon", "GeometryCollection"}:
+            candidates.extend(
+                geom
+                for geom in polygon.geoms
+                if geom.geom_type == "Polygon"
+            )
+        else:
+            continue
+
+        for cleaned in candidates:
+            if cleaned.is_empty:
+                continue
+            if not (profile.network_min_area <= cleaned.area <= profile.network_max_area):
+                continue
+            min_x, min_y, max_x, max_y = cleaned.bounds
+            width = max_x - min_x
+            height = max_y - min_y
+            if min(width, height) <= profile.network_gap_side_tolerance:
+                continue
+
+            centroid = cleaned.centroid
+            panels.append(
+                {
+                    "index": len(panels),
+                    "polygon": cleaned,
+                    "outer_polygon": cleaned,
+                    "holes": [],
+                    "hole_handles": [],
+                    "centroid": centroid,
+                    "area": cleaned.area,
+                    "handle": None,
+                    "layer": output_layer,
+                    "source": "line_network",
+                    "confidence": 0.9,
+                }
+            )
+
+    return panels
+
+
 def _has_hatch_entities(
     doc: ezdxf.document.Drawing,
     profile: DrawingProfile,
@@ -506,6 +1026,26 @@ def _extract_profile_panels(
     excluded_layers = {value for value in (exclude_layers or [])}
     panels: list[dict[str, Any]] = []
 
+    if profile.network_mode:
+        panels = _extract_line_network_panels(
+            doc,
+            profile,
+            panel_layers,
+            excluded_layers,
+        )
+        _assign_profile_holes(panels, doc, profile, excluded_layers)
+        return panels
+
+    if profile.grid_mode:
+        panels = _extract_grid_panels(
+            doc,
+            profile,
+            panel_layers,
+            excluded_layers,
+        )
+        _assign_profile_holes(panels, doc, profile, excluded_layers)
+        return panels
+
     if profile.use_hatch:
         hatch_layer = profile.hatch_layer or None
         for entity in doc.modelspace():
@@ -537,6 +1077,7 @@ def _extract_profile_panels(
                 }
             )
         if panels:
+            _assign_profile_holes(panels, doc, profile, excluded_layers)
             return panels
 
     polygon_items = extract_closed_polygons(
@@ -730,6 +1271,8 @@ def _collect_profile_number_texts(
         if layer in excluded_layers:
             continue
         if allowed_layers and layer not in allowed_layers:
+            continue
+        if getattr(entity.dxf, "handle", None) in profile.exclude_entity_handles:
             continue
         try:
             text = (
@@ -1050,12 +1593,18 @@ def read_dxf_with_profile(
             profile,
             zone_texts=zone_texts or None,
         )
+    elif profile.network_mode:
+        assignments = {}
     else:
         assignments, _ = _assign_texts_to_panels(panels, texts, profile)
 
     parts_data: list[dict[str, Any]] = []
     for panel in panels:
-        if room_assignments is not None:
+        if panel.get("original_number") is not None:
+            original_number = panel["original_number"]
+        elif profile.network_mode:
+            original_number = None
+        elif room_assignments is not None:
             original_number = room_assignments.get(panel["index"])
         elif panel_layer_assignments is not None:
             original_number = panel_layer_assignments.get(panel["index"])
@@ -1767,7 +2316,7 @@ def audit_drawing(
 
     _add_entity_filter_issues(doc, profile, issues)
     panels_from_hatch = _has_hatch_entities(doc, profile)
-    if not panels_from_hatch:
+    if not panels_from_hatch and not profile.grid_mode and not profile.network_mode:
         _add_unclosed_polyline_issues(doc, profile, issues)
         _add_line_chain_issues(doc, profile, issues)
         _add_invalid_geometry_issues(doc, profile, issues)
@@ -1823,22 +2372,51 @@ def audit_drawing(
             texts,
             profile,
         )
-        _add_expected_count_issues(panels, texts, assignments, profile, issues)
-        _add_number_assignment_issues(
-            panels,
-            texts,
-            assignments,
-            matched_texts,
-            profile,
-            issues,
-        )
-        _add_material_conflict_issues(
-            panels,
-            texts,
-            assignments,
-            profile,
-            issues,
-        )
+        if profile.grid_mode:
+            actual_numbers = {
+                panel["original_number"]
+                for panel in panels
+                if panel.get("original_number") is not None
+            }
+            _add_expected_count_issues(
+                panels,
+                texts,
+                {},
+                profile,
+                issues,
+                actual_numbers=actual_numbers,
+            )
+        elif profile.network_mode:
+            actual_numbers = {
+                panel["original_number"]
+                for panel in panels
+                if panel.get("original_number") is not None
+            }
+            _add_expected_count_issues(
+                panels,
+                texts,
+                {},
+                profile,
+                issues,
+                actual_numbers=actual_numbers,
+            )
+        else:
+            _add_expected_count_issues(panels, texts, assignments, profile, issues)
+            _add_number_assignment_issues(
+                panels,
+                texts,
+                assignments,
+                matched_texts,
+                profile,
+                issues,
+            )
+            _add_material_conflict_issues(
+                panels,
+                texts,
+                assignments,
+                profile,
+                issues,
+            )
     return _apply_audit_ignore_rules(issues, profile)
 
 

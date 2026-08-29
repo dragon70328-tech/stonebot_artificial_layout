@@ -64,6 +64,7 @@ from src.contracts import (
     RecheckSummary,
     ReviewState,
 )
+from src.recognized_contract import parts_data_to_recognized_drawing
 # ═══════════════════════════════════════════════════════════════
 #  CLI 参数
 # ═══════════════════════════════════════════════════════════════
@@ -970,6 +971,17 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         print("错误：未找到任何封闭图形。")
         sys.exit(1)
 
+    recognized_drawing = parts_data_to_recognized_drawing(
+        parts_data,
+        dxf_path,
+        profile_name=drawing_profile.name if drawing_profile else None,
+        closed_tolerance=(
+            drawing_profile.closed_tolerance
+            if drawing_profile is not None
+            else 0.01
+        ),
+    )
+
     parts = assign_numbers(parts_data, skip_unnumbered=skip_unnumbered)
     skipped_material_numbers = []
     if drawing_profile is not None and drawing_profile.material_group_enabled:
@@ -992,6 +1004,11 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     out_dir = None
     if not report_only:
         out_dir = make_output_dir(dxf_path)
+        recognized_json = out_dir / f"{stem}_recognized.json"
+        recognized_json.write_text(
+            recognized_drawing.to_json(),
+            encoding="utf-8",
+        )
         numbered_original = out_dir / f"{stem}_numbered_原位.dxf"
         write_numbered_parts_dxf(parts, str(numbered_original),
                                  unit_system=unit.value)
