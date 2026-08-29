@@ -97,6 +97,22 @@ def test_postprocessor_slide_keeps_parts_inside_sheet():
         assert maxy <= 1000.0 + 1e-6
 
 
+def test_postprocessor_through_cut_aligns_nearly_collinear_edges():
+    p1 = make_part("A", 100.0, 100.0, 100.0, 100.0)
+    p2 = make_part("B", 100.0, 100.0, 101.0, 300.0)
+    sheet = Sheet(index=1, width=1000.0, height=1000.0,
+                  thickness=20.0, parts=[p1, p2])
+
+    PostProcessor(1000.0, 1000.0).through_cut([sheet])
+
+    assert abs(p1.outer_polygon.bounds[2] - p2.outer_polygon.bounds[2]) < 1e-6
+    assert validate_nesting(NestingResult(
+        sheets=[sheet], unit="metric", total_parts=2, total_sheets=1,
+        total_part_area=sum(p.area for p in sheet.parts),
+        total_sheet_area=1000.0 * 1000.0,
+    ), 1000.0, 1000.0) == []
+
+
 def test_parse_special_size_accepts_x_separator():
     assert app.parse_special_size("3225x1625") == (3225.0, 1625.0)
 

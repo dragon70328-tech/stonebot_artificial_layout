@@ -30,6 +30,7 @@ class PostProcessor:
             self.enforce_min_gap(sheets, gap_mm)
         if align:
             self.align_edges(sheets)
+            self.through_cut(sheets)
         if gap_mm > 0:
             self.enforce_min_gap(sheets, gap_mm)
 
@@ -386,6 +387,104 @@ class PostProcessor:
                 self._shift(part, dx, dy)
                 changed = True
         return changed
+
+    # ── through_cut ─────────────────────────────────────────
+
+    def through_cut(self, sheets, snap_tol=2.0):
+        """对已排板结果做“一刀通切”整理。
+
+        只做刚体平移，不改变角度和板归属；优先把同一张板内近乎共线的
+        竖直/水平外轮廓边吸附到同一条切割线，减少桥切机抬刀和小台阶。
+        """
+        for sheet in sheets:
+            if len(sheet.parts) <= 1:
+                continue
+            self._through_cut_sheet(sheet, snap_tol)
+
+    def _through_cut_sheet(self, sheet, snap_tol):
+        for _ in range(6):
+            changed = False
+            for orientation in ("vertical", "horizontal"):
+                if self._snap_straight_axis(sheet, orientation, snap_tol):
+                    changed = True
+            if not changed:
+                break
+
+    def _snap_straight_axis(self, sheet, orientation, snap_tol):
+        parts = sheet.parts
+        edges = []
+        for part in parts:
+            vertical, horizontal = self._straight_edges(part)
+            edges.extend(vertical if orientation == "vertical" else horizontal)
+        if len(edges) < 2:
+            return False
+
+        edges.sort(key=lambda edge: edge[2])
+        clusters = []
+        current = [edges[0]]
+        for edge in edges[1:]:
+            if edge[2] - current[-1][2] < snap_tol:
+                current.append(edge)
+            else:
+                if len(current) >= 2:
+                    clusters.append(current)
+                current = [edge]
+        if len(current) >= 2:
+            clusters.append(current)
+
+        is_vertical = orientation == "vertical"
+        part_deltas: dict[int, list[float]] = {}
+        for cluster in clusters:
+            target = sum(edge[2] for edge in cluster) / len(cluster)
+            for _, _, coord, part in cluster:
+                part_deltas.setdefault(id(part), []).append(target - coord)
+
+        moving_parts = [
+            (part, sum(deltas) / len(deltas))
+            for part in parts
+            if (deltas := part_deltas.get(id(part)))
+        ]
+
+        others = [
+            part.outer_polygon
+            for part in parts
+            if id(part) not in part_deltas
+        ]
+        moved_polys: list = []
+        moves = []
+        for part, delta in moving_parts:
+            if abs(delta) < EPS:
+                moved_polys.append(part.outer_polygon)
+                moves.append((part, 0.0, 0.0))
+                continue
+            dx, dy = (delta, 0.0) if is_vertical else (0.0, delta)
+            test = affinity.translate(part.outer_polygon, dx, dy)
+            tb = test.bounds
+            if tb[0] < -EPS or tb[1] < -EPS or tb[2] > self.w + EPS or tb[3] > self.h + EPS:
+                return False
+            if any(shapely.relate_pattern(test, other, _OVERLAP_PATTERN) for other in others + moved_polys):
+                return False
+            moved_polys.append(test)
+            moves.append((part, dx, dy))
+
+        changed = False
+        for part, dx, dy in moves:
+            if dx or dy:
+                self._shift(part, dx, dy)
+                changed = True
+        return changed
+
+    def _straight_edges(self, part, tol=0.05):
+        """提取外轮廓中近似竖直和水平的直线边。"""
+        vertical = []
+        horizontal = []
+        coords = list(part.outer_polygon.exterior.coords)
+        for (x0, y0), (x1, y1) in zip(coords, coords[1:]):
+            if abs(x0 - x1) <= tol:
+                vertical.append((min(y0, y1), max(y0, y1), x0, part))
+            elif abs(y0 - y1) <= tol:
+                horizontal.append((min(x0, x1), max(x0, x1), y0, part))
+        return vertical, horizontal
 
     # ── enforce_min_gap ─────────────────────────────────────
 
