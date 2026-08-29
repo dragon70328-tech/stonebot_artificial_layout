@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from functools import lru_cache
 
 from shapely.geometry import box
 
@@ -74,20 +75,17 @@ def _enumerate_patterns(
     return patterns
 
 
-def exact_bin_pack(
-    counts: dict[float, int], capacity: float
+@lru_cache(maxsize=4096)
+def _exact_bin_pack_impl(
+    counts_items: tuple[tuple[float, int], ...],
+    capacity: float,
 ) -> tuple[list[tuple[float, dict[float, int]]], bool]:
-    """精确一维装箱：求最小 bin 数。
-
-    counts: {尺寸: 件数}；capacity: 列/排容量（均已含锯缝放大）。
-    返回 (bins, exact)。bins 为 [(fill, {size: count})]；exact=False 表示
-    搜索超限回退到 BFD 结果（不保证最小）。
-    """
-    if not counts:
+    if not counts_items:
         return [], True
-    sizes = sorted(counts, reverse=True)
-    counts_tuple = tuple(counts[size] for size in sizes)
-    total = sum(size * count for size, count in counts.items())
+    ordered_items = sorted(counts_items, key=lambda item: item[0], reverse=True)
+    sizes = [size for size, _ in ordered_items]
+    counts_tuple = tuple(count for _, count in ordered_items)
+    total = sum(size * count for size, count in ordered_items)
     lower_bound = -(-total // capacity)
     greedy = _bfd_bins(list(zip(sizes, counts_tuple)), capacity)
     if len(greedy) == lower_bound:
@@ -96,47 +94,51 @@ def exact_bin_pack(
     patterns = _enumerate_patterns(sizes, capacity)
     if len(patterns) > _MAX_PATTERNS:
         return greedy, False
-    patterns_by_first: dict[int, list[tuple[float, tuple[int, ...]]]] = defaultdict(list)
-    for used, vec in patterns:
+    patterns_by_first: dict[int, list[tuple[tuple[int, ...], float]]] = defaultdict(list)
+    for fill, vec in patterns:
         first = next(i for i, k in enumerate(vec) if k)
-        patterns_by_first[first].append((used, vec))
+        patterns_by_first[first].append((vec, fill))
 
     states = [0]
+    size_count = len(sizes)
 
     def try_pack(limit: int):
         failed: set[tuple[int, ...]] = set()
-        chosen: list[tuple[int, ...]] = []
+        chosen: list[tuple[tuple[int, ...], float]] = []
 
-        def dfs(rem: tuple[int, ...]) -> bool:
+        def dfs(rem: tuple[int, ...], rem_sum: float) -> bool:
             if states[0] > _MAX_DFS_STATES:
                 return False
-            if not any(rem):
+            if rem_sum <= 1e-9:
                 return True
             if len(chosen) >= limit:
                 return False
-            rem_sum = sum(sizes[i] * rem[i] for i in range(len(sizes)))
             if len(chosen) + -(-rem_sum // capacity) > limit:
                 return False
             if rem in failed:
                 return False
             states[0] += 1
             first = next(i for i, k in enumerate(rem) if k)
-            for _, vec in patterns_by_first[first]:
-                if any(vec[j] > rem[j] for j in range(len(sizes))):
-                    continue
-                chosen.append(vec)
-                if dfs(tuple(rem[j] - vec[j] for j in range(len(sizes)))):
-                    return True
-                chosen.pop()
+            for vec, fill in patterns_by_first[first]:
+                next_rem: list[int] = []
+                for index, used in enumerate(vec):
+                    remaining_count = rem[index] - used
+                    if remaining_count < 0:
+                        break
+                    next_rem.append(remaining_count)
+                else:
+                    chosen.append((vec, fill))
+                    if dfs(tuple(next_rem), rem_sum - fill):
+                        return True
+                    chosen.pop()
             failed.add(rem)
             return False
 
-        if dfs(counts_tuple):
+        if dfs(counts_tuple, total):
             result = []
-            for vec in chosen:
-                fill = sum(sizes[i] * vec[i] for i in range(len(sizes)))
+            for vec, fill in chosen:
                 result.append(
-                    (fill, {sizes[i]: vec[i] for i in range(len(sizes)) if vec[i]})
+                    (fill, {sizes[i]: vec[i] for i in range(size_count) if vec[i]})
                 )
             return result
         return None
@@ -146,6 +148,25 @@ def exact_bin_pack(
         if result is not None:
             return result, True
     return greedy, False
+
+
+def exact_bin_pack(
+    counts: dict[float, int], capacity: float
+) -> tuple[list[tuple[float, dict[float, int]]], bool]:
+    """精确一维装箱：求最小 bin 数。
+
+    counts: {尺寸: 件数}；capacity: 列/排容量（均已含锯缝放大）。
+    返回 (bins, exact)。bins 为 [(fill, {size: count})]；exact=False 表示
+    搜索超限回退到 BFD 结果（不保证最小）。
+    """
+    counts_items = tuple(
+        sorted(
+            (float(size), int(count))
+            for size, count in counts.items()
+            if count > 0
+        )
+    )
+    return _exact_bin_pack_impl(counts_items, float(capacity))
 
 
 def _item_width(item) -> float:

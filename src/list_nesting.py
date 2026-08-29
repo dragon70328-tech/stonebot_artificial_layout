@@ -1599,19 +1599,19 @@ def _best_strip_subset(
     return chosen, best_sum
 
 
-def _best_strip_subset_power(
-    counts: dict[int, int],
+@lru_cache(maxsize=8192)
+def _best_strip_subset_power_cached(
+    counts_items: tuple[tuple[int, int], ...],
     capacity: int,
     power: float,
 ) -> tuple[list[int], int]:
-    """同 `_best_strip_subset`，但评分优先长条（长度 ** power）。"""
     capacity = int(capacity)
     neg = (-1e30, -1e30)
     dp = [neg] * (capacity + 1)
     dp[0] = (0.0, 0)
     parent: list[tuple[int, int, int] | None] = [None] * (capacity + 1)
 
-    for length, available in counts.items():
+    for length, available in counts_items:
         if available <= 0 or length > capacity:
             continue
         remaining = available
@@ -1644,6 +1644,26 @@ def _best_strip_subset_power(
         chosen.extend([length] * chunk)
         current = previous
     return chosen, dp[best_capacity][1]
+
+
+def _best_strip_subset_power(
+    counts: dict[int, int],
+    capacity: int,
+    power: float,
+) -> tuple[list[int], int]:
+    """同 `_best_strip_subset`，但评分优先长条（长度 ** power）。"""
+    counts_items = tuple(
+        sorted(
+            (int(length), int(count))
+            for length, count in counts.items()
+            if count > 0
+        )
+    )
+    return _best_strip_subset_power_cached(
+        counts_items,
+        int(capacity),
+        float(power),
+    )
 
 
 def _fill_free_rect_renba(
