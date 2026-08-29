@@ -486,6 +486,65 @@ class PostProcessor:
                 horizontal.append((min(x0, x1), max(x0, x1), y0, part))
         return vertical, horizontal
 
+    # ── manufacturability metrics ───────────────────────────
+
+    def measure(self, sheets):
+        """返回靠边总长和通切对齐总长，单位与 DXF 一致。"""
+        edge_total = 0.0
+        through_total = 0.0
+        for sheet in sheets:
+            edge_total += self._edge_contact_score(sheet)
+            through_total += self._through_cut_score(sheet)
+        return {
+            "edge_contact_mm": edge_total,
+            "through_cut_mm": through_total,
+        }
+
+    def _edge_contact_score(self, sheet, tol=1.0):
+        total = 0.0
+        for part in sheet.parts:
+            coords = list(part.outer_polygon.exterior.coords)
+            for (x0, y0), (x1, y1) in zip(coords, coords[1:]):
+                if abs(y0 - y1) <= tol:
+                    length = abs(x1 - x0)
+                    y = (y0 + y1) / 2.0
+                    if y <= tol or abs(y - self.h) <= tol:
+                        total += length
+                elif abs(x0 - x1) <= tol:
+                    length = abs(y1 - y0)
+                    x = (x0 + x1) / 2.0
+                    if x <= tol or abs(x - self.w) <= tol:
+                        total += length
+        return total
+
+    def _through_cut_score(self, sheet, snap_tol=2.0):
+        total = 0.0
+        for orientation in ("vertical", "horizontal"):
+            edges = []
+            for part in sheet.parts:
+                vertical, horizontal = self._straight_edges(part)
+                edges.extend(vertical if orientation == "vertical" else horizontal)
+            if len(edges) < 2:
+                continue
+            edges.sort(key=lambda edge: edge[2])
+            clusters = []
+            current = [edges[0]]
+            for edge in edges[1:]:
+                if edge[2] - current[-1][2] < snap_tol:
+                    current.append(edge)
+                else:
+                    if len(current) >= 2:
+                        clusters.append(current)
+                    current = [edge]
+            if len(current) >= 2:
+                clusters.append(current)
+            for cluster in clusters:
+                owners = {id(edge[3]) for edge in cluster}
+                if len(owners) < 2:
+                    continue
+                total += sum(edge[1] - edge[0] for edge in cluster)
+        return total
+
     # ── enforce_min_gap ─────────────────────────────────────
 
     def enforce_min_gap(self, sheets, gap_mm):

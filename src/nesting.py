@@ -609,6 +609,74 @@ def _compactness(result: NestingResult) -> float:
     return total
 
 
+def _placement_edge_score(sheets_pl: list, sheet_w: float, sheet_h: float,
+                          tol: float = 1.0) -> float:
+    """零件外轮廓与板边贴靠总长度。"""
+    total = 0.0
+    for pls in sheets_pl:
+        for pl in pls:
+            coords = list(pl.poly.exterior.coords)
+            for (x0, y0), (x1, y1) in zip(coords, coords[1:]):
+                if abs(y0 - y1) <= tol:
+                    length = abs(x1 - x0)
+                    y = (y0 + y1) / 2.0
+                    if y <= tol or abs(y - sheet_h) <= tol:
+                        total += length
+                elif abs(x0 - x1) <= tol:
+                    length = abs(y1 - y0)
+                    x = (x0 + x1) / 2.0
+                    if x <= tol or abs(x - sheet_w) <= tol:
+                        total += length
+    return total
+
+
+def _placement_through_cut_score(sheets_pl: list,
+                                 snap_tol: float = 2.0) -> float:
+    """同板内共线直边的对齐总长度，用于评估一刀通切潜力。"""
+    total = 0.0
+    for pls in sheets_pl:
+        for orientation in ("vertical", "horizontal"):
+            edges = []
+            for pl in pls:
+                coords = list(pl.poly.exterior.coords)
+                for (x0, y0), (x1, y1) in zip(coords, coords[1:]):
+                    if orientation == "vertical" and abs(x0 - x1) <= 0.05:
+                        edges.append((min(y0, y1), max(y0, y1), x0, id(pl)))
+                    elif orientation == "horizontal" and abs(y0 - y1) <= 0.05:
+                        edges.append((min(x0, x1), max(x0, x1), y0, id(pl)))
+            if len(edges) < 2:
+                continue
+            edges.sort(key=lambda edge: edge[2])
+            clusters = []
+            current = [edges[0]]
+            for edge in edges[1:]:
+                if edge[2] - current[-1][2] < snap_tol:
+                    current.append(edge)
+                else:
+                    if len(current) >= 2:
+                        clusters.append(current)
+                    current = [edge]
+            if len(current) >= 2:
+                clusters.append(current)
+
+            for cluster in clusters:
+                owners = {edge[3] for edge in cluster}
+                if len(owners) < 2:
+                    continue
+                total += sum(edge[1] - edge[0] for edge in cluster)
+    return total
+
+
+def _placement_manufacturability_score(sheets_pl: list,
+                                       sheet_w: float,
+                                       sheet_h: float) -> float:
+    """靠边 + 通切 综合制造评分，越大越好。"""
+    return (
+        _placement_edge_score(sheets_pl, sheet_w, sheet_h)
+        + _placement_through_cut_score(sheets_pl)
+    )
+
+
 # ---------------------------------------------------------------------------
 # 主入口
 # ---------------------------------------------------------------------------
@@ -648,7 +716,10 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
                                      first_part_left_edge=first_part_left_edge)
             compact = sum(max((pl.poly.bounds[3] for pl in pls), default=0.0)
                           for pls in sheets_pl)
-            key = (len(sheets_pl), compact)
+            manufacture_score = _placement_manufacturability_score(
+                sheets_pl, sheet_width, sheet_height
+            )
+            key = (len(sheets_pl), -manufacture_score, compact)
             if trial_best_key is None or key < trial_best_key:
                 trial_best_key = key
                 best_pl = sheets_pl
@@ -669,7 +740,14 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
         if errors:
             raise RuntimeError("排板结果校验失败：" + "; ".join(errors))
 
-        trial_key = (result.total_sheets, _compactness(result))
+        trial_manufacture_score = _placement_manufacturability_score(
+            best_pl, sheet_width, sheet_height
+        )
+        trial_key = (
+            result.total_sheets,
+            -trial_manufacture_score,
+            _compactness(result),
+        )
         if best_key is None or trial_key < best_key:
             best_key = trial_key
             best_result = result

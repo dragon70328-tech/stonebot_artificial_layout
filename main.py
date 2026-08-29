@@ -1085,6 +1085,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         print("非交互模式：自动确认板数，开始后处理。")
 
     # ── 后处理：推边压实 + 边缘对齐 + 最小间距 ──
+    manufacturing_metrics = {"edge_contact_mm": 0.0, "through_cut_mm": 0.0}
     if profile.slide_to_edge or profile.align_edges or profile.min_gap > 0:
         for sheet in result.sheets:
             pp = PostProcessor(sheet.width, sheet.height)
@@ -1094,6 +1095,9 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
                 align=profile.align_edges,
                 gap_mm=profile.min_gap,
             )
+            metrics = pp.measure([sheet])
+            manufacturing_metrics["edge_contact_mm"] += metrics["edge_contact_mm"]
+            manufacturing_metrics["through_cut_mm"] += metrics["through_cut_mm"]
 
     # ── 校验 ──
     errors = validate_mixed_nesting(result)
@@ -1131,6 +1135,10 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         "material_summary": material_summary,
         "elapsed_seconds": round(elapsed, 1),
         "validation_errors": len(errors),
+        "manufacturability": {
+            "edge_contact_mm": round(manufacturing_metrics["edge_contact_mm"], 1),
+            "through_cut_mm": round(manufacturing_metrics["through_cut_mm"], 1),
+        },
         "profile": {
             "processing_class": profile.processing_class,
             "arbitrary_rotation": profile.arbitrary_rotation,
