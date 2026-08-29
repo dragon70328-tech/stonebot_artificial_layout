@@ -369,21 +369,45 @@ class PostProcessor:
                 current = [e]
         if len(current) >= 2: clusters.append(current)
 
-        changed = False
         is_vert = edge_type in ("left", "right")
+        part_deltas: dict[int, float] = {}
         for cluster in clusters:
             target = sum(e[1] for e in cluster) / len(cluster)
-            others = [p.outer_polygon for p in parts if p not in [e[0] for e in cluster]]
             for part, _ in cluster:
                 b = part.outer_polygon.bounds
                 cur = b[1] if edge_type == "bottom" else (b[3] if edge_type == "top" else (b[0] if edge_type == "left" else b[2]))
-                d = target - cur
-                if abs(d) < EPS: continue
-                dx, dy = (d, 0) if is_vert else (0, d)
-                test = affinity.translate(part.outer_polygon, dx, dy)
-                tb = test.bounds
-                if tb[0] < -EPS or tb[1] < -EPS or tb[2] > self.w+EPS or tb[3] > self.h+EPS: continue
-                if any(shapely.relate_pattern(test, o, _OVERLAP_PATTERN) for o in others): continue
+                part_deltas[id(part)] = target - cur
+
+        moving_parts = [
+            (part, delta)
+            for part in parts
+            if (delta := part_deltas.get(id(part))) is not None
+        ]
+        others = [
+            part.outer_polygon
+            for part in parts
+            if id(part) not in part_deltas
+        ]
+        moved_polys = []
+        moves = []
+        for part, delta in moving_parts:
+            if abs(delta) < EPS:
+                moved_polys.append(part.outer_polygon)
+                moves.append((part, 0.0, 0.0))
+                continue
+            dx, dy = (delta, 0.0) if is_vert else (0.0, delta)
+            test = affinity.translate(part.outer_polygon, dx, dy)
+            tb = test.bounds
+            if tb[0] < -EPS or tb[1] < -EPS or tb[2] > self.w+EPS or tb[3] > self.h+EPS:
+                return False
+            if any(shapely.relate_pattern(test, other, _OVERLAP_PATTERN) for other in others + moved_polys):
+                return False
+            moved_polys.append(test)
+            moves.append((part, dx, dy))
+
+        changed = False
+        for part, dx, dy in moves:
+            if dx or dy:
                 self._shift(part, dx, dy)
                 changed = True
         return changed
@@ -399,7 +423,34 @@ class PostProcessor:
         for sheet in sheets:
             if len(sheet.parts) <= 1:
                 continue
+            snapshot = self._snapshot_parts(sheet.parts)
             self._through_cut_sheet(sheet, snap_tol)
+            if self._has_overlap(sheet.parts):
+                self._restore_parts(sheet.parts, snapshot)
+
+    def _snapshot_parts(self, parts):
+        return [
+            (p.outer_polygon, p.polygon, list(p.holes), p.label_position)
+            for p in parts
+        ]
+
+    def _restore_parts(self, parts, snapshot):
+        for p, (outer, poly, holes, label) in zip(parts, snapshot):
+            p.outer_polygon = outer
+            p.polygon = poly
+            p.holes = holes
+            p.label_position = label
+
+    def _has_overlap(self, parts):
+        for i, p1 in enumerate(parts):
+            for p2 in parts[i + 1:]:
+                if shapely.relate_pattern(
+                    p1.outer_polygon,
+                    p2.outer_polygon,
+                    _OVERLAP_PATTERN,
+                ):
+                    return True
+        return False
 
     def _through_cut_sheet(self, sheet, snap_tol):
         for _ in range(6):
