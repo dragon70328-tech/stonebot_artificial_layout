@@ -24,6 +24,7 @@ from src.models import Part, Sheet, NestingResult
 
 _DEFAULT_ROTATIONS = (0, 90, 180, 270)
 EPS = 1e-6
+GAP_TOL = 1e-3
 # DE-9IM 模式：两多边形内部相交 = 存在面积重叠；边缘贴合（共边）不算重叠
 _OVERLAP_PATTERN = "T********"
 # 每个旋转角下，通过碰撞检测的候选点上限（评分再从中择优）
@@ -175,23 +176,35 @@ def _reflex_vertices(poly: Polygon) -> list:
     return verts
 
 
-def _collides(cand: Polygon, tree: STRtree, geoms: list) -> bool:
-    """候选多边形与已放零件是否存在面积重叠（共边允许）"""
+def _collides(cand: Polygon, tree: STRtree, geoms: list,
+              min_gap: float = 0.0) -> bool:
+    """候选多边形与已放零件是否存在重叠，或间距小于 min_gap。"""
     if not geoms:
         return False
-    for idx in tree.query(cand):
-        if shapely.relate_pattern(cand, geoms[idx], _OVERLAP_PATTERN):
+    if min_gap <= EPS:
+        query_geom = cand
+    else:
+        minx, miny, maxx, maxy = cand.bounds
+        query_geom = box(
+            minx - min_gap, miny - min_gap,
+            maxx + min_gap, maxy + min_gap,
+        )
+    for idx in tree.query(query_geom):
+        other = geoms[idx]
+        if shapely.relate_pattern(cand, other, _OVERLAP_PATTERN):
+            return True
+        if min_gap > EPS and cand.distance(other) < min_gap - EPS:
             return True
     return False
 
 
-def _bbox_overlaps_any(cb: tuple, boxes: list) -> bool:
-    """候选包围盒是否与任一已放零件包围盒存在正面积重叠。"""
+def _bbox_overlaps_any(cb: tuple, boxes: list, min_gap: float = 0.0) -> bool:
+    """候选包围盒是否与任一已放零件包围盒过近（gap 外扩后的正面积重叠）。"""
     x0, y0, x1, y1 = cb
     for (px0, py0, px1, py1) in boxes:
-        if x1 <= px0 + EPS or x0 >= px1 - EPS:
+        if x1 + min_gap <= px0 + EPS or x0 - min_gap >= px1 - EPS:
             continue
-        if y1 <= py0 + EPS or y0 >= py1 - EPS:
+        if y1 + min_gap <= py0 + EPS or y0 - min_gap >= py1 - EPS:
             continue
         return True
     return False
@@ -203,17 +216,18 @@ def _bbox_overlaps_any(cb: tuple, boxes: list) -> bool:
 
 def _candidate_points(boxes: list, reflex: list,
                       sheet_w: float, sheet_h: float,
-                      pw: float, ph: float) -> list:
+                      pw: float, ph: float,
+                      min_gap: float = 0.0) -> list:
     """生成候选左下角位置（已按包围盒可行性过滤）"""
     xs = {0.0, sheet_w - pw}
     ys = {0.0, sheet_h - ph}
     for (x0, y0, x1, y1) in boxes:
-        xs.add(x1)          # 候选左边贴已放零件右边
-        xs.add(x0 - pw)     # 候选右边贴已放零件左边
-        ys.add(y1)          # 候选底边贴已放零件顶边
-        ys.add(y0 - ph)     # 候选顶边贴已放零件底边
-    rights = sorted({b[2] for b in boxes})
-    tops = sorted({b[3] for b in boxes})
+        xs.add(x1 + min_gap)          # 候选左边贴已放零件右边 + gap
+        xs.add(x0 - pw - min_gap)     # 候选右边贴已放零件左边 - gap
+        ys.add(y1 + min_gap)          # 候选底边贴已放零件顶边 + gap
+        ys.add(y0 - ph - min_gap)     # 候选顶边贴已放零件底边 - gap
+    rights = sorted({b[2] + min_gap for b in boxes})
+    tops = sorted({b[3] + min_gap for b in boxes})
 
     pts = set()
     for x in xs:
@@ -290,7 +304,8 @@ def _full_score(mode: str, cb: tuple, boxes: list,
 
 def _slide(rp: Polygon, rb: tuple, x: float, y: float,
            tree: STRtree, geoms: list,
-           sheet_w: float, sheet_h: float) -> tuple:
+           sheet_w: float, sheet_h: float,
+           min_gap: float = 0.0) -> tuple:
     """滑动压实：交替向 -x / -y 方向以递减步长移动，直到贴紧"""
     pw, ph = rb[2] - rb[0], rb[3] - rb[1]
     ox, oy = x - rb[0], y - rb[1]
@@ -303,7 +318,7 @@ def _slide(rp: Polygon, rb: tuple, x: float, y: float,
                     step *= 0.5
                     continue
                 cand = affinity.translate(rp, xoff=nx - rb[0], yoff=ny - rb[1])
-                if _collides(cand, tree, geoms):
+                if _collides(cand, tree, geoms, min_gap):
                     step *= 0.5
                 else:
                     x, y = nx, ny
@@ -313,7 +328,9 @@ def _slide(rp: Polygon, rb: tuple, x: float, y: float,
 
 def _find_placement(part: Part, geoms: list, boxes: list, reflex: list,
                     sheet_w: float, sheet_h: float,
-                    mode: str, cache: dict, rotations: tuple = _DEFAULT_ROTATIONS) -> _Placement | None:
+                    mode: str, cache: dict,
+                    rotations: tuple = _DEFAULT_ROTATIONS,
+                    min_gap: float = 0.0) -> _Placement | None:
     """为单个零件搜索最优放置位置，找不到返回 None"""
     tree = STRtree(geoms) if geoms else None
     best = None
@@ -323,15 +340,17 @@ def _find_placement(part: Part, geoms: list, boxes: list, reflex: list,
         pw, ph = rb[2] - rb[0], rb[3] - rb[1]
         if pw > sheet_w + EPS or ph > sheet_h + EPS:
             continue
-        pts = _candidate_points(boxes, reflex, sheet_w, sheet_h, pw, ph)
+        pts = _candidate_points(
+            boxes, reflex, sheet_w, sheet_h, pw, ph, min_gap
+        )
         pts.sort(key=lambda pt: _primary_key(mode, pt[0], pt[1], pw, ph))
 
         valid = []
         for (x, y) in pts:
             cb = (x, y, x + pw, y + ph)
-            if tree is not None and _bbox_overlaps_any(cb, boxes):
+            if tree is not None and _bbox_overlaps_any(cb, boxes, min_gap):
                 cand = affinity.translate(rp, xoff=x - rb[0], yoff=y - rb[1])
-                if _collides(cand, tree, geoms):
+                if _collides(cand, tree, geoms, min_gap):
                     continue
             valid.append((x, y, cb))
             if len(valid) >= _MAX_VALID_PER_ROT:
@@ -349,7 +368,9 @@ def _find_placement(part: Part, geoms: list, boxes: list, reflex: list,
         return None
     rot, x, y, rp, rb = best
     # 滑动压实（只向 -x/-y 移动，不会变差）
-    x, y, cand = _slide(rp, rb, x, y, tree, geoms, sheet_w, sheet_h)
+    x, y, cand = _slide(
+        rp, rb, x, y, tree, geoms, sheet_w, sheet_h, min_gap
+    )
     return _Placement(part=part, rot=rot, x=x, y=y, poly=cand)
 
 
@@ -361,7 +382,8 @@ def _nest_single(parts: list, sheet_w: float, sheet_h: float,
                  sort_key, mode: str, cache: dict,
                  max_sheets: int | None = None,
                  rotations: tuple = _DEFAULT_ROTATIONS,
-                 first_part_left_edge: bool = False) -> list | None:
+                 first_part_left_edge: bool = False,
+                 min_gap: float = 0.0) -> list | None:
     """单轮贪心：按 sort_key 排序，逐张填满大板。
 
     max_sheets：大板数量上限，超过则放弃本轮（返回 None）。
@@ -386,12 +408,12 @@ def _nest_single(parts: list, sheet_w: float, sheet_h: float,
                 if pl is None:
                     pl = _find_placement(
                         part, geoms, boxes, reflex, sheet_w, sheet_h,
-                        mode, cache, rotations
+                        mode, cache, rotations, min_gap
                     )
             else:
                 pl = _find_placement(
                     part, geoms, boxes, reflex, sheet_w, sheet_h,
-                    mode, cache, rotations
+                    mode, cache, rotations, min_gap
                 )
             if pl is None:
                 nxt.append(part)
@@ -471,13 +493,15 @@ def _lns_improve(sheets_pl: list, sheet_w: float, sheet_h: float,
                  cache: dict, budget_s: float = 40.0,
                  seed: int = 0, progress=None,
                  rotations: tuple = _DEFAULT_ROTATIONS,
-                 first_part_left_edge: bool = False) -> list:
+                 first_part_left_edge: bool = False,
+                 min_gap: float = 0.0,
+                 warm_start: list | None = None) -> list:
     """大邻域搜索：反复拆除利用率偏低的若干张板并重排，
     同数重排提升填充集中度（中性移动），偶尔直接压缩板数。"""
     rng = random.Random(seed)
     sheet_area = sheet_w * sheet_h
 
-    cur = sheets_pl
+    cur = warm_start if warm_start is not None else sheets_pl
     cur_key = (len(cur), -_concentration(cur))
     best, best_key = cur, cur_key
     t0 = time.time()
@@ -505,12 +529,14 @@ def _lns_improve(sheets_pl: list, sheet_w: float, sheet_h: float,
             res = _nest_single(sub, sheet_w, sheet_h, sort_key, mode,
                                cache, max_sheets=k - 1,
                                rotations=rotations,
-                               first_part_left_edge=first_part_left_edge)
+                               first_part_left_edge=first_part_left_edge,
+                               min_gap=min_gap)
         if res is None:
             res = _nest_single(sub, sheet_w, sheet_h, sort_key, mode,
                                cache, max_sheets=k,
                                rotations=rotations,
-                               first_part_left_edge=first_part_left_edge)
+                               first_part_left_edge=first_part_left_edge,
+                               min_gap=min_gap)
         if res is None:
             continue
 
@@ -563,6 +589,7 @@ def _materialize(sheets_pl: list, sheet_w: float, sheet_h: float,
                 holes=[tf(h) for h in part.holes],
                 original_number=part.original_number,
                 material_group=part.material_group,
+                group_id=part.group_id,
                 area=part.area,
                 label_position=(label_pt.x, label_pt.y),
             )
@@ -577,8 +604,8 @@ def _materialize(sheets_pl: list, sheet_w: float, sheet_h: float,
 
 
 def validate_nesting(result: NestingResult, sheet_w: float, sheet_h: float,
-                     tol: float = 0.01) -> list:
-    """精确校验排板结果：边界包含 + 两两面积重叠。返回违规信息列表（空 = 通过）"""
+                     tol: float = 0.01, min_gap: float = 0.0) -> list:
+    """精确校验排板结果：边界包含 + 两两面积重叠 + 最小间距。返回违规信息列表（空 = 通过）"""
     errors = []
     for sheet in result.sheets:
         polys = [p.outer_polygon for p in sheet.parts]
@@ -596,6 +623,12 @@ def validate_nesting(result: NestingResult, sheet_w: float, sheet_h: float,
                     errors.append(
                         f"Sheet {sheet.index}: {nums[i]} 与 {nums[j]} "
                         f"重叠 {area:.1f} mm²")
+                elif min_gap > EPS and \
+                        polys[i].distance(polys[j]) < min_gap - GAP_TOL:
+                    gap = polys[i].distance(polys[j])
+                    errors.append(
+                        f"Sheet {sheet.index}: {nums[i]} 与 {nums[j]} "
+                        f"间距 {gap:.3f} mm < 最小间距 {min_gap:.1f} mm")
     return errors
 
 
@@ -689,6 +722,8 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
                seed: int = 0,
                rotations: tuple = _DEFAULT_ROTATIONS,
                first_part_left_edge: bool = False,
+               min_gap: float = 0.0,
+               min_sheets: int | None = None,
                progress=None) -> NestingResult:
     """排板主入口：多轮贪心 + 多次试验取最优。
 
@@ -700,6 +735,7 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
     """
     best_result = None
     best_key = None
+    best_pl_global = None
     cache: dict = {}
 
     for trial in range(trials):
@@ -713,7 +749,8 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
             sheets_pl = _nest_single(parts, sheet_width, sheet_height,
                                      sort_key, mode, cache,
                                      rotations=rotations,
-                                     first_part_left_edge=first_part_left_edge)
+                                     first_part_left_edge=first_part_left_edge,
+                                     min_gap=min_gap)
             compact = sum(max((pl.poly.bounds[3] for pl in pls), default=0.0)
                           for pls in sheets_pl)
             manufacture_score = _placement_manufacturability_score(
@@ -732,11 +769,15 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
             best_pl = _lns_improve(best_pl, sheet_width, sheet_height, cache,
                                    budget_s=improve_budget, seed=trial_seed,
                                    rotations=rotations,
-                                   first_part_left_edge=first_part_left_edge)
+                                   first_part_left_edge=first_part_left_edge,
+                                   min_gap=min_gap,
+                                   warm_start=best_pl_global)
 
         result = _materialize(best_pl, sheet_width, sheet_height,
                               sheet_thickness, unit, len(parts))
-        errors = validate_nesting(result, sheet_width, sheet_height)
+        errors = validate_nesting(
+            result, sheet_width, sheet_height, min_gap=min_gap
+        )
         if errors:
             raise RuntimeError("排板结果校验失败：" + "; ".join(errors))
 
@@ -751,6 +792,10 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
         if best_key is None or trial_key < best_key:
             best_key = trial_key
             best_result = result
+            best_pl_global = best_pl
+
+        if min_sheets is not None and result.total_sheets <= min_sheets:
+            break
 
     if best_result is None:
         raise RuntimeError("未找到有效排板方案")

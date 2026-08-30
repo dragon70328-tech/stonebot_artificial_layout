@@ -135,6 +135,7 @@ def _build_pair_unit(a: Part, b: Part) -> PairingUnit | None:
         holes=[local_transform(h) for h in b.holes],
         original_number=b.original_number,
         material_group=b.material_group,
+        group_id=b.group_id,
         area=b.area,
         label_position=(label_b.x, label_b.y),
     )
@@ -284,6 +285,7 @@ def _materialize_pairing(
                     holes=[transform(h) for h in local.holes],
                     original_number=local.original_number,
                     material_group=local.material_group,
+                    group_id=local.group_id,
                     area=local.area,
                     label_position=(label.x, label.y),
                 )

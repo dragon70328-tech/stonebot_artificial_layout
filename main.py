@@ -37,7 +37,12 @@ from src.constraints import (
     STANDARD_SHEET_SIZES, STANDARD_THICKNESSES,
     get_sheet_size, get_sheet_size_by_index,
 )
-from src.postprocess import PostProcessor
+from src.postprocess import PostProcessor, diagnose_postprocess, diagnose_waterjet
+from src.project_config import (
+    ProjectConfig,
+    QUALITY_PRESETS,
+    apply_quality_to_optimizer,
+)
 from src.deepnest_engine import nest_parts_deepnest
 from src.pairing import nest_parts_deepnest_paired
 from src.drawing_profile import (
@@ -65,6 +70,13 @@ from src.contracts import (
     ReviewState,
 )
 from src.recognized_contract import parts_data_to_recognized_drawing
+from src.workflow import (
+    PreparedDrawing,
+    apply_material_grouping,
+    material_group_for_number,
+    prepare_drawing,
+    resolve_drawing_profile,
+)
 # ═══════════════════════════════════════════════════════════════
 #  CLI 参数
 # ═══════════════════════════════════════════════════════════════
@@ -85,6 +97,9 @@ def parse_args():
                    help="随机种子基数，默认 0")
     p.add_argument("--budget", type=float, default=180.0,
                    help="每次试验 LNS 搜索时间（秒），默认 180")
+    p.add_argument("--quality", type=str, default=None,
+                   choices=["fast", "balanced", "best"],
+                   help="排板质量档位：fast=快速预览，balanced=折中，best=高质量")
     p.add_argument("--quick", action="store_true",
                    help="快速模式：使用 4 组贪心配置，适合先看板数")
     p.add_argument("--imperial", action="store_true",
@@ -95,6 +110,8 @@ def parse_args():
                    choices=list(PROFILES.keys()),
                    help="约束模板：" + " / ".join(
                        f"{k}={v}" for k, v in PROFILE_HELP.items()))
+    p.add_argument("--config", type=str, default=None,
+                   help="项目 JSON 配置文件路径（与 CLI 参数组合时 CLI 优先）")
     p.add_argument("--list-profiles", action="store_true",
                    help="列出可用约束模板后退出")
     p.add_argument("--process", type=str, default=None,
@@ -123,6 +140,8 @@ def parse_args():
                    help="排板完成后不询问板数，直接开始后处理")
     p.add_argument("--report-only", action="store_true",
                    help="仅完成排板并报告大板使用量，不执行后处理和输出文件")
+    p.add_argument("--check-only", action="store_true",
+                   help="排板与后处理完成后先输出检查报告，不生成最终 DXF")
     p.add_argument("--special-size", type=str, default=None,
                    help="特殊面板排板尺寸，如 3225x1625")
     p.add_argument("--sizes", type=str, default=None,
@@ -435,68 +454,6 @@ def run_audit(
         print(f"复检 JSON: {recheck_json}")
 
 
-def resolve_drawing_profile(dxf_path: str):
-    """Match a validated case first, then fall back to profile ranking."""
-    try:
-        fingerprint = analyze_drawing(dxf_path)
-        profiles = load_profiles(PROJECT_ROOT / "drawing_profiles")
-        cases = load_cases(PROJECT_ROOT / "drawing_profiles" / "validated_cases")
-        case_match = match_case(fingerprint, cases, min_score=MIN_CASE_SCORE)
-        if case_match is not None:
-            case, case_score = case_match
-            profile = load_case_profile(case, profiles)
-            if profile is not None:
-                print(
-                    f"matched validated case: {case.case_id} "
-                    f"(score={case_score:.1f}, profile={profile.name})"
-                )
-                return profile
-        ranked = rank_profiles(fingerprint, profiles)
-    except Exception:
-        return None
-    if not ranked:
-        return None
-    profile, score = ranked[0]
-    if score < MIN_PROFILE_SCORE:
-        return None
-    return profile
-
-
-def material_group_for_number(number: str, drawing_profile) -> str | None:
-    """Return the normalized material prefix when a drawing profile enables it."""
-    if drawing_profile is None or not drawing_profile.material_group_enabled:
-        return None
-    match = re.match(drawing_profile.material_prefix_pattern, number or "")
-    if not match:
-        return None
-    prefix = (
-        match.group("prefix")
-        if "prefix" in match.groupdict()
-        else match.group(0)
-    ).upper()
-    allowed = {value.upper() for value in drawing_profile.allowed_material_prefixes}
-    if allowed and prefix not in allowed:
-        return None
-    return prefix
-
-
-def apply_material_grouping(parts, drawing_profile):
-    """Assign material groups and remove parts without an allowed material prefix."""
-    if drawing_profile is None or not drawing_profile.material_group_enabled:
-        return parts, []
-
-    grouped = []
-    skipped = []
-    for part in parts:
-        prefix = material_group_for_number(part.number, drawing_profile)
-        if prefix is None:
-            skipped.append(part.number)
-            continue
-        part.material_group = prefix
-        grouped.append(part)
-    return grouped, skipped
-
-
 def resolve_sheet_size(args) -> tuple[float, float]:
     """从 --size / 定位参数 解析大板尺寸"""
     if args.size:
@@ -796,6 +753,18 @@ def combine_nesting_results(results: list) -> NestingResult:
                          total_sheet_area=total_sheet_area)
 
 
+def _split_normal_parts_by_group(normal_parts, group_mode):
+    """Split normal parts into independent nesting batches for one_set_per_sheet."""
+    if group_mode != "one_set_per_sheet":
+        return [normal_parts]
+
+    groups: dict[str, list] = {}
+    for part in normal_parts:
+        key = part.group_id or f"__part_{id(part)}"
+        groups.setdefault(key, []).append(part)
+    return list(groups.values())
+
+
 def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
                     effective_thickness, unit, profile, drawing_profile,
                     trials, seed, budget, quick, pairing=False):
@@ -822,10 +791,18 @@ def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
     normal_area = sum(part.area for part in normal_parts)
     special_area = sum(part.area for part in special_parts)
     normal_sheet_area = width_mm * height_mm
+    normal_groups = _split_normal_parts_by_group(
+        normal_parts, profile.group_mode
+    )
+    normal_min_sheets = sum(
+        math.ceil(sum(p.area for p in group_parts) / normal_sheet_area)
+        if group_parts else 0
+        for group_parts in normal_groups
+    )
     if special_parts:
         special_sheet_area = special_w * special_h
         min_sheets = (
-            math.ceil(normal_area / normal_sheet_area)
+            normal_min_sheets
             + math.ceil(special_area / special_sheet_area)
         )
         special_pair_min_sheets = math.ceil(len(special_parts) / 2.0)
@@ -834,15 +811,24 @@ def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
         special_pair_min_sheets = None
 
     results = []
-    if normal_parts:
+    for group_parts in normal_groups:
+        if not group_parts:
+            continue
         first_left = bool(
-            drawing_profile is not None
-            and drawing_profile.first_part_left_edge
+            profile.first_part_left_edge
+            or (
+                drawing_profile is not None
+                and drawing_profile.first_part_left_edge
+            )
+        )
+        group_min_sheets = (
+            math.ceil(sum(p.area for p in group_parts) / normal_sheet_area)
+            if group_parts else 0
         )
         if profile.uses_deepnest:
             if pairing:
                 results.append(nest_parts_deepnest_paired(
-                    normal_parts, width_mm, height_mm, effective_thickness,
+                    group_parts, width_mm, height_mm, effective_thickness,
                     unit=unit.value, trials=trials, seed=seed,
                     rotations=profile.rotation,
                     arbitrary_rotation=profile.arbitrary_rotation,
@@ -850,7 +836,7 @@ def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
                     rotation_step=15.0 if quick else 5.0))
             else:
                 results.append(nest_parts_deepnest(
-                    normal_parts, width_mm, height_mm, effective_thickness,
+                    group_parts, width_mm, height_mm, effective_thickness,
                     unit=unit.value, improve_budget=budget,
                     trials=trials, seed=seed, rotations=profile.rotation,
                     arbitrary_rotation=profile.arbitrary_rotation,
@@ -859,10 +845,12 @@ def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
                     configs=QUICK_CONFIGS if quick else None))
         else:
             results.append(nest_parts(
-                normal_parts, width_mm, height_mm, effective_thickness,
+                group_parts, width_mm, height_mm, effective_thickness,
                 unit=unit.value, improve_budget=budget,
                 trials=trials, seed=seed, rotations=profile.rotation,
                 first_part_left_edge=first_left,
+                min_gap=profile.min_gap,
+                min_sheets=group_min_sheets,
                 configs=QUICK_CONFIGS if quick else None))
     if special_parts:
         results.append(nest_special_parts(
@@ -874,7 +862,7 @@ def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
             special_pair_min_sheets)
 
 
-def validate_mixed_nesting(result: NestingResult) -> list:
+def validate_mixed_nesting(result: NestingResult, min_gap: float = 0.0) -> list:
     errors = []
     for sheet in result.sheets:
         single = NestingResult(
@@ -883,8 +871,105 @@ def validate_mixed_nesting(result: NestingResult) -> list:
             total_part_area=sum(p.area for p in sheet.parts),
             total_sheet_area=sheet.total_area,
         )
-        errors.extend(validate_nesting(single, sheet.width, sheet.height))
+        errors.extend(validate_nesting(single, sheet.width, sheet.height,
+                                       min_gap=min_gap))
     return errors
+
+
+def check_only_exit_code(outcome: dict | None) -> int:
+    """Return the process exit code for a ``--check-only`` run.
+
+    Geometry errors are fatal (exit 2); manufacturability warnings alone
+    should not block automation and therefore exit 0.
+    """
+    if outcome and outcome.get("geometry_errors"):
+        return 2
+    return 0
+
+
+def run_with_config(dxf_path: str, config, unit: UnitSystem = UnitSystem.METRIC,
+                    drawing_profile=None, confirm_sheet_count: bool = True,
+                    report_only: bool = False, check_only: bool = False):
+    """Run a nesting job from a ProjectConfig while keeping engine APIs stable."""
+    sheet = config.sheet
+    reader = config.reader
+    optimizer = config.optimizer
+    return run(
+        dxf_path,
+        sheet.width,
+        sheet.height,
+        sheet.thickness,
+        unit,
+        trials=optimizer.trials,
+        seed=optimizer.seed,
+        budget=optimizer.budget_seconds,
+        skip_unnumbered=reader.skip_unnumbered,
+        layers=reader.layers,
+        exclude_layers=reader.exclude_layers,
+        drawing_profile=drawing_profile,
+        profile=config.to_nesting_profile(),
+        confirm_sheet_count=confirm_sheet_count,
+        report_only=report_only,
+        special_size=sheet.special_size,
+        check_only=check_only,
+        quick=optimizer.quick,
+        pairing=optimizer.pairing,
+        reader_options=reader.to_read_options(),
+    )
+
+
+def apply_cli_overrides_to_project_config(config, args) -> None:
+    """Apply CLI flags on top of a loaded ProjectConfig."""
+    if args.thickness is not None:
+        config.sheet.thickness = args.thickness
+        config.profile.sheet_thickness = args.thickness
+    if args.special_size:
+        special = parse_special_size(args.special_size)
+        config.sheet.special_width = special[0]
+        config.sheet.special_height = special[1]
+
+    processing_class = resolve_processing_class(args.process)
+    if processing_class is not None:
+        config.profile.processing_class = processing_class
+    if args.rotation is not None:
+        config.profile.rotation = [
+            int(x.strip()) for x in args.rotation.split(",")
+        ]
+    if args.free_rotation:
+        config.profile.arbitrary_rotation = True
+    if args.no_rotation:
+        config.profile.rotation = [0]
+        config.profile.arbitrary_rotation = False
+    if args.min_gap is not None:
+        config.profile.min_gap = args.min_gap
+    if args.group is not None:
+        config.profile.group_mode = args.group
+    if args.no_slide:
+        config.profile.slide_to_edge = False
+    if args.no_align:
+        config.profile.align_edges = False
+
+    quality = getattr(args, "quality", None)
+    if quality:
+        apply_quality_to_optimizer(config.optimizer, quality)
+
+    if args.trials != 1:
+        config.optimizer.trials = args.trials
+    if args.seed != 0:
+        config.optimizer.seed = args.seed
+    if args.budget != 180.0:
+        config.optimizer.budget_seconds = args.budget
+    if args.quick:
+        config.optimizer.quick = True
+    if args.pairing:
+        config.optimizer.pairing = True
+
+    if args.include_unnumbered:
+        config.reader.skip_unnumbered = False
+    if args.layers:
+        config.reader.layers = args.layers.split(",")
+    if args.exclude_layers:
+        config.reader.exclude_layers = args.exclude_layers.split(",")
 
 # ═══════════════════════════════════════════════════════════════
 #  核心排板流程
@@ -899,8 +984,11 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         confirm_sheet_count: bool = True,
         report_only: bool = False,
         special_size: tuple[float, float] | None = None,
+        check_only: bool = False,
         quick: bool = False,
-        pairing: bool = False) -> None:
+        pairing: bool = False,
+        reader_options: dict | None = None,
+        input_limits=None) -> None:
     """核心排板流程"""
     if profile is None:
         profile = PROFILE_MIN_SHEETS
@@ -925,79 +1013,28 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
           f"process={PROCESSING_CLASS_HELP[profile.processing_class]}, "
           f"free_rotation={profile.arbitrary_rotation}")
 
-    # ── 读取 DXF ──
-    print(f"读取 DXF: {dxf_path}")
-    if drawing_profile is None:
-        drawing_profile = resolve_drawing_profile(dxf_path)
-    if drawing_profile is not None:
-        print(f"matched drawing profile: {drawing_profile.name} "
-              f"(panel_layers={len(drawing_profile.panel_layers or ([drawing_profile.panel_layer] if drawing_profile.panel_layer else []))}, "
-              f"number_layers={len(drawing_profile.number_layers)})")
-        effective_panel_layers = (
-            layers
-            if layers is not None
-            else (
-                drawing_profile.panel_layers
-                or ([drawing_profile.panel_layer]
-                    if drawing_profile.panel_layer else None)
-            )
-        )
-        effective_number_layers = drawing_profile.number_layers or None
-        effective_label_pattern = drawing_profile.label_pattern or None
-        effective_exclude_linetypes = drawing_profile.exclude_linetypes or None
-    else:
-        effective_panel_layers = layers
-        effective_number_layers = None
-        effective_label_pattern = None
-        effective_exclude_linetypes = None
-
-    if drawing_profile is not None:
-        parts_data, _doc = read_dxf_with_profile(
-            dxf_path,
-            drawing_profile,
-            panel_layers=effective_panel_layers,
-            exclude_layers=exclude_layers,
-        )
-    else:
-        parts_data, _doc = read_dxf(
-            dxf_path,
-            panel_layers=effective_panel_layers,
-            exclude_layers=exclude_layers,
-            exclude_linetypes=effective_exclude_linetypes,
-            number_layers=effective_number_layers,
-            label_pattern=effective_label_pattern,
-        )
-    if not parts_data:
-        print("错误：未找到任何封闭图形。")
-        sys.exit(1)
-
-    recognized_drawing = parts_data_to_recognized_drawing(
-        parts_data,
+    # ── 读取 DXF / 匹配画像 / 编号 / 材料分组 ──
+    prepared = prepare_drawing(
         dxf_path,
-        profile_name=drawing_profile.name if drawing_profile else None,
-        closed_tolerance=(
-            drawing_profile.closed_tolerance
-            if drawing_profile is not None
-            else 0.01
-        ),
+        drawing_profile=drawing_profile,
+        skip_unnumbered=skip_unnumbered,
+        layers=layers,
+        exclude_layers=exclude_layers,
+        reader_options=reader_options,
+        group_mode=profile.group_mode,
+        input_limits=input_limits,
     )
-
-    parts = assign_numbers(parts_data, skip_unnumbered=skip_unnumbered)
-    skipped_material_numbers = []
-    if drawing_profile is not None and drawing_profile.material_group_enabled:
-        parts, skipped_material_numbers = apply_material_grouping(parts, drawing_profile)
-        if skipped_material_numbers:
-            print(f"已跳过无材料前缀件 {len(skipped_material_numbers)} 个")
-        group_counts = Counter(p.material_group for p in parts)
-        print("材料分组: " + ", ".join(
-            f"{key}: {value} ?" for key, value in sorted(group_counts.items())
-        ))
-
-    if not parts:
-        print("错误：材料分组后没有可排板零件。")
+    if prepared.error:
+        print(f"错误：{prepared.error}")
         sys.exit(1)
 
-    total_area = sum(p.area for p in parts)
+    drawing_profile = prepared.drawing_profile
+    parts = prepared.parts
+    recognized_drawing = prepared.recognized_drawing
+    skipped_material_numbers = prepared.skipped_material_numbers
+    groups = prepared.groups
+    material_group_enabled = prepared.material_group_enabled
+
     special_w, special_h = special_size if special_size else (None, None)
 
     stem = Path(dxf_path).stem
@@ -1012,14 +1049,6 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         numbered_original = out_dir / f"{stem}_numbered_原位.dxf"
         write_numbered_parts_dxf(parts, str(numbered_original),
                                  unit_system=unit.value)
-
-    material_group_enabled = bool(
-        drawing_profile is not None and drawing_profile.material_group_enabled
-    )
-    if material_group_enabled:
-        groups = sorted({part.material_group for part in parts})
-    else:
-        groups = [None]
 
     if profile.uses_deepnest:
         print(f"开始排板... (DeepNest/BLF, trials={trials})")
@@ -1075,12 +1104,12 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
           f"出材率 {result.yield_rate:.2f}%，耗时 {elapsed:.1f}s")
     if report_only:
         print("已按 --report-only 停止：未执行后处理和输出文件。")
-        return
+        return {"report_only": True}
     if confirm_sheet_count and sys.stdin.isatty():
         ans = input("是否接受该板数并开始后处理推板？[y/N]: ").strip().lower()
         if ans not in ("y", "yes"):
             print("已取消：未执行后处理和输出。")
-            return
+            return {"cancelled": True}
     elif confirm_sheet_count:
         print("非交互模式：自动确认板数，开始后处理。")
 
@@ -1100,13 +1129,87 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
             manufacturing_metrics["through_cut_mm"] += metrics["through_cut_mm"]
 
     # ── 校验 ──
-    errors = validate_mixed_nesting(result)
+    errors = validate_mixed_nesting(result, min_gap=profile.min_gap)
     status = "通过" if not errors else f"{len(errors)} 处违规"
     print(f"完成：{result.total_sheets} 张板，"
           f"出材率 {result.yield_rate:.2f}%，"
           f"校验{status}，耗时 {elapsed:.1f}s")
     for e in errors[:5]:
         print(f"  ! {e}")
+
+    # ── DXF 生成前检查 ──
+    postprocess_warnings = diagnose_postprocess(
+        result.sheets,
+        slide_expected=profile.slide_to_edge,
+        align_expected=profile.align_edges,
+        gap_mm=profile.min_gap,
+    )
+    waterjet_metrics = {
+        "first_part_left_edge_checked": 0,
+        "first_part_left_edge_failed": 0,
+        "collinear_edge_pairs": 0,
+    }
+    if profile.uses_deepnest:
+        waterjet_first_left = bool(
+            profile.first_part_left_edge
+            or (
+                drawing_profile is not None
+                and drawing_profile.first_part_left_edge
+            )
+        )
+        waterjet_warnings, waterjet_metrics = diagnose_waterjet(
+            result.sheets,
+            first_part_left_edge=waterjet_first_left,
+            arbitrary_rotation=profile.arbitrary_rotation,
+            rotations=tuple(profile.rotation),
+        )
+        postprocess_warnings.extend(waterjet_warnings)
+    check_path = out_dir / f"{stem}_postprocess_check.json"
+    check_payload = {
+        "sheet_dimensions": {
+            "width": width_mm,
+            "height": height_mm,
+            "special_width": special_w,
+            "special_height": special_h,
+            "thickness": effective_thickness,
+            "unit": unit_label,
+        },
+        "geometry_validation_errors": errors,
+        "geometry_validation_passed": not errors,
+        "manufacturability": {
+            "edge_contact_mm": round(manufacturing_metrics["edge_contact_mm"], 1),
+            "through_cut_mm": round(manufacturing_metrics["through_cut_mm"], 1),
+            "waterjet": waterjet_metrics,
+        },
+        "postprocess_warning_count": len(postprocess_warnings),
+        "postprocess_warnings": postprocess_warnings,
+    }
+    with open(check_path, "w", encoding="utf-8") as f:
+        json.dump(check_payload, f, ensure_ascii=False, indent=2)
+
+    if postprocess_warnings:
+        print(f"后处理检查：{len(postprocess_warnings)} 项未完全达标")
+        for warning in postprocess_warnings[:5]:
+            print(f"  - {warning['type']}: sheet {warning['sheet']}")
+    else:
+        print("后处理检查：靠边/通切/间距均达标")
+    print(f"检查报告: {check_path}")
+
+    if errors:
+        print("几何校验未通过，已停止生成最终 DXF。")
+        return {
+            "geometry_errors": errors,
+            "check_path": str(check_path),
+        }
+
+    if check_only:
+        print("已按 --check-only 停止：未生成最终 DXF 和排板报告。")
+        return {
+            "check_only": True,
+            "geometry_errors": errors,
+            "postprocess_warnings": postprocess_warnings,
+            "check_path": str(check_path),
+        }
 
     # ── 输出 ──
     if special_w and special_h and total_special_parts:
@@ -1168,6 +1271,11 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
 
     print(f"DXF: {out_dxf}")
     print(f"报告: {out_json}")
+    return {
+        "geometry_errors": errors,
+        "postprocess_warnings": postprocess_warnings,
+        "check_path": str(check_path),
+    }
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1260,6 +1368,21 @@ def main():
         print(f"错误：文件不存在 - {dxf_path}")
         sys.exit(1)
 
+    if args.config:
+        config = ProjectConfig.from_file(args.config)
+        apply_cli_overrides_to_project_config(config, args)
+        outcome = run_with_config(
+            dxf_path,
+            config,
+            unit=UnitSystem.METRIC,
+            confirm_sheet_count=not args.no_confirm,
+            report_only=args.report_only,
+            check_only=args.check_only,
+        )
+        if args.check_only:
+            sys.exit(check_only_exit_code(outcome))
+        return
+
     if args.audit:
         run_audit(
             dxf_path,
@@ -1345,6 +1468,18 @@ def main():
     exclude_layers = args.exclude_layers.split(",") if args.exclude_layers else None
     unit = UnitSystem.IMPERIAL if args.imperial else UnitSystem.METRIC
 
+    trials = args.trials
+    budget = args.budget
+    quick = args.quick
+    if args.quality:
+        preset = QUALITY_PRESETS[args.quality]
+        if args.trials == 1:
+            trials = preset["trials"]
+        if args.budget == 180.0:
+            budget = preset["budget_seconds"]
+        if not args.quick:
+            quick = preset["quick"]
+
     # ── 构建 NestingProfile ──
     if args.profile:
         profile = PROFILES[args.profile]
@@ -1378,16 +1513,21 @@ def main():
     if overrides:
         profile = profile.with_overrides(**overrides)
 
-    run(dxf_path, width, height, args.thickness, unit,
-        trials=args.trials, seed=args.seed, budget=args.budget,
+    outcome = run(
+        dxf_path, width, height, args.thickness, unit,
+        trials=trials, seed=args.seed, budget=budget,
         skip_unnumbered=not args.include_unnumbered,
         layers=layers, exclude_layers=exclude_layers,
         profile=profile,
         confirm_sheet_count=not args.no_confirm,
         report_only=args.report_only,
         special_size=parse_special_size(args.special_size),
-        quick=args.quick,
-        pairing=args.pairing)
+        check_only=args.check_only,
+        quick=quick,
+        pairing=args.pairing,
+    )
+    if args.check_only:
+        sys.exit(check_only_exit_code(outcome))
 
 
 if __name__ == "__main__":

@@ -3,8 +3,15 @@ from pathlib import Path
 from shapely.geometry import box
 
 from src.drawing_profile import DrawingProfile
-from src.models import Part
-from src.nesting import _make_sort_key, _nest_single, nest_parts
+from src.models import NestingResult, Part, Sheet
+from src.nesting import (
+    _make_sort_key,
+    _nest_single,
+    _lns_improve,
+    _Placement,
+    nest_parts,
+    validate_nesting,
+)
 import main as app
 
 
@@ -77,3 +84,82 @@ def test_first_part_left_edge_applies_to_every_sheet():
         assert miny == 0.0
         assert round(maxy - miny, 1) == 60.0
         assert round(maxx - minx, 1) == 40.0
+
+
+def test_validate_nesting_reports_min_gap_violation():
+    left = _part("A", 20.0, 10.0)
+    right = _part("B", 20.0, 10.0)
+    left.outer_polygon = box(0.0, 0.0, 20.0, 10.0)
+    right.outer_polygon = box(24.9, 0.0, 44.9, 10.0)
+    sheet = Sheet(index=1, width=100.0, height=100.0, thickness=20.0,
+                  parts=[left, right])
+    result = NestingResult(
+        sheets=[sheet], unit="metric", total_parts=2, total_sheets=1,
+        total_part_area=200.0, total_sheet_area=10000.0,
+    )
+
+    errors = validate_nesting(result, 100.0, 100.0, min_gap=5.0)
+    assert any("最小间距" in error for error in errors)
+
+
+def test_validate_nesting_accepts_min_gap_when_separated():
+    left = _part("A", 20.0, 10.0)
+    right = _part("B", 20.0, 10.0)
+    left.outer_polygon = box(0.0, 0.0, 20.0, 10.0)
+    right.outer_polygon = box(25.0, 0.0, 45.0, 10.0)
+    sheet = Sheet(index=1, width=100.0, height=100.0, thickness=20.0,
+                  parts=[left, right])
+    result = NestingResult(
+        sheets=[sheet], unit="metric", total_parts=2, total_sheets=1,
+        total_part_area=200.0, total_sheet_area=10000.0,
+    )
+
+    assert validate_nesting(result, 100.0, 100.0, min_gap=5.0) == []
+
+
+def test_lns_improve_uses_warm_start_as_initial_solution():
+    part = _part("A", 20.0, 10.0)
+    current = [
+        [_Placement(part=part, rot=0.0, x=0.0, y=0.0, poly=part.outer_polygon)]
+    ]
+    warm = [
+        [_Placement(part=part, rot=90.0, x=0.0, y=0.0, poly=part.outer_polygon)]
+    ]
+
+    improved = _lns_improve(
+        current,
+        100.0,
+        100.0,
+        {},
+        budget_s=0.0,
+        seed=0,
+        rotations=(0, 90, 180, 270),
+        warm_start=warm,
+    )
+
+    assert improved is warm
+
+
+def test_split_normal_parts_by_group_one_set_per_sheet():
+    a = _part("A-1", 100.0, 50.0)
+    b = _part("B-1", 100.0, 50.0)
+    c = _part("A-2", 100.0, 50.0)
+    a.group_id = "A"
+    b.group_id = "B"
+    c.group_id = "A"
+
+    groups = app._split_normal_parts_by_group(
+        [a, b, c], "one_set_per_sheet"
+    )
+
+    assert len(groups) == 2
+    assert sorted(len(group) for group in groups) == [1, 2]
+
+
+def test_split_normal_parts_returns_single_group_for_other_modes():
+    parts = [_part(str(i), 100.0, 50.0) for i in range(3)]
+
+    groups = app._split_normal_parts_by_group(parts, None)
+
+    assert len(groups) == 1
+    assert groups[0] == parts

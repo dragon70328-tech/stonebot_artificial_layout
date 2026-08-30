@@ -352,6 +352,7 @@ def _materialize(sheets_pl: list, sheet_w: float, sheet_h: float,
                 holes=[transform(h) for h in part.holes],
                 original_number=part.original_number,
                 material_group=part.material_group,
+                group_id=part.group_id,
                 area=part.area,
                 label_position=(label.x, label.y),
             )

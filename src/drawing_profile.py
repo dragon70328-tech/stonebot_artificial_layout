@@ -54,6 +54,7 @@ class DrawingProfile:
     material_group_enabled: bool = False
     material_prefix_pattern: str = r"^(?P<prefix>\d{2}B)"
     allowed_material_prefixes: list[str] = field(default_factory=list)
+    group_id_pattern: str | None = None
     first_part_left_edge: bool = False
     assignment_mode: str = "point_then_bbox"
     room_number_format: str = "{unit}-{room}-{index:02d}"

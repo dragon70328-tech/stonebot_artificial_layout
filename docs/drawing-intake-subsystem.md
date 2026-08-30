@@ -154,6 +154,44 @@ PDF 比例信息应记录为 `scale_source`，可选值：
 | 问题高亮 | `write_audit_dxf()` | 已实现，缺视觉截图和交互反馈 |
 | 原位输出 | `write_numbered_parts_dxf()` | 当前主流程写 `numbered_check.dxf`，需统一命名 |
 
+## 封闭多段线恢复（水星经验）
+
+部分 CAD 图纸用 `closed=False` 的 LWPOLYLINE 表示视觉上已经封闭的 L 型台面板，
+且顶点会多出冗余点。水星项目 `drawing_profiles/mercury.json` 的典型现象：
+
+- 86 条 `closed=False` 多段线中，80 条是有效 L 型面板，6 条是 2 顶点残留线段。
+- 80 条有效面板可归纳为两类多余顶点：
+  1. 首点在前方重复，尾部再跟一个冗余点，例如 `[0,1,2,3,0,extra]`。
+  2. 末点重复第二点，例如 `[0,1,2,3,1]`。
+- 有些多段线还带连续重复点，直接 `Polygon(points)` 会产生自接触/无效几何。
+
+当前 `src/dxf_reader.py` 已把该经验固化为通用逻辑：
+
+- `_lwpolyline_points()`：展开 bulge 圆弧，并去掉首尾重复点。
+- `_is_closed()` / `_is_recoverable_closed()`：先用实体 `closed` 标志和首尾距离判断，
+  再识别“首点重复”和“末点落在已有边上”的自接触闭合。
+- `_closed_loop_points()`：清理连续重复点，截断首点重复前缀或末点重复后缀，
+  返回最小闭合环，避免直接追加首点造成错误几何。
+- `_entity_to_polygon()`：无效 `Polygon` 用 `buffer(0)` 修复，`MultiPolygon` 取最大面。
+
+画像侧只用一个配置即可适配不同项目：
+
+```json
+{
+  "closed_tolerance": 0.1,
+  "build_hierarchy": false,
+  "expected_counts": {"panels": 1258, "holes": 0, "numbers": 1258}
+}
+```
+
+新增图纸遇到同类“视觉闭合但 `closed=False`、顶点多”的多段线时，无需改 Python：
+
+1. 先统计 LWPOLYLINE 数量、`closed=True/False` 数量、`closed_tolerance` 下的识别数。
+2. 在项目画像中设置 `closed_tolerance`，并按真实面板数填写 `expected_counts`。
+3. 运行 `read_dxf_with_profile()` 或审图，确认识别数与 `expected_counts` 一致。
+4. 对仍被跳过且确实应识别的实体，导出最小样本到 `tests/test_dxf_reader_numbering.py`，
+   补充为回归用例。
+
 ## 实施顺序
 
 1. 先把原生 DXF 读图做强：接入 `audit_drawing()`，增加 CLI 审图入口。

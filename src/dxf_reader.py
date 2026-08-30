@@ -84,7 +84,71 @@ def _lwpolyline_points(entity: LWPolyline) -> list:
     return points
 
 
-def _entity_to_polygon(entity, num_segments: int = 64) -> Polygon | None:
+def _dedupe_consecutive_points(points: list, tolerance: float = 1e-6) -> list:
+    """Remove consecutive near-duplicate vertices that break Shapely validity."""
+    cleaned = []
+    for point in points:
+        if not cleaned:
+            cleaned.append(tuple(point))
+            continue
+        last = cleaned[-1]
+        if math.hypot(point[0] - last[0], point[1] - last[1]) > tolerance:
+            cleaned.append(tuple(point))
+    return cleaned
+
+
+def _closed_loop_points(points: list, tolerance: float = 0.01) -> list:
+    """Return a minimal closed vertex loop from messy DXF polyline points.
+
+    CAD files often represent L-shaped panels with redundant vertices:
+    - the first point repeats near the end and an extra trailing vertex follows
+    - the last point repeats an earlier internal vertex
+    A plain ``append(first)`` creates self-touching/invalid geometry. Prefer
+    trimming the repeated prefix/suffix before handing the loop to Shapely.
+    """
+    points = _dedupe_consecutive_points(points, tolerance)
+    if len(points) < 3:
+        return []
+
+    first = points[0]
+    last = points[-1]
+    if math.hypot(first[0] - last[0], first[1] - last[1]) <= tolerance:
+        return points[:-1]
+
+    for index in range(1, len(points) - 1):
+        if math.hypot(
+            first[0] - points[index][0],
+            first[1] - points[index][1],
+        ) <= tolerance:
+            loop = points[:index]
+            if len(loop) >= 3:
+                return loop
+
+    for index in range(1, len(points) - 1):
+        if math.hypot(
+            last[0] - points[index][0],
+            last[1] - points[index][1],
+        ) <= tolerance:
+            loop = points[index:]
+            if loop and math.hypot(
+                loop[0][0] - loop[-1][0],
+                loop[0][1] - loop[-1][1],
+            ) <= tolerance:
+                loop = loop[:-1]
+            if len(loop) >= 3:
+                return loop
+
+    if any(
+        _point_on_segment(last, points[index], points[index + 1], tolerance)
+        for index in range(len(points) - 2)
+    ):
+        return points[:-1]
+
+    return points
+
+
+def _entity_to_polygon(entity, num_segments: int = 64,
+                       closed_tolerance: float = 0.01) -> Polygon | None:
     """将 DXF 实体转换为 Shapely Polygon"""
     try:
         if isinstance(entity, (LWPolyline, Polyline)):
@@ -96,12 +160,16 @@ def _entity_to_polygon(entity, num_segments: int = 64) -> Polygon | None:
 
             if len(points) < 3:
                 return None
-            # 确保闭合
-            if points[0] != points[-1]:
-                points.append(points[0])
-            poly = Polygon(points)
+            loop = _closed_loop_points(points, closed_tolerance)
+            if len(loop) < 3:
+                return None
+            poly = Polygon(loop)
             if not poly.is_valid:
                 poly = poly.buffer(0)
+            if poly.is_empty:
+                return None
+            if poly.geom_type == "MultiPolygon":
+                poly = max(poly.geoms, key=lambda geom: geom.area)
             return poly
 
         elif isinstance(entity, Circle):
@@ -198,6 +266,23 @@ def _is_recoverable_closed(entity, tolerance: float = 0.01) -> bool:
     last = points[-1]
     if math.hypot(first[0] - last[0], first[1] - last[1]) < tolerance:
         return False
+
+    for index in range(1, len(points) - 1):
+        if math.hypot(
+            first[0] - points[index][0],
+            first[1] - points[index][1],
+        ) < tolerance:
+            loop = points[:index]
+            if len(loop) < 3:
+                return False
+            polygon = Polygon(loop)
+            if not polygon.is_valid:
+                polygon = polygon.buffer(0)
+            if polygon.is_empty:
+                return False
+            if polygon.geom_type == "MultiPolygon":
+                polygon = max(polygon.geoms, key=lambda geom: geom.area)
+            return polygon.area > 0.01
 
     last_on_existing_edge = any(
         _point_on_segment(last, points[index], points[index + 1], tolerance)
@@ -320,7 +405,7 @@ def extract_closed_polygons(doc,
 
         if not _is_closed(entity, closed_tolerance):
             continue
-        poly = _entity_to_polygon(entity)
+        poly = _entity_to_polygon(entity, closed_tolerance=closed_tolerance)
         if poly is not None and not poly.is_empty and poly.area > 0.01:
             handle = entity.dxf.handle
             results.append((poly, handle))
@@ -441,7 +526,9 @@ def _collect_number_texts(doc,
                           number_layer = None,
                           number_layers = None,
                           label_pattern = None,
-                          include_boxes = False):
+                          include_boxes = False,
+                          number_layer_keyword = "编",
+                          allow_all_text_fallback = True):
     """Collect candidate part-number texts from TEXT/MTEXT entities.
 
     Layer selection priority:
@@ -455,13 +542,13 @@ def _collect_number_texts(doc,
         explicit_layers = set(number_layers) if number_layers else None
     elif number_layer is not None:
         explicit_layers = {number_layer}
-    elif any(
-        any(ord(c) == 32534 for c in (layer.dxf.name or ""))
+    elif number_layer_keyword and any(
+        number_layer_keyword in (layer.dxf.name or "")
         for layer in doc.layers
     ):
         explicit_layers = {
             layer.dxf.name for layer in doc.layers
-            if any(ord(c) == 32534 for c in (layer.dxf.name or ""))
+            if number_layer_keyword in (layer.dxf.name or "")
         }
 
     pattern = re.compile(label_pattern) if label_pattern else None
@@ -489,6 +576,12 @@ def _collect_number_texts(doc,
             continue
         if pattern is not None and not pattern.match(text):
             continue
+        if (
+            explicit_layers is None
+            and pattern is None
+            and not allow_all_text_fallback
+        ):
+            continue
         if explicit_layers is None and pattern is None and not _looks_like_number(text):
             continue
 
@@ -509,10 +602,19 @@ def _collect_number_texts(doc,
     return texts
 
 
-def _collect_room_texts(msp):
-    """Fallback: collect room-type labels from MTEXT entities containing 户型.
+def _collect_room_texts(
+    msp,
+    room_label_keyword="户型",
+    room_label_exclude_keyword="套",
+    room_label_normalizations=None,
+):
+    """Fallback: collect room-type labels from MTEXT entities.
+
+    The keywords and normalizations are configurable so new projects do not
+    need to rely on a hardcoded 户型/套 convention.
     Returns list of (x, y, normalized_label). Labels are deduplicated by position."""
     candidates = {}
+    normalizations = room_label_normalizations or {}
     for entity in msp:
         if entity.dxftype() != "MTEXT":
             continue
@@ -520,14 +622,17 @@ def _collect_room_texts(msp):
             t = entity.plain_text() if hasattr(entity, "plain_text") else entity.dxf.text
         except Exception:
             continue
-        if not t or "户型" not in t:
+        if not t or not room_label_keyword or room_label_keyword not in t:
             continue
-        if "套" in t:
+        if room_label_exclude_keyword and room_label_exclude_keyword in t:
             continue
         t = re.sub(r"\{[^}]*;", "", t).replace("{", "").replace("}", "").strip()
-        t = t.replace("户型：", "").replace("户型:", "").strip()
+        t = t.replace(f"{room_label_keyword}：", "").replace(
+            f"{room_label_keyword}:", ""
+        ).strip()
         t = re.sub(r"\s+", "", t)
-        t = re.sub(r"^B7a", "B7-a", t)
+        for pattern, replacement in normalizations.items():
+            t = re.sub(pattern, replacement, t)
         x = entity.dxf.insert.x
         y = entity.dxf.insert.y
         key = (round(x / 100), round(y / 100))
@@ -536,7 +641,11 @@ def _collect_room_texts(msp):
     return list(candidates.values())
 
 
-def _assign_numbers_by_nearest_room(parts_data, room_labels):
+def _assign_numbers_by_nearest_room(
+    parts_data,
+    room_labels,
+    room_max_distance=5000.0,
+):
     from collections import defaultdict
     panel_labels = []
     for pd in parts_data:
@@ -545,6 +654,8 @@ def _assign_numbers_by_nearest_room(parts_data, room_labels):
         best_label = None
         for lx, ly, lt in room_labels:
             d = ((cx - lx) ** 2 + (cy - ly) ** 2) ** 0.5
+            if d > room_max_distance:
+                continue
             if d < best_dist:
                 best_dist = d
                 best_label = lt
@@ -662,7 +773,12 @@ def read_dxf(filepath: str,
             exclude_linetypes = None,
             number_layer = None,
             number_layers = None,
-            label_pattern = None):
+            label_pattern = None,
+            number_layer_keyword = "编",
+            room_label_keyword = "户型",
+            room_label_exclude_keyword = "套",
+            room_label_normalizations = None,
+            room_max_distance = 5000.0):
 
     """
     读取 DXF 文件，提取所有规格板信息。
@@ -689,9 +805,16 @@ def read_dxf(filepath: str,
         number_layers=number_layers,
         label_pattern=label_pattern,
         include_boxes=True,
+        number_layer_keyword=number_layer_keyword,
+        allow_all_text_fallback=number_layer_keyword not in (None, ""),
     )
 
-    room_labels = _collect_room_texts(doc.modelspace())
+    room_labels = _collect_room_texts(
+        doc.modelspace(),
+        room_label_keyword=room_label_keyword,
+        room_label_exclude_keyword=room_label_exclude_keyword,
+        room_label_normalizations=room_label_normalizations,
+    )
 
     # --- Build parts_data list first (before numbering) ---
     parts_data = []
@@ -735,7 +858,11 @@ def read_dxf(filepath: str,
     # --- Number assignment: containment-first, then room-label fallback ---
     assigned_numbers = _assign_numbers_by_containment(parts_data, number_texts)
     if room_labels and not assigned_numbers:
-        assigned_numbers = _assign_numbers_by_nearest_room(parts_data, room_labels)
+        assigned_numbers = _assign_numbers_by_nearest_room(
+            parts_data,
+            room_labels,
+            room_max_distance=room_max_distance,
+        )
     for pd in parts_data:
         pd["original_number"] = assigned_numbers.get(pd["index"])
 

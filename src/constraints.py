@@ -114,6 +114,9 @@ class NestingProfile:
     # 推边时尽量让相邻面板边缘对齐在同一直线上
     align_edges: bool = True
 
+    # DeepNest/水刀首件最长直边贴大板左边缘（可由图纸画像覆盖）
+    first_part_left_edge: bool = False
+
     # ---- 材料参数（记录用，不影响排板） ----
     # 大板厚度（mm），未来用于工时/成本核算
     sheet_thickness: float = 20.0

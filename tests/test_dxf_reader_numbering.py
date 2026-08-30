@@ -6,6 +6,8 @@ from src.dxf_reader import (
     _assign_numbers_by_containment,
     _build_part_hierarchy,
     _collect_number_texts,
+    _entity_to_polygon,
+    _is_closed,
     _looks_like_number,
     extract_closed_polygons,
     read_dxf,
@@ -43,6 +45,35 @@ def test_collect_number_texts_uses_explicit_layers(tmp_path):
 
     texts = _collect_number_texts(doc, number_layers=["NUM_A", "NUM_B"])
     assert texts == [(500.0, 500.0, "01B-7")]
+
+
+def test_collect_number_texts_uses_custom_layer_keyword(tmp_path):
+    path = tmp_path / "custom_keyword.dxf"
+    doc = _write_panel_dxf(path, ["SPECIAL_NUM"])
+    msp = doc.modelspace()
+    text = msp.add_text("01B-7", dxfattribs={"layer": "SPECIAL_NUM"})
+    text.set_placement((500, 500))
+
+    texts = _collect_number_texts(doc, number_layer_keyword="SPECIAL")
+    assert texts == [(500.0, 500.0, "01B-7")]
+
+
+def test_read_dxf_can_disable_legacy_number_layer_fallback(tmp_path):
+    path = tmp_path / "no_legacy_number.dxf"
+    doc = ezdxf.new("R2010")
+    doc.layers.add("PANEL")
+    doc.layers.add("编号_LAYER")
+    msp = doc.modelspace()
+    msp.add_lwpolyline(
+        [(0, 0), (1000, 0), (1000, 1000), (0, 1000), (0, 0)],
+        dxfattribs={"layer": "PANEL"},
+    )
+    text = msp.add_text("01B-7", dxfattribs={"layer": "编号_LAYER"})
+    text.set_placement((500, 500))
+    doc.saveas(path)
+
+    parts, _ = read_dxf(str(path), number_layer_keyword="")
+    assert parts[0]["original_number"] is None
 
 
 def test_read_dxf_uses_multiple_number_layers_and_pattern(tmp_path):
@@ -110,6 +141,84 @@ def test_extract_closed_polygons_recovers_l_shaped_self_touching_outline(tmp_pat
         closed_tolerance=0.1,
     )
     assert len(polygons) == 1
+
+
+def test_closed_loop_recovers_repeated_first_vertex_with_trailing_vertex(tmp_path):
+    path = tmp_path / "first_repeat.dxf"
+    doc = ezdxf.new("R2010")
+    doc.layers.add("PANEL")
+    msp = doc.modelspace()
+    points = [
+        (0, 0),
+        (10, 0),
+        (10, 4),
+        (6, 4),
+        (6, 2),
+        (4, 2),
+        (4, 4),
+        (0, 4),
+        (0, 0),  # closed loop already reached here
+        (12, 0),  # redundant trailing vertex
+    ]
+    entity = msp.add_lwpolyline(points, dxfattribs={"layer": "PANEL"})
+    doc.saveas(path)
+
+    assert entity.closed is False
+    assert _is_closed(entity, 0.1) is True
+    polygon = _entity_to_polygon(entity, closed_tolerance=0.1)
+    assert polygon is not None
+    assert polygon.area > 0
+
+
+def test_closed_loop_recovers_last_vertex_equal_to_second_vertex(tmp_path):
+    path = tmp_path / "last_repeat.dxf"
+    doc = ezdxf.new("R2010")
+    doc.layers.add("PANEL")
+    msp = doc.modelspace()
+    points = [
+        (0, 0),
+        (10, 0),
+        (10, 4),
+        (6, 4),
+        (6, 2),
+        (4, 2),
+        (4, 4),
+        (0, 4),
+        (10, 0),  # last vertex repeats the second vertex
+    ]
+    entity = msp.add_lwpolyline(points, dxfattribs={"layer": "PANEL"})
+    doc.saveas(path)
+
+    assert _is_closed(entity, 0.1) is True
+    polygon = _entity_to_polygon(entity, closed_tolerance=0.1)
+    assert polygon is not None
+    assert polygon.area > 0
+
+
+def test_closed_loop_cleans_consecutive_duplicate_vertices(tmp_path):
+    path = tmp_path / "duplicate_vertices.dxf"
+    doc = ezdxf.new("R2010")
+    doc.layers.add("PANEL")
+    msp = doc.modelspace()
+    points = [
+        (0, 0),
+        (0, 0),  # consecutive duplicate
+        (10, 0),
+        (10, 10),
+        (0, 10),
+    ]
+    entity = msp.add_lwpolyline(
+        points,
+        dxfattribs={"layer": "PANEL"},
+        close=True,
+    )
+    doc.saveas(path)
+
+    polygon = _entity_to_polygon(entity, closed_tolerance=0.1)
+
+    assert polygon is not None
+    assert polygon.is_valid
+    assert polygon.area == 100.0
 
 
 def test_extract_closed_polygons_does_not_recover_plain_open_polyline(tmp_path):

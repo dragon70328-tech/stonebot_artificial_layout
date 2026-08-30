@@ -8,12 +8,250 @@
     enforce_min_gap — 强制面板间最小切割间距
 """
 
+import math
+
 import shapely
 from shapely import affinity
 from shapely.geometry import Point, Polygon
 
 EPS = 1e-6
+GAP_TOL = 1e-3
 _OVERLAP_PATTERN = "T********"
+
+
+def _part_straight_edges(part, tol: float = 0.05):
+    """Return (vertical, horizontal) straight exterior edges for one part."""
+    vertical = []
+    horizontal = []
+    coords = list(part.outer_polygon.exterior.coords)
+    for (x0, y0), (x1, y1) in zip(coords, coords[1:]):
+        if abs(x0 - x1) <= tol:
+            vertical.append((min(y0, y1), max(y0, y1), x0, part))
+        elif abs(y0 - y1) <= tol:
+            horizontal.append((min(x0, x1), max(x0, x1), y0, part))
+    return vertical, horizontal
+
+
+def diagnose_postprocess(sheets, slide_expected: bool = True,
+                         align_expected: bool = True, gap_mm: float = 0.0,
+                         edge_tol: float = 1.0, snap_tol: float = 2.0):
+    """Check whether bridge post-processing goals were fully applied.
+
+    Returns a list of structured warnings.  Geometry boundary/overlap errors
+    are intentionally not included here; the caller validates those separately
+    so this function stays focused on manufacturing checks.
+    """
+    warnings = []
+    for sheet in sheets:
+        pp = PostProcessor(sheet.width, sheet.height)
+        if slide_expected:
+            missed_slide = []
+            for part in sheet.parts:
+                minx, miny, maxx, maxy = part.outer_polygon.bounds
+                edge_distance = min(
+                    minx,
+                    sheet.width - maxx,
+                    miny,
+                    sheet.height - maxy,
+                )
+                if edge_distance <= edge_tol:
+                    continue
+                others = [
+                    p.outer_polygon for p in sheet.parts if p is not part
+                ]
+                room = pp._slide_potential(
+                    part.outer_polygon,
+                    others,
+                    gap_mm=gap_mm,
+                    min_move=edge_tol,
+                )
+                if room is not None:
+                    missed_slide.append({
+                        "part": part.number,
+                        "direction": room[0],
+                        "available_mm": room[1],
+                    })
+            if missed_slide:
+                warnings.append({
+                    "type": "part_not_on_edge",
+                    "sheet": sheet.index,
+                    "parts": [item["part"] for item in missed_slide],
+                    "slide_potential": missed_slide,
+                })
+
+        if align_expected:
+            misaligned = []
+            constrained = []
+            for orientation in ("vertical", "horizontal"):
+                edges = []
+                for part in sheet.parts:
+                    vertical, horizontal = _part_straight_edges(part)
+                    edges.extend(
+                        vertical if orientation == "vertical" else horizontal
+                    )
+                if len(edges) < 2:
+                    continue
+                edges.sort(key=lambda edge: edge[2])
+                for left, right in zip(edges, edges[1:]):
+                    if right[2] - left[2] >= snap_tol:
+                        continue
+                    if right[2] - left[2] <= EPS:
+                        continue
+                    if id(left[3]) == id(right[3]):
+                        continue
+                    low = max(left[0], right[0])
+                    high = min(left[1], right[1])
+                    if high <= low:
+                        continue
+                    gap = right[2] - left[2]
+                    item = {
+                        "orientation": orientation,
+                        "gap_mm": round(gap, 3),
+                        "parts": [left[3].number, right[3].number],
+                    }
+                    feasible = pp._through_cut_feasible(
+                        sheet.parts,
+                        orientation,
+                        left[3],
+                        right[3],
+                        gap,
+                        gap_mm,
+                    )
+                    if feasible:
+                        misaligned.append(item)
+                    else:
+                        item["reason"] = "边界或零件间距约束下无法完成共线"
+                        constrained.append(item)
+            if misaligned:
+                warnings.append({
+                    "type": "through_cut_not_aligned",
+                    "sheet": sheet.index,
+                    "edges": misaligned,
+                })
+            if constrained:
+                warnings.append({
+                    "type": "through_cut_constrained",
+                    "sheet": sheet.index,
+                    "edges": constrained,
+                })
+
+        if gap_mm > 0:
+            gap_pairs = []
+            for i, part_a in enumerate(sheet.parts):
+                for part_b in sheet.parts[i + 1:]:
+                    separation = part_a.outer_polygon.distance(
+                        part_b.outer_polygon
+                    )
+                    overlaps = shapely.relate_pattern(
+                        part_a.outer_polygon,
+                        part_b.outer_polygon,
+                        _OVERLAP_PATTERN,
+                    )
+                    if not overlaps and separation < gap_mm - GAP_TOL:
+                        gap_pairs.append({
+                            "parts": [part_a.number, part_b.number],
+                            "gap_mm": round(separation, 3),
+                        })
+            if gap_pairs:
+                warnings.append({
+                    "type": "min_gap_violation",
+                    "sheet": sheet.index,
+                    "pairs": gap_pairs,
+                })
+
+    return warnings
+
+
+def diagnose_waterjet(sheets, first_part_left_edge: bool = False,
+                      arbitrary_rotation: bool = False,
+                      rotations: tuple = (0,),
+                      edge_tol: float = 1.0, snap_tol: float = 1.0):
+    """DeepNest/waterjet-specific manufacturability checks."""
+    warnings = []
+    metrics = {
+        "first_part_left_edge_checked": 0,
+        "first_part_left_edge_failed": 0,
+        "collinear_edge_pairs": 0,
+    }
+
+    for sheet in sheets:
+        if first_part_left_edge and sheet.parts:
+            metrics["first_part_left_edge_checked"] += 1
+            part = sheet.parts[0]
+            longest = _longest_straight_edge(part)
+            can_rotate_to_vertical = arbitrary_rotation or any(
+                (angle % 180) == 90 for angle in rotations
+            )
+            has_vertical_longest = _has_vertical_longest_edge(
+                part, longest, edge_tol
+            )
+            if (
+                longest > 0
+                and (can_rotate_to_vertical or has_vertical_longest)
+                and not _has_left_vertical_edge(part, longest, edge_tol)
+            ):
+                metrics["first_part_left_edge_failed"] += 1
+                warnings.append({
+                    "type": "first_part_not_on_left_edge",
+                    "sheet": sheet.index,
+                    "part": part.number,
+                    "longest_straight_edge_mm": round(longest, 1),
+                })
+        metrics["collinear_edge_pairs"] += _collinear_edge_pairs(
+            sheet.parts, snap_tol
+        )
+
+    return warnings, metrics
+
+
+def _longest_straight_edge(part, tol: float = 0.05) -> float:
+    coords = list(part.outer_polygon.exterior.coords)
+    longest = 0.0
+    for (x0, y0), (x1, y1) in zip(coords, coords[1:]):
+        if abs(x0 - x1) <= tol or abs(y0 - y1) <= tol:
+            longest = max(longest, math.hypot(x1 - x0, y1 - y0))
+    return longest
+
+
+def _has_left_vertical_edge(part, longest, edge_tol) -> bool:
+    coords = list(part.outer_polygon.exterior.coords)
+    for (x0, y0), (x1, y1) in zip(coords, coords[1:]):
+        if abs(x0 - x1) > 0.05:
+            continue
+        length = abs(y1 - y0)
+        if x0 <= edge_tol and length >= longest - edge_tol:
+            return True
+    return False
+
+
+def _has_vertical_longest_edge(part, longest, edge_tol) -> bool:
+    coords = list(part.outer_polygon.exterior.coords)
+    for (x0, y0), (x1, y1) in zip(coords, coords[1:]):
+        if abs(x0 - x1) > 0.05:
+            continue
+        if abs(y1 - y0) >= longest - edge_tol:
+            return True
+    return False
+
+
+def _collinear_edge_pairs(parts, snap_tol) -> int:
+    total = 0
+    for orientation in ("vertical", "horizontal"):
+        edges = []
+        for part in parts:
+            vertical, horizontal = _part_straight_edges(part)
+            edges.extend(vertical if orientation == "vertical" else horizontal)
+        if len(edges) < 2:
+            continue
+        edges.sort(key=lambda edge: edge[2])
+        for left, right in zip(edges, edges[1:]):
+            if right[2] - left[2] > snap_tol:
+                continue
+            if id(left[3]) == id(right[3]):
+                continue
+            if min(left[1], right[1]) > max(left[0], right[0]):
+                total += 1
+    return total
 
 
 class PostProcessor:
@@ -29,8 +267,11 @@ class PostProcessor:
         elif gap_mm > 0:
             self.enforce_min_gap(sheets, gap_mm)
         if align:
-            self.align_edges(sheets)
-            self.through_cut(sheets)
+            self.align_edges(sheets, gap_mm=gap_mm)
+            self.through_cut(sheets, gap_mm=gap_mm)
+        if slide:
+            for sheet in sheets:
+                self._slide_sheet(sheet, gap_mm)
         if gap_mm > 0:
             self.enforce_min_gap(sheets, gap_mm)
 
@@ -48,7 +289,9 @@ class PostProcessor:
         """
         for sheet in sheets:
             if not self._pack_sheet_to_edges(sheet, gap_mm):
-                self._slide_sheet(sheet)
+                self._slide_sheet(sheet, gap_mm)
+            else:
+                self._slide_sheet(sheet, gap_mm)
 
     def _pack_sheet_to_edges(self, sheet, gap_mm):
         parts = sheet.parts
@@ -177,9 +420,9 @@ class PostProcessor:
     def _too_close(self, a, b, gap_mm):
         if gap_mm <= 0:
             return shapely.relate_pattern(a, b, _OVERLAP_PATTERN)
-        return a.distance(b) < gap_mm - EPS
+        return a.distance(b) < gap_mm - GAP_TOL
 
-    def _slide_sheet(self, sheet):
+    def _slide_sheet(self, sheet, gap_mm=0.0):
         # 标记已滑过的面板（靠边后不再滑第二次）
         done = set()
         for _pass in range(20):
@@ -194,7 +437,7 @@ class PostProcessor:
                 if dl < 1 or dr < 1 or db < 1 or dt < 1:
                     done.add(id(part))
                     continue
-                if self._slide_one(part, sheet):
+                if self._slide_one(part, sheet, gap_mm):
                     moved = True
                     # 滑完后检查是否靠边
                     b2 = part.outer_polygon.bounds
@@ -204,7 +447,7 @@ class PostProcessor:
                 break
 
 
-    def _slide_one(self, part, sheet):
+    def _slide_one(self, part, sheet, gap_mm=0.0):
         """优先滑向最近边；成功靠边后，下一轮可滑向次近边。"""
         others = [p.outer_polygon for p in sheet.parts if p is not part]
         b = part.outer_polygon.bounds
@@ -235,7 +478,7 @@ class PostProcessor:
         for dx, dy, _, edge_name in cand:
             if abs(dx) < 0.5 and abs(dy) < 0.5:
                 continue
-            d = self._max_slide(part.outer_polygon, dx, dy, others)
+            d = self._max_slide(part.outer_polygon, dx, dy, others, gap_mm)
             if d > 1.0:
                 mag = (dx**2 + dy**2)**0.5
                 self._shift(part, dx / mag * d, dy / mag * d)
@@ -297,7 +540,7 @@ class PostProcessor:
             return True
         return False
 
-    def _max_slide(self, orig_poly, dir_x, dir_y, others):
+    def _max_slide(self, orig_poly, dir_x, dir_y, others, gap_mm=0.0):
         """二分搜索沿方向的最大安全滑动距离。"""
         if abs(dir_x) < EPS and abs(dir_y) < EPS:
             return 0.0
@@ -310,7 +553,7 @@ class PostProcessor:
             tb = test.bounds
             if tb[0] < -EPS or tb[1] < -EPS or tb[2] > self.w+EPS or tb[3] > self.h+EPS:
                 break
-            if any(shapely.relate_pattern(test, o, _OVERLAP_PATTERN) for o in others):
+            if any(self._too_close(test, o, gap_mm) for o in others):
                 break
             hi *= 2
             if hi > 100000:
@@ -323,10 +566,27 @@ class PostProcessor:
             tb = test.bounds
             if tb[0] < -EPS or tb[1] < -EPS or tb[2] > self.w+EPS or tb[3] > self.h+EPS:
                 hi = mid; continue
-            if any(shapely.relate_pattern(test, o, _OVERLAP_PATTERN) for o in others):
+            if any(self._too_close(test, o, gap_mm) for o in others):
                 hi = mid; continue
             lo = mid
         return lo
+
+    def _slide_potential(self, orig_poly, others, gap_mm=0.0, min_move=1.0):
+        """Return the first direction in which the part can reach an edge."""
+        minx, miny, maxx, maxy = orig_poly.bounds
+        directions = (
+            (-1.0, 0.0, "left", minx),
+            (1.0, 0.0, "right", self.w - maxx),
+            (0.0, -1.0, "bottom", miny),
+            (0.0, 1.0, "top", self.h - maxy),
+        )
+        for dir_x, dir_y, name, required in directions:
+            if required <= min_move:
+                continue
+            distance = self._max_slide(orig_poly, dir_x, dir_y, others, gap_mm)
+            if distance >= required - min_move:
+                return name, round(distance, 1)
+        return None
 
     def _shift(self, part, dx, dy):
         part.outer_polygon = affinity.translate(part.outer_polygon, dx, dy)
@@ -337,21 +597,21 @@ class PostProcessor:
 
     # ── align_edges ──────────────────────────────────────────
 
-    def align_edges(self, sheets, snap_tol=2.0):
+    def align_edges(self, sheets, snap_tol=2.0, gap_mm=0.0):
         for sheet in sheets:
             if len(sheet.parts) <= 1: continue
-            self._align_sheet(sheet, snap_tol)
+            self._align_sheet(sheet, snap_tol, gap_mm)
 
-    def _align_sheet(self, sheet, snap_tol):
+    def _align_sheet(self, sheet, snap_tol, gap_mm=0.0):
         for _ in range(5):
             changed = False
             for edge_type in ("bottom", "top", "left", "right"):
-                if self._snap_axis(sheet, edge_type, snap_tol):
+                if self._snap_axis(sheet, edge_type, snap_tol, gap_mm):
                     changed = True
             if not changed:
                 break
 
-    def _snap_axis(self, sheet, edge_type, snap_tol):
+    def _snap_axis(self, sheet, edge_type, snap_tol, gap_mm=0.0):
         parts = sheet.parts
         edges = []
         for p in parts:
@@ -400,7 +660,7 @@ class PostProcessor:
             tb = test.bounds
             if tb[0] < -EPS or tb[1] < -EPS or tb[2] > self.w+EPS or tb[3] > self.h+EPS:
                 return False
-            if any(shapely.relate_pattern(test, other, _OVERLAP_PATTERN) for other in others + moved_polys):
+            if any(self._too_close(test, other, gap_mm) for other in others + moved_polys):
                 return False
             moved_polys.append(test)
             moves.append((part, dx, dy))
@@ -414,7 +674,7 @@ class PostProcessor:
 
     # ── through_cut ─────────────────────────────────────────
 
-    def through_cut(self, sheets, snap_tol=2.0):
+    def through_cut(self, sheets, snap_tol=2.0, gap_mm=0.0):
         """对已排板结果做“一刀通切”整理。
 
         只做刚体平移，不改变角度和板归属；优先把同一张板内近乎共线的
@@ -424,8 +684,10 @@ class PostProcessor:
             if len(sheet.parts) <= 1:
                 continue
             snapshot = self._snapshot_parts(sheet.parts)
-            self._through_cut_sheet(sheet, snap_tol)
-            if self._has_overlap(sheet.parts):
+            self._through_cut_sheet(sheet, snap_tol, gap_mm)
+            if self._has_overlap(sheet.parts) or (
+                gap_mm > 0 and self._has_gap_violation(sheet.parts, gap_mm)
+            ):
                 self._restore_parts(sheet.parts, snapshot)
 
     def _snapshot_parts(self, parts):
@@ -452,16 +714,33 @@ class PostProcessor:
                     return True
         return False
 
-    def _through_cut_sheet(self, sheet, snap_tol):
-        for _ in range(6):
+    def _has_gap_violation(self, parts, gap_mm):
+        for i, p1 in enumerate(parts):
+            for p2 in parts[i + 1:]:
+                if not shapely.relate_pattern(
+                    p1.outer_polygon,
+                    p2.outer_polygon,
+                    _OVERLAP_PATTERN,
+                ) and p1.outer_polygon.distance(p2.outer_polygon) < gap_mm - GAP_TOL:
+                    return True
+        return False
+
+    def _through_cut_sheet(self, sheet, snap_tol, gap_mm=0.0):
+        for _ in range(20):
             changed = False
             for orientation in ("vertical", "horizontal"):
-                if self._snap_straight_axis(sheet, orientation, snap_tol):
+                axis_changed = self._snap_straight_axis(
+                    sheet, orientation, snap_tol, gap_mm
+                )
+                pair_changed = self._snap_straight_pairs(
+                    sheet, orientation, snap_tol, gap_mm
+                )
+                if axis_changed or pair_changed:
                     changed = True
             if not changed:
                 break
 
-    def _snap_straight_axis(self, sheet, orientation, snap_tol):
+    def _snap_straight_axis(self, sheet, orientation, snap_tol, gap_mm=0.0):
         parts = sheet.parts
         edges = []
         for part in parts:
@@ -483,46 +762,130 @@ class PostProcessor:
         if len(current) >= 2:
             clusters.append(current)
 
+        if not clusters:
+            return False
+
+        cluster = clusters[0]
         is_vertical = orientation == "vertical"
+        target = sum(edge[2] for edge in cluster) / len(cluster)
         part_deltas: dict[int, list[float]] = {}
-        for cluster in clusters:
-            target = sum(edge[2] for edge in cluster) / len(cluster)
-            for _, _, coord, part in cluster:
-                part_deltas.setdefault(id(part), []).append(target - coord)
+        for _, _, coord, part in cluster:
+            part_deltas.setdefault(id(part), []).append(target - coord)
 
         moving_parts = [
             (part, sum(deltas) / len(deltas))
             for part in parts
             if (deltas := part_deltas.get(id(part)))
         ]
-
-        others = [
-            part.outer_polygon
-            for part in parts
-            if id(part) not in part_deltas
-        ]
-        moved_polys: list = []
         moves = []
         for part, delta in moving_parts:
-            if abs(delta) < EPS:
-                moved_polys.append(part.outer_polygon)
-                moves.append((part, 0.0, 0.0))
-                continue
             dx, dy = (delta, 0.0) if is_vertical else (0.0, delta)
-            test = affinity.translate(part.outer_polygon, dx, dy)
-            tb = test.bounds
-            if tb[0] < -EPS or tb[1] < -EPS or tb[2] > self.w + EPS or tb[3] > self.h + EPS:
-                return False
-            if any(shapely.relate_pattern(test, other, _OVERLAP_PATTERN) for other in others + moved_polys):
-                return False
-            moved_polys.append(test)
             moves.append((part, dx, dy))
 
-        changed = False
+        # 优先只移动一侧，避免把已贴边零件拉离板边。
+        if len(cluster) == 2:
+            (_, _, coord_a, part_a), (_, _, coord_b, part_b) = cluster
+            if part_a is not part_b:
+                for part, delta in (
+                    (part_a, coord_b - coord_a),
+                    (part_b, coord_a - coord_b),
+                ):
+                    if abs(delta) < EPS:
+                        continue
+                    dx, dy = (delta, 0.0) if is_vertical else (0.0, delta)
+                    if self._try_axis_moves(parts, [(part, dx, dy)], gap_mm):
+                        return True
+
+        return self._try_axis_moves(parts, moves, gap_mm)
+
+    def _axis_moves_valid(self, parts, moves, gap_mm):
+        """Test a set of axis translations without mutating parts."""
+        candidate = {id(part): part.outer_polygon for part in parts}
+        for part, dx, dy in moves:
+            test = affinity.translate(part.outer_polygon, dx, dy)
+            tb = test.bounds
+            if tb[0] < -EPS or tb[1] < -EPS or \
+               tb[2] > self.w + EPS or tb[3] > self.h + EPS:
+                return False
+            candidate[id(part)] = test
+
+        for i, part_a in enumerate(parts):
+            for part_b in parts[i + 1:]:
+                if self._too_close(candidate[id(part_a)], candidate[id(part_b)], gap_mm):
+                    return False
+        return True
+
+    def _try_axis_moves(self, parts, moves, gap_mm):
+        """Check and apply a set of axis translations as one atomic move."""
+        if not self._axis_moves_valid(parts, moves, gap_mm):
+            return False
         for part, dx, dy in moves:
             if dx or dy:
                 self._shift(part, dx, dy)
-                changed = True
+        return True
+
+    def _through_cut_feasible(self, parts, orientation, part_a, part_b,
+                              delta, gap_mm):
+        """Return True if two near-collinear edges can be aligned safely."""
+        return any(
+            self._axis_moves_valid(parts, moves, gap_mm)
+            for moves in self._through_cut_moves(part_a, part_b, orientation, delta)
+        )
+
+    def _through_cut_moves(self, part_a, part_b, orientation, delta):
+        """Return candidate move sets for aligning two straight edges."""
+        is_vertical = orientation == "vertical"
+        half = delta / 2.0
+        move_a = (half, 0.0) if is_vertical else (0.0, half)
+        move_b = (-half, 0.0) if is_vertical else (0.0, -half)
+        return (
+            [(part_a, delta if is_vertical else 0.0,
+              0.0 if is_vertical else delta)],
+            [(part_b, -delta if is_vertical else 0.0,
+              0.0 if is_vertical else -delta)],
+            [(part_a, *move_a), (part_b, *move_b)],
+        )
+
+    def _snap_straight_pairs(self, sheet, orientation, snap_tol, gap_mm):
+        """Pairwise fallback for through-cut alignment."""
+        parts = sheet.parts
+        changed = False
+        for _ in range(6):
+            edges = []
+            for part in parts:
+                vertical, horizontal = self._straight_edges(part)
+                edges.extend(vertical if orientation == "vertical" else horizontal)
+            if len(edges) < 2:
+                break
+            edges.sort(key=lambda edge: edge[2])
+            pairs = []
+            for left, right in zip(edges, edges[1:]):
+                if right[2] - left[2] >= snap_tol:
+                    continue
+                if right[2] - left[2] <= EPS:
+                    continue
+                if id(left[3]) == id(right[3]):
+                    continue
+                if min(left[1], right[1]) <= max(left[0], right[0]):
+                    continue
+                pairs.append((left, right))
+            if not pairs:
+                break
+
+            moved = False
+            for left, right in pairs:
+                delta = right[2] - left[2]
+                for moves in self._through_cut_moves(
+                    left[3], right[3], orientation, delta
+                ):
+                    if self._try_axis_moves(parts, moves, gap_mm):
+                        moved = True
+                        break
+                if moved:
+                    break
+            if not moved:
+                break
+            changed = True
         return changed
 
     def _straight_edges(self, part, tol=0.05):
