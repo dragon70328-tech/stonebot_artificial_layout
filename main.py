@@ -77,6 +77,8 @@ from src.workflow import (
     prepare_drawing,
     resolve_drawing_profile,
 )
+from src.artifact_store import ArtifactStore
+from src.workflow_session import WorkflowSession, WorkflowStage
 # ═══════════════════════════════════════════════════════════════
 #  CLI 参数
 # ═══════════════════════════════════════════════════════════════
@@ -993,6 +995,12 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     if profile is None:
         profile = PROFILE_MIN_SHEETS
 
+    # 工作流会话记录层：CLI 是状态机的第一个消费者，仅记录不改变行为
+    session = WorkflowSession(
+        session_id=f"cli-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+    )
+    project_id = Path(dxf_path).stem
+
     unit_label = UNIT_LABELS[unit]
     width_mm = convert_to_mm(width, unit)
     height_mm = convert_to_mm(height, unit)
@@ -1035,12 +1043,55 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     groups = prepared.groups
     material_group_enabled = prepared.material_group_enabled
 
+    session.transition(WorkflowStage.ANALYZED, summary={"dxf": dxf_path})
+    session.transition(
+        WorkflowStage.PROFILE_MATCHED,
+        summary={"profile": drawing_profile.name if drawing_profile else None},
+    )
+    session.transition(
+        WorkflowStage.READ,
+        summary={
+            "parts": len(parts),
+            "total_area": round(prepared.total_area, 1),
+            "material_groups": [g for g in groups if g],
+            "skipped_material_numbers": len(skipped_material_numbers),
+        },
+    )
+    session.transition(
+        WorkflowStage.AUDITED,
+        summary={"skipped": True, "note": "审图由 run_audit 独立入口执行"},
+    )
+    session.transition(
+        WorkflowStage.NUMBERING_CONFIRMED,
+        summary={"mode": "auto", "skip_unnumbered": skip_unnumbered},
+    )
+
     special_w, special_h = special_size if special_size else (None, None)
 
     stem = Path(dxf_path).stem
     out_dir = None
+    store = None
+    session_artifacts: dict = {}
+
+    def _track_artifact(stage: WorkflowStage, path) -> None:
+        if store is None or path is None:
+            return
+        ref = store.track(project_id, stage.value, path)
+        session_artifacts[ref.artifact_id] = ref.to_dict()
+
+    def _write_session_file() -> None:
+        if out_dir is None:
+            return
+        payload = session.to_dict()
+        payload["artifacts"] = session_artifacts
+        (out_dir / f"{stem}_workflow_session.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
     if not report_only:
         out_dir = make_output_dir(dxf_path)
+        store = ArtifactStore(out_dir)
         recognized_json = out_dir / f"{stem}_recognized.json"
         recognized_json.write_text(
             recognized_drawing.to_json(),
@@ -1049,6 +1100,8 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         numbered_original = out_dir / f"{stem}_numbered_原位.dxf"
         write_numbered_parts_dxf(parts, str(numbered_original),
                                  unit_system=unit.value)
+        _track_artifact(WorkflowStage.READ, recognized_json)
+        _track_artifact(WorkflowStage.READ, numbered_original)
 
     if profile.uses_deepnest:
         print(f"开始排板... (DeepNest/BLF, trials={trials})")
@@ -1102,6 +1155,14 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     # ── 排板完成后先报告板数，确认后再执行后处理 ──
     print(f"排板完成：使用 {result.total_sheets} 张大板，"
           f"出材率 {result.yield_rate:.2f}%，耗时 {elapsed:.1f}s")
+    session.transition(
+        WorkflowStage.NESTED_REPORTED,
+        summary={
+            "total_sheets": result.total_sheets,
+            "yield_rate": round(result.yield_rate, 2),
+            "elapsed_seconds": round(elapsed, 1),
+        },
+    )
     if report_only:
         print("已按 --report-only 停止：未执行后处理和输出文件。")
         return {"report_only": True}
@@ -1109,6 +1170,8 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         ans = input("是否接受该板数并开始后处理推板？[y/N]: ").strip().lower()
         if ans not in ("y", "yes"):
             print("已取消：未执行后处理和输出。")
+            session.cancel("用户拒绝板数，未执行后处理")
+            _write_session_file()
             return {"cancelled": True}
     elif confirm_sheet_count:
         print("非交互模式：自动确认板数，开始后处理。")
@@ -1197,13 +1260,29 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
 
     if errors:
         print("几何校验未通过，已停止生成最终 DXF。")
+        session.block(
+            "几何校验未通过",
+            summary={"error_count": len(errors)},
+        )
+        _track_artifact(WorkflowStage.POSTPROCESS_CONFIRMED, check_path)
+        _write_session_file()
         return {
             "geometry_errors": errors,
             "check_path": str(check_path),
         }
 
+    session.transition(
+        WorkflowStage.POSTPROCESS_CONFIRMED,
+        summary={
+            "postprocess_warnings": len(postprocess_warnings),
+            "check_only": check_only,
+        },
+    )
+    _track_artifact(WorkflowStage.POSTPROCESS_CONFIRMED, check_path)
+
     if check_only:
         print("已按 --check-only 停止：未生成最终 DXF 和排板报告。")
+        _write_session_file()
         return {
             "check_only": True,
             "geometry_errors": errors,
@@ -1271,6 +1350,13 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
 
     print(f"DXF: {out_dxf}")
     print(f"报告: {out_json}")
+    _track_artifact(WorkflowStage.COMPLETED, out_dxf)
+    _track_artifact(WorkflowStage.COMPLETED, out_json)
+    session.transition(
+        WorkflowStage.COMPLETED,
+        summary={"out_dxf": out_dxf, "out_json": out_json},
+    )
+    _write_session_file()
     return {
         "geometry_errors": errors,
         "postprocess_warnings": postprocess_warnings,

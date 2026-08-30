@@ -127,6 +127,31 @@ class ArtifactStore:
             stage_version=stage_version,
         )
 
+    def track(
+        self,
+        project_id: str,
+        stage: str,
+        path: str | Path,
+        *,
+        stage_version: str = "cli",
+    ) -> ArtifactRef:
+        """Register an existing file by content digest without copying it.
+
+        Used by the CLI recording layer: outputs stay at their conventional
+        paths, but the workflow session still records content-addressed refs.
+        """
+        file_path = Path(path)
+        digest = content_digest(file_path.read_bytes())
+        return ArtifactRef(
+            project_id=project_id,
+            stage=stage,
+            stage_version=stage_version,
+            artifact_id=f"{stage}:{digest[:24]}",
+            digest=digest,
+            path=file_path,
+            extension=file_path.suffix.lstrip("."),
+        )
+
     def read_bytes(self, ref: ArtifactRef) -> bytes:
         return ref.path.read_bytes()
 
