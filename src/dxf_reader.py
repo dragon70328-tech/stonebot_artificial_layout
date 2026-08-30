@@ -522,6 +522,15 @@ def _text_box_polygon(entity) -> Polygon | None:
         return None
 
 
+# 本系统编号检查 DXF 的编号图层约定（dxf_writer 写出，读回时优先识别）
+_OWN_NUMBER_LAYERS = {"NUMBERS"}
+
+
+def _is_number_layer(layer_name: str, keyword: str) -> bool:
+    """编号图层判定：名称含关键字，或匹配本系统编号检查文件的图层约定。"""
+    return keyword in layer_name or layer_name in _OWN_NUMBER_LAYERS
+
+
 def _collect_number_texts(doc,
                           number_layer = None,
                           number_layers = None,
@@ -534,7 +543,8 @@ def _collect_number_texts(doc,
     Layer selection priority:
     1. explicit number_layers
     2. legacy number_layer argument
-    3. layers whose name contains the Chinese character 32534
+    3. layers whose name contains the Chinese character 32534,
+       or match our own numbered-check DXF convention (NUMBERS)
     4. all TEXT/MTEXT entities, filtered by common number shape
     """
     explicit_layers = None
@@ -543,12 +553,12 @@ def _collect_number_texts(doc,
     elif number_layer is not None:
         explicit_layers = {number_layer}
     elif number_layer_keyword and any(
-        number_layer_keyword in (layer.dxf.name or "")
+        _is_number_layer(layer.dxf.name or "", number_layer_keyword)
         for layer in doc.layers
     ):
         explicit_layers = {
             layer.dxf.name for layer in doc.layers
-            if number_layer_keyword in (layer.dxf.name or "")
+            if _is_number_layer(layer.dxf.name or "", number_layer_keyword)
         }
 
     pattern = re.compile(label_pattern) if label_pattern else None

@@ -15,10 +15,10 @@ import random
 import time
 from dataclasses import dataclass
 
+import numpy as np
 import shapely
 from shapely import affinity
-from shapely.geometry import Point, Polygon, box
-from shapely.strtree import STRtree
+from shapely.geometry import Point, Polygon
 
 from src.models import Part, Sheet, NestingResult
 
@@ -50,7 +50,11 @@ class _Placement:
 # ---------------------------------------------------------------------------
 
 def _rotation_forms(part: Part, cache: dict, rotations: tuple = _DEFAULT_ROTATIONS) -> list:
-    """零件的 4 个旋转形态（绕外轮廓质心旋转），返回 [(rot, polygon, bounds)]"""
+    """零件的 4 个旋转形态（绕外轮廓质心旋转）。
+
+    返回 [(rot, polygon, bounds, coords)]，coords 为外环坐标数组，
+    供 _translate_coords 快速平移重建，避免 affinity.translate 的开销。
+    """
     key = (id(part), tuple(rotations))
     forms = cache.get(key)
     if forms is None:
@@ -59,9 +63,37 @@ def _rotation_forms(part: Part, cache: dict, rotations: tuple = _DEFAULT_ROTATIO
         forms = []
         for a in rotations:
             rp = affinity.rotate(outer, a, origin=origin) if a else outer
-            forms.append((a, rp, rp.bounds))
+            coords = np.asarray(rp.exterior.coords)
+            # 中心对称形状（如矩形）的不同旋转角归一化后完全相同，
+            # 去重避免对同一几何形态重复评估全部候选点
+            normalized = coords - coords.min(axis=0)
+            if any(np.array_equal(normalized, seen) for seen in
+                   (f[3] - f[3].min(axis=0) for f in forms)):
+                continue
+            forms.append((a, rp, rp.bounds, coords))
         cache[key] = forms
     return forms
+
+
+def _translate_coords(coords: np.ndarray, xoff: float, yoff: float) -> Polygon:
+    """以坐标数组平移重建多边形，比 affinity.translate 快数倍。"""
+    return shapely.polygons(coords + (xoff, yoff))
+
+
+def _overlap_matrix(cbs: np.ndarray, boxes_arr: np.ndarray,
+                    min_gap: float = 0.0) -> np.ndarray:
+    """候选包围盒批量相交矩阵：hit[i, j] 表示候选 i 与已放零件 j 包围盒相交。
+
+    与 _overlap_indices 相同的比较语义，一次性向量化所有候选，
+    避免逐候选 numpy 调用的固定开销。
+    """
+    m = min_gap
+    return (
+        (boxes_arr[:, 0][None, :] <= cbs[:, 2:3] + m)
+        & (boxes_arr[:, 2][None, :] >= cbs[:, 0:1] - m)
+        & (boxes_arr[:, 1][None, :] <= cbs[:, 3:4] + m)
+        & (boxes_arr[:, 3][None, :] >= cbs[:, 1:2] - m)
+    )
 
 
 def _edge_segments(poly: Polygon) -> list:
@@ -130,7 +162,7 @@ def _first_part_left_placement(part: Part, sheet_w: float, sheet_h: float,
                     best = (angle, poly)
 
     if best is None:
-        for rot, rp, rb in _rotation_forms(part, cache, rotations):
+        for rot, rp, rb, _coords in _rotation_forms(part, cache, rotations):
             pw = rb[2] - rb[0]
             ph = rb[3] - rb[1]
             if pw > sheet_w + EPS or ph > sheet_h + EPS:
@@ -176,37 +208,37 @@ def _reflex_vertices(poly: Polygon) -> list:
     return verts
 
 
-def _collides(cand: Polygon, tree: STRtree, geoms: list,
-              min_gap: float = 0.0) -> bool:
-    """候选多边形与已放零件是否存在重叠，或间距小于 min_gap。"""
-    if not geoms:
-        return False
-    if min_gap <= EPS:
-        query_geom = cand
-    else:
-        minx, miny, maxx, maxy = cand.bounds
-        query_geom = box(
-            minx - min_gap, miny - min_gap,
-            maxx + min_gap, maxy + min_gap,
-        )
-    for idx in tree.query(query_geom):
+def _overlap_indices(cb: tuple, boxes_arr: np.ndarray,
+                     min_gap: float = 0.0) -> np.ndarray:
+    """已放零件中包围盒与候选包围盒（gap 外扩）相交的下标。
+
+    与 STRtree 的包围盒相交语义一致（含边缘贴合），用向量化比较
+    代替每次放置重建 STRtree。
+    """
+    x0, y0, x1, y1 = cb
+    m = min_gap
+    return np.nonzero(
+        (boxes_arr[:, 0] <= x1 + m)
+        & (boxes_arr[:, 2] >= x0 - m)
+        & (boxes_arr[:, 1] <= y1 + m)
+        & (boxes_arr[:, 3] >= y0 - m)
+    )[0]
+
+
+def _collides_precise(cand: Polygon, idxs: np.ndarray, geoms: list,
+                      min_gap: float = 0.0) -> bool:
+    """对包围盒相交的已放零件做精确重叠 / 间距检测。
+
+    重叠判定用 prepared intersects + touches 组合：
+    内部相交 ⟺ 相交且非仅边缘贴合，与 DE-9IM 模式 "T********" 等价，
+    但已放零件已 shapely.prepare，重复判定快数倍。
+    """
+    for idx in idxs:
         other = geoms[idx]
-        if shapely.relate_pattern(cand, other, _OVERLAP_PATTERN):
+        if other.intersects(cand) and not other.touches(cand):
             return True
         if min_gap > EPS and cand.distance(other) < min_gap - EPS:
             return True
-    return False
-
-
-def _bbox_overlaps_any(cb: tuple, boxes: list, min_gap: float = 0.0) -> bool:
-    """候选包围盒是否与任一已放零件包围盒过近（gap 外扩后的正面积重叠）。"""
-    x0, y0, x1, y1 = cb
-    for (px0, py0, px1, py1) in boxes:
-        if x1 + min_gap <= px0 + EPS or x0 - min_gap >= px1 - EPS:
-            continue
-        if y1 + min_gap <= py0 + EPS or y0 - min_gap >= py1 - EPS:
-            continue
-        return True
     return False
 
 
@@ -302,8 +334,8 @@ def _full_score(mode: str, cb: tuple, boxes: list,
 # 放置搜索
 # ---------------------------------------------------------------------------
 
-def _slide(rp: Polygon, rb: tuple, x: float, y: float,
-           tree: STRtree, geoms: list,
+def _slide(coords: np.ndarray, rb: tuple, x: float, y: float,
+           geoms: list, boxes_arr: np.ndarray | None,
            sheet_w: float, sheet_h: float,
            min_gap: float = 0.0) -> tuple:
     """滑动压实：交替向 -x / -y 方向以递减步长移动，直到贴紧"""
@@ -317,13 +349,23 @@ def _slide(rp: Polygon, rb: tuple, x: float, y: float,
                 if nx < -EPS or ny < -EPS:
                     step *= 0.5
                     continue
-                cand = affinity.translate(rp, xoff=nx - rb[0], yoff=ny - rb[1])
-                if _collides(cand, tree, geoms, min_gap):
+                collides = False
+                if boxes_arr is not None:
+                    cb = (nx, ny, nx + pw, ny + ph)
+                    idxs = _overlap_indices(cb, boxes_arr, min_gap)
+                    if idxs.size:
+                        cand = _translate_coords(
+                            coords, nx - rb[0], ny - rb[1]
+                        )
+                        collides = _collides_precise(
+                            cand, idxs, geoms, min_gap
+                        )
+                if collides:
                     step *= 0.5
                 else:
                     x, y = nx, ny
                     ox, oy = nx - rb[0], ny - rb[1]
-    return x, y, affinity.translate(rp, xoff=ox, yoff=oy)
+    return x, y, _translate_coords(coords, ox, oy)
 
 
 def _find_placement(part: Part, geoms: list, boxes: list, reflex: list,
@@ -332,11 +374,11 @@ def _find_placement(part: Part, geoms: list, boxes: list, reflex: list,
                     rotations: tuple = _DEFAULT_ROTATIONS,
                     min_gap: float = 0.0) -> _Placement | None:
     """为单个零件搜索最优放置位置，找不到返回 None"""
-    tree = STRtree(geoms) if geoms else None
+    boxes_arr = np.asarray(boxes) if boxes else None
     best = None
     best_score = None
 
-    for rot, rp, rb in _rotation_forms(part, cache, rotations):
+    for rot, rp, rb, coords in _rotation_forms(part, cache, rotations):
         pw, ph = rb[2] - rb[0], rb[3] - rb[1]
         if pw > sheet_w + EPS or ph > sheet_h + EPS:
             continue
@@ -346,13 +388,31 @@ def _find_placement(part: Part, geoms: list, boxes: list, reflex: list,
         pts.sort(key=lambda pt: _primary_key(mode, pt[0], pt[1], pw, ph))
 
         valid = []
-        for (x, y) in pts:
-            cb = (x, y, x + pw, y + ph)
-            if tree is not None and _bbox_overlaps_any(cb, boxes, min_gap):
-                cand = affinity.translate(rp, xoff=x - rb[0], yoff=y - rb[1])
-                if _collides(cand, tree, geoms, min_gap):
-                    continue
-            valid.append((x, y, cb))
+        hit = None
+        if boxes_arr is not None and pts:
+            cbs = np.asarray([(x, y, x + pw, y + ph) for (x, y) in pts])
+            hit = _overlap_matrix(cbs, boxes_arr, min_gap)
+            # 需要精确检测的候选统一批量构建多边形（单次 C 调用），
+            # 避免逐候选 Polygon() 的 Python 固定开销
+            need = [i for i in range(len(pts)) if hit[i].any()]
+            cand_polys = (
+                shapely.polygons(
+                    coords[None, :, :]
+                    + np.array(
+                        [[pts[i][0] - rb[0], pts[i][1] - rb[1]] for i in need]
+                    )[:, None, :]
+                )
+                if need
+                else []
+            )
+            cand_iter = dict(zip(need, cand_polys))
+        for i, (x, y) in enumerate(pts):
+            if hit is not None:
+                idxs = np.nonzero(hit[i])[0]
+                if idxs.size:
+                    if _collides_precise(cand_iter[i], idxs, geoms, min_gap):
+                        continue
+            valid.append((x, y, (x, y, x + pw, y + ph)))
             if len(valid) >= _MAX_VALID_PER_ROT:
                 break
         if not valid:
@@ -362,14 +422,14 @@ def _find_placement(part: Part, geoms: list, boxes: list, reflex: list,
             score = _full_score(mode, cb, boxes, sheet_w, sheet_h)
             if best_score is None or score < best_score:
                 best_score = score
-                best = (rot, x, y, rp, rb)
+                best = (rot, x, y, rb, coords)
 
     if best is None:
         return None
-    rot, x, y, rp, rb = best
+    rot, x, y, rb, coords = best
     # 滑动压实（只向 -x/-y 移动，不会变差）
     x, y, cand = _slide(
-        rp, rb, x, y, tree, geoms, sheet_w, sheet_h, min_gap
+        coords, rb, x, y, geoms, boxes_arr, sheet_w, sheet_h, min_gap
     )
     return _Placement(part=part, rot=rot, x=x, y=y, poly=cand)
 
@@ -419,6 +479,7 @@ def _nest_single(parts: list, sheet_w: float, sheet_h: float,
                 nxt.append(part)
                 continue
             cur.append(pl)
+            shapely.prepare(pl.poly)
             geoms.append(pl.poly)
             boxes.append(pl.poly.bounds)
             reflex.extend(_reflex_vertices(pl.poly))

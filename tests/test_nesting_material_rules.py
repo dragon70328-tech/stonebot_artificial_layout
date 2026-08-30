@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import numpy as np
 from shapely.geometry import box
 
 from src.drawing_profile import DrawingProfile
@@ -8,11 +9,23 @@ from src.nesting import (
     _make_sort_key,
     _nest_single,
     _lns_improve,
+    _overlap_indices,
     _Placement,
     nest_parts,
     validate_nesting,
 )
 import main as app
+
+
+def test_overlap_indices_includes_candidates_touching_above():
+    """候选在已放零件正上方（包围盒下边缘贴合）也必须进入精确检测。"""
+    boxes_arr = np.asarray([(0.0, 0.0, 300.0, 400.0)])
+    idxs = _overlap_indices((0.0, 400.0, 300.0, 800.0), boxes_arr, 0.0)
+    assert idxs.tolist() == [0]
+    idxs = _overlap_indices((0.0, 144.0, 300.0, 544.0), boxes_arr, 0.0)
+    assert idxs.tolist() == [0]
+    idxs = _overlap_indices((0.0, 400.5, 300.0, 800.5), boxes_arr, 0.0)
+    assert idxs.tolist() == []
 
 
 def _part(number, width, height):

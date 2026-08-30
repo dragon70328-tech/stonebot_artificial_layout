@@ -47,7 +47,7 @@ CASES = [
     },
     {
         "name": "mercury_bridge",
-        "dxf": "output/20260820_175157_水星项目户型及排板/水星项目户型及排板_numbered_原位.dxf",
+        "dxf": "output/20260830_185527_水星项目户型及排板/水星项目户型及排板_numbered_原位.dxf",
         "width": 3200.0,
         "height": 1600.0,
         "profile": PROFILE_MIN_SHEETS,
