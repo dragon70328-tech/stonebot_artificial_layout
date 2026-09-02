@@ -1,6 +1,8 @@
 ﻿import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from shapely.geometry import box
@@ -134,6 +136,12 @@ def test_parse_sheet_oversize_accepts_single_and_pair():
     assert app.parse_sheet_oversize("30,40") == (30.0, 40.0)
     assert app.parse_sheet_oversize("30x40") == (30.0, 40.0)
     assert app.parse_sheet_oversize(None) == (0.0, 0.0)
+
+
+@pytest.mark.parametrize("value", ["30,40,50", "-5", "-5,10", "abc"])
+def test_parse_sheet_oversize_rejects_invalid_values(value):
+    with pytest.raises(SystemExit):
+        app.parse_sheet_oversize(value)
 
 def test_postprocessor_slide_keeps_parts_inside_sheet():
     p1 = make_part("A", 400.0, 600.0, 100.0, 100.0)

@@ -16,6 +16,9 @@ def _sample_config() -> ProjectConfig:
             "thickness": 20.0,
             "special_width": 3225.0,
             "special_height": 1625.0,
+            "kerf_mm": 5.0,
+            "sheet_oversize_x": 30.0,
+            "sheet_oversize_y": 30.0,
         },
         "profile": {
             "rotation": [0, 90],
@@ -46,6 +49,8 @@ def test_project_config_loads_nested_json():
     config = _sample_config()
     assert config.project_id == "test-job"
     assert config.sheet.special_size == (3225.0, 1625.0)
+    assert config.sheet.kerf_mm == 5.0
+    assert config.sheet.sheet_oversize == (30.0, 30.0)
     assert config.profile.min_gap == 5.0
     assert config.optimizer.seed == 7
     assert config.reader.layers == ["ST-01"]
@@ -120,6 +125,8 @@ def test_cli_overrides_apply_to_project_config():
         include_unnumbered=True,
         layers="ST-02",
         exclude_layers="DIM,PHANTOM",
+        kerf=3.0,
+        sheet_oversize="25,35",
     )
     app.apply_cli_overrides_to_project_config(config, args)
 
@@ -134,3 +141,5 @@ def test_cli_overrides_apply_to_project_config():
     assert config.reader.skip_unnumbered is False
     assert config.reader.layers == ["ST-02"]
     assert config.reader.exclude_layers == ["DIM", "PHANTOM"]
+    assert config.sheet.kerf_mm == 3.0
+    assert config.sheet.sheet_oversize == (25.0, 35.0)

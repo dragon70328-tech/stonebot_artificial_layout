@@ -21,12 +21,19 @@ class SheetConfig:
     thickness: float = 20.0
     special_width: float | None = None
     special_height: float | None = None
+    kerf_mm: float = 0.0
+    sheet_oversize_x: float = 0.0
+    sheet_oversize_y: float = 0.0
 
     @property
     def special_size(self) -> tuple[float, float] | None:
         if self.special_width is None or self.special_height is None:
             return None
         return (self.special_width, self.special_height)
+
+    @property
+    def sheet_oversize(self) -> tuple[float, float]:
+        return (self.sheet_oversize_x, self.sheet_oversize_y)
 
 
 @dataclass
@@ -150,6 +157,9 @@ class ProjectConfig:
                     if sheet_data.get("special_height") is not None
                     else None
                 ),
+                kerf_mm=float(sheet_data.get("kerf_mm", 0.0)),
+                sheet_oversize_x=float(sheet_data.get("sheet_oversize_x", 0.0)),
+                sheet_oversize_y=float(sheet_data.get("sheet_oversize_y", 0.0)),
             ),
             profile=ProfileConfig(
                 rotation=list(profile_data.get("rotation", [0, 90, 180, 270])),

@@ -554,9 +554,17 @@ def parse_sheet_oversize(value: str | None) -> tuple[float, float]:
     if not value:
         return (0.0, 0.0)
     text = value.strip().lower().replace("×", "x").replace("*", "x")
-    nums = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", text)]
-    if not nums:
+    tokens = [part.strip() for part in re.split(r"[,x]", text) if part.strip()]
+    if len(tokens) not in (1, 2):
+        print(f"错误：大板让尺需为单值或长,宽，示例：30 或 30,30")
+        sys.exit(1)
+    try:
+        nums = [float(token) for token in tokens]
+    except ValueError:
         print(f"错误：无法识别大板让尺 '{value}'，示例：30 或 30,30")
+        sys.exit(1)
+    if any(num < 0 for num in nums):
+        print(f"错误：大板让尺不能为负数 '{value}'")
         sys.exit(1)
     if len(nums) == 1:
         return (nums[0], nums[0])
@@ -602,6 +610,8 @@ def run_with_config(dxf_path: str, config, unit: UnitSystem = UnitSystem.METRIC,
         quick=optimizer.quick,
         pairing=optimizer.pairing,
         reader_options=reader.to_read_options(),
+        kerf_mm=sheet.kerf_mm,
+        sheet_oversize=sheet.sheet_oversize,
     )
 
 
@@ -614,6 +624,12 @@ def apply_cli_overrides_to_project_config(config, args) -> None:
         special = parse_special_size(args.special_size)
         config.sheet.special_width = special[0]
         config.sheet.special_height = special[1]
+    if getattr(args, "kerf", None):
+        config.sheet.kerf_mm = float(args.kerf)
+    if getattr(args, "sheet_oversize", None):
+        oversize = parse_sheet_oversize(args.sheet_oversize)
+        config.sheet.sheet_oversize_x = oversize[0]
+        config.sheet.sheet_oversize_y = oversize[1]
 
     processing_class = resolve_processing_class(args.process)
     if processing_class is not None:

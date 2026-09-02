@@ -12,6 +12,7 @@ from src.dxf_reader import (
     extract_closed_polygons,
     read_dxf,
 )
+from src.numbering import assign_numbers
 
 
 def _write_panel_dxf(path: Path, number_layers):
@@ -315,3 +316,43 @@ def test_assign_numbers_by_containment_uses_text_bbox_fallback():
 
     assignments = _assign_numbers_by_containment(parts_data, number_texts)
     assert assignments == {0: "01B-1"}
+
+
+
+def test_assign_numbers_makes_duplicate_original_numbers_unique():
+    from shapely.geometry import Polygon
+
+    poly = Polygon([(0, 0), (100, 0), (100, 100), (0, 100)])
+    parts_data = [
+        {
+            "index": 0,
+            "polygon": poly,
+            "outer_polygon": poly,
+            "holes": [],
+            "centroid": (50, 50),
+            "area": 10000.0,
+            "original_number": "A1-22B",
+        },
+        {
+            "index": 1,
+            "polygon": poly,
+            "outer_polygon": poly,
+            "holes": [],
+            "centroid": (150, 50),
+            "area": 10000.0,
+            "original_number": "A1-22B",
+        },
+        {
+            "index": 2,
+            "polygon": poly,
+            "outer_polygon": poly,
+            "holes": [],
+            "centroid": (250, 50),
+            "area": 10000.0,
+            "original_number": None,
+        },
+    ]
+
+    parts = assign_numbers(parts_data, skip_unnumbered=False)
+    assert [part.number for part in parts] == ["A1-22B", "A1-22B-2", "P-0001"]
+    assert parts[1].original_number == "A1-22B"

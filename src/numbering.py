@@ -16,18 +16,30 @@ def assign_numbers(parts_data: list[dict],
     """
     parts = []
     index = 1
+    used_numbers: set[str] = set()
+
+    def unique_number(base: str) -> str:
+        candidate = base
+        suffix = 2
+        while candidate in used_numbers:
+            candidate = f"{base}-{suffix}"
+            suffix += 1
+        used_numbers.add(candidate)
+        return candidate
 
     for data in parts_data:
         if force_renumber:
-            number = number_format.format(index=index)
+            number = unique_number(number_format.format(index=index))
             index += 1
         elif skip_unnumbered and not data.get("original_number"):
             continue
         else:
             number = data.get("original_number")
             if not number:
-                number = f"P-{index:04d}"
+                number = unique_number(f"P-{index:04d}")
                 index += 1
+            else:
+                number = unique_number(number)
 
         part = Part(
             id=data["index"],
