@@ -8,7 +8,11 @@ from shapely import affinity
 
 from src.models import Part, Sheet, NestingResult
 from src.nesting import validate_nesting
-from src.postprocess import PostProcessor, estimate_kerf_material
+from src.postprocess import (
+    PostProcessor,
+    estimate_kerf_material,
+    validate_kerf_material,
+)
 import main as app
 
 
@@ -92,12 +96,12 @@ def test_push_respects_min_sep_and_rejects_new_gap_violation():
 def test_estimate_kerf_material_counts_shared_cut_once():
     sheet = Sheet(
         index=1,
-        width=1000.0,
+        width=800.0,
         height=1000.0,
         thickness=20.0,
         parts=[
-            make_part("A", 400.0, 400.0, 100.0, 100.0),
-            make_part("B", 400.0, 400.0, 500.0, 100.0),
+            make_part("A", 400.0, 1000.0, 0.0, 0.0),
+            make_part("B", 400.0, 1000.0, 400.0, 0.0),
         ],
     )
 
@@ -105,6 +109,31 @@ def test_estimate_kerf_material_counts_shared_cut_once():
 
     assert metrics["vertical_cuts"] == 1
     assert metrics["kerf_length_x_mm"] == 5.0
+
+
+def test_validate_kerf_material_requires_sheet_allowance():
+    sheet = Sheet(
+        index=1,
+        width=800.0,
+        height=1000.0,
+        thickness=20.0,
+        parts=[
+            make_part("A", 400.0, 1000.0, 0.0, 0.0),
+            make_part("B", 400.0, 1000.0, 400.0, 0.0),
+        ],
+    )
+
+    assert validate_kerf_material([sheet], 5.0) != []
+    assert validate_kerf_material(
+        [sheet], 5.0, allowance_x_mm=5.0, allowance_y_mm=0.0
+    ) == []
+
+
+def test_parse_sheet_oversize_accepts_single_and_pair():
+    assert app.parse_sheet_oversize("30") == (30.0, 30.0)
+    assert app.parse_sheet_oversize("30,40") == (30.0, 40.0)
+    assert app.parse_sheet_oversize("30x40") == (30.0, 40.0)
+    assert app.parse_sheet_oversize(None) == (0.0, 0.0)
 
 def test_postprocessor_slide_keeps_parts_inside_sheet():
     p1 = make_part("A", 400.0, 600.0, 100.0, 100.0)

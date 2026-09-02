@@ -721,8 +721,11 @@ def postprocess_result(result, profile) -> dict:
 
 def build_check_payload(result, profile, drawing_profile, width_mm, height_mm,
                         special_w, special_h, effective_thickness, unit_label,
-                        errors, manufacturing_metrics) -> tuple[dict, list, dict]:
+                        errors, manufacturing_metrics,
+                        sheet_oversize: tuple[float, float] | None = None
+                        ) -> tuple[dict, list, dict]:
     """Build the pre-DXF check payload; returns (payload, warnings, waterjet_metrics)."""
+    oversize_x, oversize_y = sheet_oversize or (0.0, 0.0)
     postprocess_warnings = diagnose_postprocess(
         result.sheets,
         slide_expected=profile.slide_to_edge,
@@ -753,6 +756,8 @@ def build_check_payload(result, profile, drawing_profile, width_mm, height_mm,
         "sheet_dimensions": {
             "width": width_mm,
             "height": height_mm,
+            "sheet_oversize_x": oversize_x,
+            "sheet_oversize_y": oversize_y,
             "special_width": special_w,
             "special_height": special_h,
             "thickness": effective_thickness,
@@ -775,11 +780,15 @@ def build_report(result, profile, width_mm, height_mm, special_w, special_h,
                  effective_thickness, unit_label, total_min_sheets,
                  total_special_pair_min_sheets, material_summary, elapsed,
                  errors, manufacturing_metrics, trials, seed, budget,
-                 skip_unnumbered, kerf_metrics=None) -> dict:
+                 skip_unnumbered, kerf_metrics=None,
+                 sheet_oversize: tuple[float, float] | None = None) -> dict:
     """Build the final nesting report payload."""
+    oversize_x, oversize_y = sheet_oversize or (0.0, 0.0)
     return {
         "sheet_dimensions": {
             "width": width_mm, "height": height_mm,
+            "sheet_oversize_x": oversize_x,
+            "sheet_oversize_y": oversize_y,
             "special_width": special_w, "special_height": special_h,
             "thickness": effective_thickness, "unit": unit_label,
         },

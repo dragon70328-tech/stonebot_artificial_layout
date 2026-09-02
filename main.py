@@ -76,7 +76,7 @@ from src.workflow import (
     validate_mixed_nesting,
     _split_normal_parts_by_group,
 )
-from src.postprocess import estimate_kerf_material
+from src.postprocess import estimate_kerf_material, validate_kerf_material
 from src.artifact_store import ArtifactStore
 from src.workflow_session import WorkflowSession, WorkflowStage
 # ═══════════════════════════════════════════════════════════════
@@ -165,9 +165,12 @@ def parse_args():
     p.add_argument("--list-nest", action="store_true",
                    help="按 Excel/PDF 规格尺寸与数量清单排板，输出文字结论")
     p.add_argument("--kerf", type=float, default=0.0,
-                   help="锯缝宽度 mm（清单排板；零件为净尺寸，件间留 kerf）")
+                   help="锯缝宽度 mm（清单排板或桥切刀路损耗，零件为净尺寸）")
     p.add_argument("--oversize", type=float, default=0.0,
                    help="大板让尺 mm（清单排板；可用尺寸=标称+让尺）")
+    p.add_argument("--sheet-oversize", type=str, default=None,
+                   help="桥切大板长/宽让尺 mm，如 30 或 30,30（默认 0；"
+                        "让尺只用于容纳刀路，不放大零件可用尺寸）")
     p.add_argument("--previous-state", type=str, default=None,
                    help="上次审图生成的 review_state.json，用于修正重传后的复检")
     p.add_argument("--accept-issue", type=str, default=None,
@@ -546,6 +549,20 @@ def parse_special_size(value: str | None) -> tuple[float, float] | None:
         sys.exit(1)
 
 
+def parse_sheet_oversize(value: str | None) -> tuple[float, float]:
+    """解析桥切大板长/宽让尺；单值表示长宽相同，双值按长,宽。"""
+    if not value:
+        return (0.0, 0.0)
+    text = value.strip().lower().replace("×", "x").replace("*", "x")
+    nums = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", text)]
+    if not nums:
+        print(f"错误：无法识别大板让尺 '{value}'，示例：30 或 30,30")
+        sys.exit(1)
+    if len(nums) == 1:
+        return (nums[0], nums[0])
+    return (nums[0], nums[1])
+
+
 def check_only_exit_code(outcome: dict | None) -> int:
     """Return the process exit code for a ``--check-only`` run.
 
@@ -659,7 +676,8 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         pairing: bool = False,
         reader_options: dict | None = None,
         input_limits=None,
-        kerf_mm: float = 0.0) -> None:
+        kerf_mm: float = 0.0,
+        sheet_oversize: tuple[float, float] | None = None) -> None:
     """核心排板流程"""
     if profile is None:
         profile = PROFILE_MIN_SHEETS
@@ -684,11 +702,13 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
 
     # ── 打印约束摘要 ──
     rot_str = ",".join(str(r) for r in profile.rotation)
+    oversize_x, oversize_y = sheet_oversize or (0.0, 0.0)
     print(f"约束: rotation=[{rot_str}], gap={profile.min_gap}mm, "
           f"group={profile.group_mode}, slide={profile.slide_to_edge}, "
           f"align={profile.align_edges}, thickness={effective_thickness}mm, "
           f"process={PROCESSING_CLASS_HELP[profile.processing_class]}, "
-          f"free_rotation={profile.arbitrary_rotation}")
+          f"free_rotation={profile.arbitrary_rotation}, "
+          f"sheet_oversize={oversize_x:.0f}x{oversize_y:.0f}mm")
 
     # ── 读取 DXF / 匹配画像 / 编号 / 材料分组 ──
     prepared = prepare_drawing(
@@ -819,9 +839,19 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         estimate_kerf_material(result.sheets, kerf_mm)
         if kerf_mm > 0 else None
     )
+    kerf_material_errors = (
+        validate_kerf_material(
+            result.sheets, kerf_mm,
+            allowance_x_mm=oversize_x,
+            allowance_y_mm=oversize_y,
+        )
+        if kerf_mm > 0 else []
+    )
 
     # ── 校验 ──
     errors = validate_mixed_nesting(result, min_gap=profile.min_gap)
+    if kerf_material_errors:
+        errors.extend(kerf_material_errors)
     status = "通过" if not errors else f"{len(errors)} 处违规"
     print(f"完成：{result.total_sheets} 张板，"
           f"出材率 {result.yield_rate:.2f}%，"
@@ -833,7 +863,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     check_payload, postprocess_warnings, waterjet_metrics = build_check_payload(
         result, profile, drawing_profile, width_mm, height_mm,
         special_w, special_h, effective_thickness, unit_label,
-        errors, manufacturing_metrics,
+        errors, manufacturing_metrics, sheet_oversize=(oversize_x, oversize_y),
     )
     check_path = out_dir / f"{stem}_postprocess_check.json"
     with open(check_path, "w", encoding="utf-8") as f:
@@ -897,6 +927,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         errors, manufacturing_metrics, trials, seed, budget,
         skip_unnumbered,
         kerf_metrics=kerf_metrics,
+        sheet_oversize=(oversize_x, oversize_y),
     )
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
@@ -1152,6 +1183,12 @@ def main():
     if overrides:
         profile = profile.with_overrides(**overrides)
 
+    raw_oversize = parse_sheet_oversize(args.sheet_oversize)
+    sheet_oversize = (
+        convert_to_mm(raw_oversize[0], unit),
+        convert_to_mm(raw_oversize[1], unit),
+    )
+
     outcome = run(
         dxf_path, width, height, args.thickness, unit,
         trials=trials, seed=args.seed, budget=budget,
@@ -1165,6 +1202,7 @@ def main():
         quick=quick,
         pairing=args.pairing,
         kerf_mm=args.kerf,
+        sheet_oversize=sheet_oversize,
     )
     if args.check_only:
         sys.exit(check_only_exit_code(outcome))

@@ -274,7 +274,22 @@ def estimate_kerf_material(sheets, kerf_mm):
             edges = []
             for part in sheet.parts:
                 vertical, horizontal = _part_straight_edges(part)
-                edges.extend(vertical if orientation == "vertical" else horizontal)
+                raw_edges = (
+                    vertical if orientation == "vertical" else horizontal
+                )
+                for edge in raw_edges:
+                    coord = edge[2]
+                    if orientation == "vertical" and (
+                        abs(coord) < snap_tol
+                        or abs(coord - sheet.width) < snap_tol
+                    ):
+                        continue
+                    if orientation == "horizontal" and (
+                        abs(coord) < snap_tol
+                        or abs(coord - sheet.height) < snap_tol
+                    ):
+                        continue
+                    edges.append(edge)
             if len(edges) < 2:
                 continue
             edges.sort(key=lambda edge: edge[2])
@@ -302,7 +317,22 @@ def estimate_kerf_material(sheets, kerf_mm):
                     if shared:
                         break
                 if shared:
-                    cuts += 1
+                    intervals = sorted((edge[0], edge[1]) for edge in cluster)
+                    covered = 0.0
+                    low, high = intervals[0]
+                    for next_low, next_high in intervals[1:]:
+                        if next_low <= high:
+                            high = max(high, next_high)
+                        else:
+                            covered += high - low
+                            low, high = next_low, next_high
+                    covered += high - low
+                    full_length = (
+                        sheet.height if orientation == "vertical"
+                        else sheet.width
+                    )
+                    if covered >= full_length - snap_tol:
+                        cuts += 1
             if orientation == "vertical":
                 vertical_cuts = cuts
             else:
@@ -324,6 +354,49 @@ def estimate_kerf_material(sheets, kerf_mm):
         "kerf_length_y_mm": round(total_horizontal_cuts * kerf_mm, 3),
         "per_sheet": per_sheet,
     }
+
+
+def validate_kerf_material(sheets, kerf_mm, allowance_x_mm: float = 0.0,
+                           allowance_y_mm: float = 0.0) -> list:
+    """校验桥切刀路材料是否超出大板含让尺后的物理尺寸。
+
+    零件排板仍只使用标称尺寸，长/宽让尺专门留给刀路损耗。每张板按零件
+    外包络跨度加上该方向的通切刀数乘以 kerf，得到实际需要的材料长度；
+    该长度必须不超过大板标称尺寸加对应方向让尺。
+    """
+    if kerf_mm <= EPS:
+        return []
+
+    metrics = estimate_kerf_material(sheets, kerf_mm)
+    per_sheet = {item["sheet"]: item for item in metrics["per_sheet"]}
+    errors = []
+    tol = 0.01
+
+    for sheet in sheets:
+        if not sheet.parts:
+            continue
+        info = per_sheet.get(sheet.index, {
+            "vertical_cuts": 0,
+            "horizontal_cuts": 0,
+        })
+        minx = min(p.outer_polygon.bounds[0] for p in sheet.parts)
+        maxx = max(p.outer_polygon.bounds[2] for p in sheet.parts)
+        miny = min(p.outer_polygon.bounds[1] for p in sheet.parts)
+        maxy = max(p.outer_polygon.bounds[3] for p in sheet.parts)
+        required_x = (maxx - minx) + info["vertical_cuts"] * kerf_mm
+        required_y = (maxy - miny) + info["horizontal_cuts"] * kerf_mm
+        available_x = sheet.width + allowance_x_mm
+        available_y = sheet.height + allowance_y_mm
+
+        if required_x > available_x + tol or required_y > available_y + tol:
+            errors.append(
+                f"Sheet {sheet.index}: 桥切刀路材料超限 "
+                f"X 需 {required_x:.1f}mm > 大板含让尺 {available_x:.1f}mm，"
+                f"Y 需 {required_y:.1f}mm > {available_y:.1f}mm"
+            )
+
+    return errors
+
 
 class PostProcessor:
     """排板结果后处理器。"""

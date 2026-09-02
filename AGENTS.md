@@ -117,6 +117,9 @@ stonebot_artificial_layout/
 - `waterjet` / `laser`：走 `src/deepnest_engine.py`，Bottom-Left Fill + 滑动压实
 - `--pairing`：水刀 DeepNest 分支先做相同形状 180° 共边配对预排
 - `--no-rotation`：强制 `rotation=[0]`、`arbitrary_rotation=False`
+- `--kerf`：桥切刀路材料损耗，不计为零件间隙；零件净尺寸，排板仍按零间隙共边。
+- `--sheet-oversize`：桥切大板长/宽让尺，如 `30` 或 `30,30`；让尺只用于容纳刀路，
+  不放大零件可用的标称尺寸；默认 `0` 时不让尺。
 - `first_part_left_edge=True` 时，每张板首件最长直边贴大板左边缘；
   禁止旋转时若原图最长边不是竖直方向，该规则无法保证，会回退为普通左下放置
 
@@ -129,6 +132,8 @@ stonebot_artificial_layout/
 5. 取最优（先比板数，再比紧凑度）
 6. 精确校验：边界 + DE-9IM 重叠检测
 7. 排板结束后先报告使用大板数量，用户确认后再执行后处理推板；`--no-confirm` 可跳过确认
+8. 若指定 `--kerf`，排板后按每张板的贯穿通切刀数校验实际材料长度，
+   材料长度 = 零件外包络跨度 + 通切刀数 × kerf，必须 ≤ 标称尺寸 + 让尺
 
 ### Step 6: 生成排板 DXF
 
