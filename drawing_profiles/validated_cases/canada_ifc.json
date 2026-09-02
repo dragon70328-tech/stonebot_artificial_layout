@@ -1,0 +1,31 @@
+{
+  "case_id": "canada_ifc",
+  "profile_name": "canada_ifc",
+  "fingerprint": {
+    "path": "C:\\Users\\drago\\Desktop\\临时文件\\加拿大IFC.dxf",
+    "dxf_version": "AC1032",
+    "insunits": 1,
+    "entity_counts": {
+      "LWPOLYLINE": 779,
+      "DIMENSION": 1559,
+      "MTEXT": 1070
+    },
+    "layer_counts": {
+      "0": 2659,
+      "编号": 749
+    },
+    "linetype_counts": {
+      "BYLAYER": 3408
+    },
+    "has_hatch": false,
+    "has_lwpolyline": true,
+    "has_line": false,
+    "has_circle": false
+  },
+  "expected_counts": {
+    "panels": 766,
+    "holes": 0,
+    "numbers": 765
+  },
+  "notes": "加拿大IFC 读图画像回归用例。"
+}
