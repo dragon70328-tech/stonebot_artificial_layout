@@ -443,3 +443,54 @@ GET  /api/download/{file_id}
 4. 再接入前端和 AI 对话。
 
 > 本方案保存为 `docs/ai-workflow-improvement-plan.md`。
+
+---
+
+## 15. 对话式编排补充（2026-09-02）
+
+### 核心原则
+- 大模型只负责理解用户语言、生成结构化配置，不直接执行识图或排板。
+- 现有 `main.py`、`src/*` 脚本保持为可信确定性工具，SaaS 通过编排层调用。
+- 编号未确认前不得进入排板；用户参数不足时必须主动询问。
+
+### 要求：先原位确认，再排板
+1. 用户上传 DXF 后，先检查大板尺寸、厚度、加工方式、kerf、旋转限制、是否包含无编号零件等参数。
+2. 缺少参数时，大模型输出结构化问题列表，等待用户补充。
+3. 参数齐全后执行读图、画像匹配、审图、编号。
+4. 生成 `{name}_numbered_原位.dxf`，保持原坐标、原图层、原编号。
+5. 用户确认编号正确后，才允许调用 `nest_parts`。
+6. 排板完成先报告板数，用户确认后再后处理并生成最终 DXF/报告。
+
+### 与现有状态机对应
+```
+uploaded
+  -> 参数校验：缺失则 asking_requirements
+  -> analyze_drawing
+  -> match_profile
+  -> read_dxf
+  -> audit_drawing
+  -> assign_numbers
+  -> write_numbered_dxf（生成原位带编号 DXF）
+  -> 等待用户确认编号
+  -> numbering_confirmed
+  -> nest_parts
+  -> nested_reported
+  -> 等待用户确认板数
+  -> postprocess
+  -> postprocess_confirmed
+  -> write_dxf / write_report
+  -> completed
+```
+
+### 现有可复用组件
+- `src/ai_planning.py`：工具白名单、阶段闸门、禁止越阶段写生产文件。
+- `src/workflow_session.py`：`WorkflowStage`、确认门、回退、阻断。
+- `src/workflow.py::prepare_drawing`：读图、编号、材料分组。
+- `src/dxf_writer.py::write_numbered_parts_dxf`：原位编号 DXF。
+- `src/task_queue.py`、`src/artifact_store.py`、`src/tenant_store.py`：任务、产物、租户边界。
+
+### 后续需新增
+- `tool_schemas.py`：把工具注册为带 JSON Schema 的 ToolCall。
+- `orchestrator.py`：大模型对话循环，参数补全与结果解释。
+- `worker.py`：调用现有脚本/函数，超时、重试、取消。
+- 原位确认产物：`numbered_原位.dxf` 作为正式阶段产物，未确认前不允许排板。
