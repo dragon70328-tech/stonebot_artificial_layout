@@ -254,6 +254,77 @@ def _collinear_edge_pairs(parts, snap_tol) -> int:
     return total
 
 
+
+
+def estimate_kerf_material(sheets, kerf_mm):
+    """按“切刀损耗”口径估算桥切刀路占用的材料长度。
+
+    kerf 不计为零件间隙，而是按每张板上的纵向/横向通切刀数分别乘以
+    kerf 宽度。相邻零件共享一条刀路时只计一次，因此先按共线边聚类，
+    再统计包含至少两个不同零件的簇。
+    """
+    snap_tol = 2.0
+    per_sheet = []
+    total_vertical_cuts = 0
+    total_horizontal_cuts = 0
+    for sheet in sheets:
+        vertical_cuts = 0
+        horizontal_cuts = 0
+        for orientation in ("vertical", "horizontal"):
+            edges = []
+            for part in sheet.parts:
+                vertical, horizontal = _part_straight_edges(part)
+                edges.extend(vertical if orientation == "vertical" else horizontal)
+            if len(edges) < 2:
+                continue
+            edges.sort(key=lambda edge: edge[2])
+            clusters = []
+            current = [edges[0]]
+            for edge in edges[1:]:
+                if edge[2] - current[-1][2] < snap_tol:
+                    current.append(edge)
+                else:
+                    if len(current) >= 2:
+                        clusters.append(current)
+                    current = [edge]
+            if len(current) >= 2:
+                clusters.append(current)
+            cuts = 0
+            for cluster in clusters:
+                shared = False
+                for i, left in enumerate(cluster):
+                    for right in cluster[i + 1:]:
+                        if id(left[3]) == id(right[3]):
+                            continue
+                        if min(left[1], right[1]) > max(left[0], right[0]):
+                            shared = True
+                            break
+                    if shared:
+                        break
+                if shared:
+                    cuts += 1
+            if orientation == "vertical":
+                vertical_cuts = cuts
+            else:
+                horizontal_cuts = cuts
+        total_vertical_cuts += vertical_cuts
+        total_horizontal_cuts += horizontal_cuts
+        per_sheet.append({
+            "sheet": sheet.index,
+            "vertical_cuts": vertical_cuts,
+            "horizontal_cuts": horizontal_cuts,
+            "kerf_length_x_mm": round(vertical_cuts * kerf_mm, 3),
+            "kerf_length_y_mm": round(horizontal_cuts * kerf_mm, 3),
+        })
+    return {
+        "kerf_mm": kerf_mm,
+        "vertical_cuts": total_vertical_cuts,
+        "horizontal_cuts": total_horizontal_cuts,
+        "kerf_length_x_mm": round(total_vertical_cuts * kerf_mm, 3),
+        "kerf_length_y_mm": round(total_horizontal_cuts * kerf_mm, 3),
+        "per_sheet": per_sheet,
+    }
+
 class PostProcessor:
     """排板结果后处理器。"""
 
@@ -982,23 +1053,24 @@ class PostProcessor:
                     if mag < EPS: continue
                     dx, dy = vx/mag*needed, vy/mag*needed
                     others = [p.outer_polygon for p in sheet.parts if p not in (p1,p2)]
-                    if self._push(p1, dx, dy, others+[p2.outer_polygon]):
+                    if self._push(p1, dx, dy, others+[p2.outer_polygon], min_sep=gap_mm):
                         resolved = False
-                    elif self._push(p2, -dx, -dy, others+[p1.outer_polygon]):
+                    elif self._push(p2, -dx, -dy, others+[p1.outer_polygon], min_sep=gap_mm):
                         resolved = False
-                    elif self._push(p1, dx/2, dy/2, others+[p2.outer_polygon]):
+                    elif self._push(p1, dx/2, dy/2, others+[p2.outer_polygon], min_sep=gap_mm):
                         p1p = p1.outer_polygon
                         others2 = [p.outer_polygon for p in sheet.parts if p not in (p1,p2)]
-                        self._push(p2, -dx/2, -dy/2, others2+[p1p])
+                        self._push(p2, -dx/2, -dy/2, others2+[p1p], min_sep=gap_mm)
                         resolved = False
             if resolved:
                 break
 
-    def _push(self, part, dx, dy, others):
+    def _push(self, part, dx, dy, others, min_sep=0.0):
         if abs(dx) < EPS and abs(dy) < EPS: return False
         test = affinity.translate(part.outer_polygon, dx, dy)
         tb = test.bounds
         if tb[0] < -EPS or tb[1] < -EPS or tb[2] > self.w+EPS or tb[3] > self.h+EPS: return False
         if any(shapely.relate_pattern(test, o, _OVERLAP_PATTERN) for o in others): return False
+        if min_sep > EPS and any(test.distance(o) < min_sep - EPS for o in others): return False
         self._shift(part, dx, dy)
         return True

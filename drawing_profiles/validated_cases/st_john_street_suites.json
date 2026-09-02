@@ -1,0 +1,43 @@
+{
+  "case_id": "st_john_street_suites",
+  "profile_name": "st_john_street_suites",
+  "fingerprint": {
+    "path": "C:\\Users\\drago\\Desktop\\临时文件\\排版图 26.07.13.St. John Street Suites.ID Drawings.IFC FINAL.dxf",
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+      "LWPOLYLINE": 754,
+      "TEXT": 1963,
+      "DIMENSION": 1476,
+      "MTEXT": 1
+    },
+    "layer_counts": {
+      "PDF_几何图形": 269,
+      "0": 2859,
+      "PDF11_几何图形": 107,
+      "PDF3_几何图形": 41,
+      "编号": 1,
+      "PDF2_几何图形": 11,
+      "PDF4_几何图形": 11,
+      "PDF12_几何图形": 21,
+      "PDF5_几何图形": 32,
+      "PDF9_几何图形": 32,
+      "PDF6_几何图形": 39,
+      "PDF10_几何图形": 10,
+      "MJ": 761
+    },
+    "linetype_counts": {
+      "BYLAYER": 4194
+    },
+    "has_hatch": false,
+    "has_lwpolyline": true,
+    "has_line": false,
+    "has_circle": false
+  },
+  "expected_counts": {
+    "panels": 754,
+    "holes": 0,
+    "numbers": 754
+  },
+  "notes": "IFC FINAL 排版图回归画像"
+}

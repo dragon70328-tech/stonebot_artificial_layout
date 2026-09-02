@@ -1,0 +1,38 @@
+{
+  "name": "st_john_street_suites",
+  "version": "1.0.0",
+  "description": "St. John Street Suites IFC FINAL 排版图：面板为各 PDF_几何图形/0 层闭合 LWPOLYLINE，编号位于 0/编号 层，支持 d1/d2 细件后缀。",
+  "panel_layers": [
+    "0",
+    "PDF_几何图形",
+    "PDF11_几何图形",
+    "PDF3_几何图形",
+    "PDF6_几何图形",
+    "PDF5_几何图形",
+    "PDF9_几何图形",
+    "PDF12_几何图形",
+    "PDF2_几何图形",
+    "PDF4_几何图形",
+    "PDF10_几何图形"
+  ],
+  "number_layers": [
+    "0",
+    "编号"
+  ],
+  "label_pattern": "^[A-Z]\\d?-[A-Z]\\d+[A-Z]?(?:\\s+d\\d+)?$",
+  "assignment_mode": "point_then_bbox",
+  "build_hierarchy": false,
+  "use_hatch": false,
+  "closed_tolerance": 0.01,
+  "exclude_linetypes": [
+    "ZIGZAG",
+    "DASH",
+    "PHANTOM"
+  ],
+  "small_area_threshold": 50000.0,
+  "expected_counts": {
+    "panels": 754,
+    "holes": 0,
+    "numbers": 754
+  }
+}

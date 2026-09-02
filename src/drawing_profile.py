@@ -1,4 +1,4 @@
-"""图纸画像与匹配模块。
+﻿"""图纸画像与匹配模块。
 
 把一个已经跑通的人工读图流程沉淀为 DrawingProfile，后续上传新图纸时先计算
 图纸指纹，再匹配已有画像，避免每次从零开始分析。
@@ -327,13 +327,14 @@ def _profile_panel_layers(profile: DrawingProfile) -> set[str]:
 
 
 def _normalize_label(text: str, profile: DrawingProfile) -> str:
-    value = " ".join(text.strip().upper().split())
+    raw = " ".join(text.strip().split())
+    value = raw.upper()
     match = profile.compiled_label_pattern().match(value)
     if match:
         groups = match.groupdict()
         if "material" in groups and "shape" in groups:
             return f"{groups['material'].upper()}-{groups['shape']}"
-    return value
+    return raw
 
 
 def _make_issue(

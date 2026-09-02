@@ -76,6 +76,7 @@ from src.workflow import (
     validate_mixed_nesting,
     _split_normal_parts_by_group,
 )
+from src.postprocess import estimate_kerf_material
 from src.artifact_store import ArtifactStore
 from src.workflow_session import WorkflowSession, WorkflowStage
 # ═══════════════════════════════════════════════════════════════
@@ -657,7 +658,8 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         quick: bool = False,
         pairing: bool = False,
         reader_options: dict | None = None,
-        input_limits=None) -> None:
+        input_limits=None,
+        kerf_mm: float = 0.0) -> None:
     """核心排板流程"""
     if profile is None:
         profile = PROFILE_MIN_SHEETS
@@ -813,6 +815,10 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
 
     # ── 后处理：推边压实 + 边缘对齐 + 最小间距 ──
     manufacturing_metrics = postprocess_result(result, profile)
+    kerf_metrics = (
+        estimate_kerf_material(result.sheets, kerf_mm)
+        if kerf_mm > 0 else None
+    )
 
     # ── 校验 ──
     errors = validate_mixed_nesting(result, min_gap=profile.min_gap)
@@ -890,6 +896,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         total_special_pair_min_sheets, material_summary, elapsed,
         errors, manufacturing_metrics, trials, seed, budget,
         skip_unnumbered,
+        kerf_metrics=kerf_metrics,
     )
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
@@ -1157,6 +1164,7 @@ def main():
         check_only=args.check_only,
         quick=quick,
         pairing=args.pairing,
+        kerf_mm=args.kerf,
     )
     if args.check_only:
         sys.exit(check_only_exit_code(outcome))

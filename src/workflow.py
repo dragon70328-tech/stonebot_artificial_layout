@@ -1,4 +1,4 @@
-"""Deterministic drawing intake workflow helpers.
+﻿"""Deterministic drawing intake workflow helpers.
 
 This module extracts the read/profile/assignment/material-grouping phase out
 of ``main.run()`` so it can be tested independently and reused by the future
@@ -34,7 +34,7 @@ from src.models import NestingResult, Part, Sheet
 from src.nesting import nest_parts, validate_nesting
 from src.numbering import assign_numbers
 from src.pairing import nest_parts_deepnest_paired
-from src.postprocess import PostProcessor, diagnose_postprocess, diagnose_waterjet
+from src.postprocess import PostProcessor, diagnose_postprocess, diagnose_waterjet, estimate_kerf_material
 from src.recognized_contract import parts_data_to_recognized_drawing
 
 
@@ -775,7 +775,7 @@ def build_report(result, profile, width_mm, height_mm, special_w, special_h,
                  effective_thickness, unit_label, total_min_sheets,
                  total_special_pair_min_sheets, material_summary, elapsed,
                  errors, manufacturing_metrics, trials, seed, budget,
-                 skip_unnumbered) -> dict:
+                 skip_unnumbered, kerf_metrics=None) -> dict:
     """Build the final nesting report payload."""
     return {
         "sheet_dimensions": {
@@ -797,6 +797,7 @@ def build_report(result, profile, width_mm, height_mm, special_w, special_h,
             "edge_contact_mm": round(manufacturing_metrics["edge_contact_mm"], 1),
             "through_cut_mm": round(manufacturing_metrics["through_cut_mm"], 1),
         },
+        "kerf_material": kerf_metrics,
         "profile": {
             "processing_class": profile.processing_class,
             "arbitrary_rotation": profile.arbitrary_rotation,

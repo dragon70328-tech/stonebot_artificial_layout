@@ -8,7 +8,7 @@ from shapely import affinity
 
 from src.models import Part, Sheet, NestingResult
 from src.nesting import validate_nesting
-from src.postprocess import PostProcessor
+from src.postprocess import PostProcessor, estimate_kerf_material
 import main as app
 
 
@@ -74,6 +74,37 @@ def test_postprocessor_enforces_gap_when_room_exists():
         total_sheet_area=1000.0 * 1000.0,
     ), 1000.0, 1000.0) == []
 
+
+
+
+def test_push_respects_min_sep_and_rejects_new_gap_violation():
+    pp = PostProcessor(1000.0, 1000.0)
+    part = make_part("P", 100.0, 100.0, 400.0, 400.0)
+    other = box(505.0, 400.0, 605.0, 500.0)
+
+    moved = pp._push(part, -10.0, 0.0, [other], min_sep=20.0)
+
+    assert moved is False
+    assert part.outer_polygon.bounds == (400.0, 400.0, 500.0, 500.0)
+
+
+
+def test_estimate_kerf_material_counts_shared_cut_once():
+    sheet = Sheet(
+        index=1,
+        width=1000.0,
+        height=1000.0,
+        thickness=20.0,
+        parts=[
+            make_part("A", 400.0, 400.0, 100.0, 100.0),
+            make_part("B", 400.0, 400.0, 500.0, 100.0),
+        ],
+    )
+
+    metrics = estimate_kerf_material([sheet], 5.0)
+
+    assert metrics["vertical_cuts"] == 1
+    assert metrics["kerf_length_x_mm"] == 5.0
 
 def test_postprocessor_slide_keeps_parts_inside_sheet():
     p1 = make_part("A", 400.0, 600.0, 100.0, 100.0)
