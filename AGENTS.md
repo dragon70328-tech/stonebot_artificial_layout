@@ -77,6 +77,9 @@ stonebot_artificial_layout/
    再用文本包围盒与面板重叠比例补配
 4. 贪心 1:1 匹配保证唯一性，冲突按 `conflict_resolution` 处理
 5. 无匹配时保持原编号为空，由 `assign_numbers` 决定跳过或自动编号 `P-XXXX`
+6. 若多个面板匹配到同一原编号，`assign_numbers` 保留第一个原编号，其余自动追加
+   `-2`、`-3` 等后缀，确保最终排板/编号 DXF 中的 `number` 唯一；审图仍会
+   提示 `duplicate_label` 供用户核对。
 
 未匹配到图纸画像时，保留旧回退逻辑：
 

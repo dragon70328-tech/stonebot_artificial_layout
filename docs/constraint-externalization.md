@@ -96,6 +96,9 @@ sheet:
   width: 3200
   height: 1800
   thickness: 20
+  kerf_mm: 5
+  sheet_oversize_x: 30
+  sheet_oversize_y: 30
   special:
     width: 3225
     height: 1625
