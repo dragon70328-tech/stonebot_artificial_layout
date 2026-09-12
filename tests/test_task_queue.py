@@ -1,6 +1,6 @@
 import time
 
-from src.task_queue import InMemoryTaskQueue, Task, TaskStatus
+from src.task_queue import FileTaskQueue, InMemoryTaskQueue, Task, TaskStatus
 
 
 def test_task_queue_runs_fifo_and_marks_succeeded():
@@ -46,3 +46,34 @@ def test_task_queue_marks_timeout():
     finished = queue.run_all({"slow": lambda payload: time.sleep(1)})
 
     assert finished[0].status == TaskStatus.TIMED_OUT
+
+
+def test_file_task_queue_persists_and_runs(tmp_path):
+    first = FileTaskQueue(tmp_path)
+    first.enqueue(Task(task_type="double", payload={"value": 2}))
+    first.enqueue(Task(task_type="double", payload={"value": 3}))
+
+    second = FileTaskQueue(tmp_path)
+    assert second.has_pending() is True
+    finished = second.run_all({"double": lambda payload: payload["value"] * 2})
+
+    assert [task.result for task in finished] == [4, 6]
+    assert all(task.status == TaskStatus.SUCCEEDED for task in finished)
+    assert second.load(finished[0].task_id).status == TaskStatus.SUCCEEDED
+
+
+def test_file_task_queue_survives_restart_after_failure(tmp_path):
+    first = FileTaskQueue(tmp_path)
+    task = first.enqueue(Task(task_type="boom", payload={}))
+
+    def boom(payload):
+        raise RuntimeError("bad")
+
+    first.run_all({"boom": boom})
+
+    recovered = FileTaskQueue(tmp_path)
+    loaded = recovered.load(task.task_id)
+
+    assert loaded.status == TaskStatus.FAILED
+    assert loaded.error == "bad"
+    assert recovered.has_pending() is False
