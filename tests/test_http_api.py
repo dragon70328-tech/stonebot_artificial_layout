@@ -377,3 +377,24 @@ def test_auth_rejects_tenant_mismatch(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 403
+
+
+def test_fastapi_lifespan_shuts_down_worker(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    manager = JobManager(tmp_path)
+    monkeypatch.setattr("src.http_api.manager", manager)
+    runtime = manager.create(_job_request(tmp_path), run_in_background=True)
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if manager.get(runtime.session_id).session.current_stage == "audited":
+            break
+        time.sleep(0.05)
+
+    with TestClient(app):
+        pass
+
+    assert manager._worker_thread is not None
+    assert manager._worker_thread.is_alive() is False

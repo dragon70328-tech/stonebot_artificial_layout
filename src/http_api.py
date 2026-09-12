@@ -14,6 +14,7 @@ import re
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
@@ -407,8 +408,20 @@ class JobManager:
         return runtime
 
 
-app = FastAPI(title="Stonebot Nesting Agent API", version="0.1.0")
 manager = JobManager(PROJECT_ROOT / "output" / "api_jobs")
+
+
+@asynccontextmanager
+async def lifespan(app):
+    yield
+    manager.shutdown()
+
+
+app = FastAPI(
+    title="Stonebot Nesting Agent API",
+    version="0.1.0",
+    lifespan=lifespan,
+)
 
 
 def _require_job_tenant(job_id: str, tenant: str) -> None:
