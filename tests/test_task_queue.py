@@ -149,3 +149,26 @@ def test_task_queue_marks_dead_letter_after_retries():
     assert task.status == TaskStatus.DEAD_LETTER
     assert finished[0].status == TaskStatus.DEAD_LETTER
     assert any(event["event"] == "dead_letter" for event in task.audit_log)
+
+
+def test_file_task_queue_retries_dead_letter_task(tmp_path):
+    def always_boom(payload):
+        raise RuntimeError("bad")
+
+    queue = FileTaskQueue(tmp_path)
+    task = queue.enqueue(
+        Task(
+            task_type="always_boom",
+            payload={},
+            max_attempts=2,
+            retry_delay_s=0,
+        )
+    )
+    queue.run_all({"always_boom": always_boom})
+
+    retried = queue.retry_task(task.task_id)
+
+    assert retried.status == TaskStatus.PENDING
+    assert retried.attempts == 0
+    assert retried.error is None
+    assert any(event["event"] == "requeued" for event in retried.audit_log)

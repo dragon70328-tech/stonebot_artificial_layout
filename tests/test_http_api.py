@@ -8,6 +8,7 @@ from src.http_api import (
     JobStateError,
     app,
 )
+from src.task_queue import Task, TaskStatus
 from src.workflow_session import WorkflowStage
 
 
@@ -269,3 +270,49 @@ def test_list_job_tasks_endpoint(tmp_path, monkeypatch):
     assert tasks[0]["task_type"] == "run_job"
     assert tasks[0]["status"] == "succeeded"
     manager._stop_event.set()
+
+
+def test_retry_dead_letter_task_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    manager = SyncJobManager(tmp_path)
+    monkeypatch.setattr("src.http_api.manager", manager)
+    monkeypatch.setattr(manager, "_ensure_worker", lambda: None)
+    client = TestClient(app)
+
+    runtime = manager.create(_job_request(tmp_path), run_in_background=False)
+    task = Task(
+        task_type="run_job",
+        payload={"job_id": runtime.session_id},
+        status=TaskStatus.DEAD_LETTER,
+    )
+    manager.task_queue.enqueue(task)
+
+    response = client.post(
+        f"/jobs/{runtime.session_id}/tasks/{task.task_id}/retry",
+    )
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "pending"
+    assert response.json()["attempts"] == 0
+
+
+def test_job_manager_shutdown_stops_worker(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    manager = JobManager(tmp_path)
+    runtime = manager.create(_job_request(tmp_path), run_in_background=True)
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if manager.get(runtime.session_id).session.current_stage == "audited":
+            break
+        time.sleep(0.05)
+
+    manager.shutdown()
+
+    assert manager._worker_thread is not None
+    assert manager._worker_thread.is_alive() is False

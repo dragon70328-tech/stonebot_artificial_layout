@@ -259,6 +259,23 @@ class FileTaskQueue:
             if task.status == TaskStatus.DEAD_LETTER
         ]
 
+    def retry_task(self, task_id: str) -> Task:
+        task = self.load(task_id)
+        if task.status not in {
+            TaskStatus.FAILED,
+            TaskStatus.TIMED_OUT,
+            TaskStatus.DEAD_LETTER,
+        }:
+            raise ValueError(f"task {task_id} cannot be retried from {task.status.value}")
+        task.status = TaskStatus.PENDING
+        task.attempts = 0
+        task.error = None
+        task.finished_at = None
+        task.result = None
+        task._audit("requeued")
+        self._write(task)
+        return task
+
     def run_all(
         self,
         handlers: dict[str, Handler],

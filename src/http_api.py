@@ -290,6 +290,19 @@ class JobManager:
             if task.payload.get("job_id") == job_id
         ]
 
+    def retry_task(self, job_id: str, task_id: str) -> dict[str, Any]:
+        task = self.task_queue.load(task_id)
+        if task.payload.get("job_id") != job_id:
+            raise JobStateError("task does not belong to job")
+        retried = self.task_queue.retry_task(task_id)
+        self._ensure_worker()
+        return retried.to_dict()
+
+    def shutdown(self) -> None:
+        self._stop_event.set()
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            self._worker_thread.join(timeout=2.0)
+
     def confirm(
         self,
         job_id: str,
@@ -426,6 +439,19 @@ def list_job_tasks(job_id: str) -> dict[str, Any]:
         "job_id": job_id,
         "tasks": manager.list_tasks(job_id),
     }
+
+
+@app.post("/jobs/{job_id}/tasks/{task_id}/retry", status_code=202)
+def retry_job_task(job_id: str, task_id: str) -> JSONResponse:
+    try:
+        task = manager.retry_task(job_id, task_id)
+    except JobStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(status_code=202, content=task)
 
 
 @app.get("/jobs/{job_id}/artifacts/{artifact_name}")
