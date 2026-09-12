@@ -17,6 +17,7 @@ from src.agent_cli import (
     plan_after_confirmation,
 )
 from src.agent_loop import AgentLoop, AgentLoopResult
+from src.artifact_store import ArtifactStore
 from src.job_context import JobContext
 from src.session_store import WorkflowSessionStore
 from src.tool_handlers import build_tool_handlers
@@ -81,6 +82,7 @@ class AgentRuntime:
         )
         self.session = WorkflowSession(session_id=self.session_id)
         self.store = WorkflowSessionStore(self.output_dir)
+        self.artifact_store = ArtifactStore(self.output_dir / "artifacts")
         self.provider = build_agent_plan_provider(provider_name)
         self.worker = Worker(build_tool_handlers(self.context))
         self.loop = AgentLoop(
@@ -120,6 +122,7 @@ class AgentRuntime:
                 confirmation_required=False,
                 tool_results=[],
             )
+        self._record_artifacts()
         self.store.save(self.session)
         return self.last_result
 
@@ -130,6 +133,7 @@ class AgentRuntime:
         normalized = decision.strip().lower()
         if normalized in {"cancel", "reject", "no", "n"}:
             self.session.cancel("用户拒绝确认")
+            self._record_artifacts()
             self.store.save(self.session)
             self.last_result = AgentLoopResult(
                 session_id=self.session.session_id,
@@ -164,7 +168,26 @@ class AgentRuntime:
 
     def cancel(self) -> None:
         self.session.cancel("用户取消任务")
+        self._record_artifacts()
         self.store.save(self.session)
+
+    def _record_artifacts(self) -> None:
+        candidates = {
+            "numbered_dxf": self.context.numbered_dxf_path,
+            "nested_dxf": self.context.nested_dxf_path,
+            "report": self.context.report_path,
+            "check": self.context.check_path,
+        }
+        project_id = self.context.project_id or self.dxf_path.stem
+        for key, path in candidates.items():
+            if path is None or not Path(path).exists():
+                continue
+            ref = self.artifact_store.track(
+                project_id,
+                self.session.current_stage,
+                path,
+            )
+            self.session.artifacts[key] = ref.to_dict()
 
     def status(self) -> dict[str, Any]:
         snapshot = self.context.snapshot()
@@ -179,6 +202,7 @@ class AgentRuntime:
                 else False
             ),
             "artifacts": snapshot["artifacts"],
+            "session_artifacts": self.session.artifacts,
             "error": self.last_error,
             "session": self.session.to_dict(),
             "last_result": (

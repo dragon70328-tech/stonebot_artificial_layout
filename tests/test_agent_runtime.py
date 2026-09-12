@@ -94,3 +94,17 @@ def test_agent_runtime_confirm_without_gate_raises(tmp_path, monkeypatch):
         assert "no confirmation gate" in str(exc)
     else:
         raise AssertionError("RuntimeError was not raised")
+
+
+def test_agent_runtime_records_existing_artifacts(tmp_path, monkeypatch):
+    runtime = _make_runtime(tmp_path, monkeypatch)
+    artifact_path = tmp_path / "numbered.dxf"
+    artifact_path.write_text("fake dxf", encoding="utf-8")
+    runtime.context.numbered_dxf_path = artifact_path
+
+    runtime._record_artifacts()
+
+    ref = runtime.session.artifacts["numbered_dxf"]
+    assert ref["path"] == str(artifact_path)
+    assert ref["digest"]
+    assert "session_artifacts" in runtime.status()
