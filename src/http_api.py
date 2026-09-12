@@ -23,16 +23,17 @@ from src.artifact_store import content_digest
 from src.constraints import PROFILE_MIN_SHEETS, PROFILES
 from src.input_guard import DXFInputLimits, check_dxf_file
 from src.llm_client import LLMError
+from src.tenant_store import TenantError, TenantStore
 from src.units import UnitSystem
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_-]+")
-UPLOAD_ROOT = PROJECT_ROOT / "output" / "uploads"
 
 
 class JobCreateRequest(BaseModel):
     dxf_path: str
+    tenant_id: str = "default"
     width_mm: float
     height_mm: float
     thickness_mm: float = 20.0
@@ -89,6 +90,7 @@ class JobManager:
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
+        self.tenant_store = TenantStore(self.root / "tenants")
         self._jobs: dict[str, AgentRuntime] = {}
         self._lock = threading.RLock()
 
@@ -118,6 +120,7 @@ class JobManager:
     ) -> AgentRuntime:
         unit = UnitSystem.IMPERIAL if request.unit == "imperial" else UnitSystem.METRIC
         project_id = request.project_id or Path(request.dxf_path).stem
+        self.tenant_store.create_project(request.tenant_id, project_id)
         runtime = AgentRuntime(
             request.dxf_path,
             request.width_mm,
@@ -132,7 +135,10 @@ class JobManager:
             quick=request.quick,
             pairing=request.pairing,
             skip_unnumbered=request.skip_unnumbered,
-            output_dir=self.root / _safe_project(project_id),
+            output_dir=self.tenant_store.project_dir(
+                request.tenant_id,
+                project_id,
+            ) / "runs",
             session_id=f"job-{uuid.uuid4().hex}",
         )
         with self._lock:
@@ -203,7 +209,12 @@ def health() -> dict[str, str]:
 
 
 @app.post("/inputs/{filename}", status_code=201)
-async def upload_input(filename: str, request: Request) -> JSONResponse:
+async def upload_input(
+    filename: str,
+    request: Request,
+    tenant_id: str = "default",
+    project_id: str = "uploads",
+) -> JSONResponse:
     safe_name = _safe_upload_name(filename)
     data = await request.body()
     limits = DXFInputLimits()
@@ -214,7 +225,11 @@ async def upload_input(filename: str, request: Request) -> JSONResponse:
         )
 
     digest = content_digest(data)
-    upload_root = UPLOAD_ROOT
+    try:
+        manager.tenant_store.create_project(tenant_id, project_id)
+    except TenantError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    upload_root = manager.tenant_store.project_dir(tenant_id, project_id) / "inputs"
     upload_root.mkdir(parents=True, exist_ok=True)
     path = upload_root / f"{Path(safe_name).stem}_{digest[:12]}.dxf"
     path.write_bytes(data)
@@ -238,7 +253,7 @@ async def upload_input(filename: str, request: Request) -> JSONResponse:
 def create_job(request: JobCreateRequest) -> JSONResponse:
     try:
         runtime = manager.create(request)
-    except (LLMError, ValueError) as exc:
+    except (LLMError, TenantError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return JSONResponse(status_code=202, content=runtime.status())
 

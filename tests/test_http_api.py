@@ -4,7 +4,6 @@ from src.http_api import (
     JobCreateRequest,
     JobManager,
     JobStateError,
-    UPLOAD_ROOT,
     app,
 )
 
@@ -120,13 +119,13 @@ def test_http_health(tmp_path, monkeypatch):
 
 def test_upload_input_accepts_dxf_bytes(tmp_path, monkeypatch):
     monkeypatch.setattr("src.http_api.manager", SyncJobManager(tmp_path))
-    monkeypatch.setattr("src.http_api.UPLOAD_ROOT", tmp_path / "uploads")
     client = TestClient(app)
 
     response = client.post(
         "/inputs/demo.dxf",
         content=b"0\nSECTION\n2\nHEADER\n0\nENDSEC\n0\nEOF\n",
         headers={"Content-Type": "application/octet-stream"},
+        params={"tenant_id": "tenant-a", "project_id": "project-1"},
     )
 
     assert response.status_code == 201
@@ -134,18 +133,19 @@ def test_upload_input_accepts_dxf_bytes(tmp_path, monkeypatch):
     assert body["dxf_path"].endswith(".dxf")
     assert body["bytes"] > 0
     assert body["digest"]
-    assert (tmp_path / "uploads").exists()
+    assert "tenant-a" in body["dxf_path"]
+    assert "project-1" in body["dxf_path"]
 
 
 def test_upload_input_rejects_non_dxf(tmp_path, monkeypatch):
     monkeypatch.setattr("src.http_api.manager", SyncJobManager(tmp_path))
-    monkeypatch.setattr("src.http_api.UPLOAD_ROOT", tmp_path / "uploads")
     client = TestClient(app)
 
     response = client.post(
         "/inputs/demo.pdf",
         content=b"not a dxf",
         headers={"Content-Type": "application/octet-stream"},
+        params={"tenant_id": "tenant-a", "project_id": "project-1"},
     )
 
     assert response.status_code == 400
