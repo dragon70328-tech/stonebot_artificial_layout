@@ -11,16 +11,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from src.agent_loop import AgentLoop
 from src.ai_planning import ToolCall
-from src.job_context import JobContext
 from src.llm_client import LLMError
 from src.llm_plan_provider import LLMPlanProvider
 from src.openai_llm_client import OpenAICompatibleClient
-from src.session_store import WorkflowSessionStore
-from src.tool_handlers import build_tool_handlers
 from src.units import UnitSystem
-from src.worker import Worker
 from src.workflow_session import WorkflowSession, WorkflowStage
 
 
@@ -137,51 +132,32 @@ def run_agent_mode(
     pairing: bool,
     skip_unnumbered: bool,
 ) -> int:
+    from src.agent_runtime import AgentRuntime
+
     output_dir = _make_output_dir(dxf_path)
-    stem = Path(dxf_path).stem
-    numbered_path = str(output_dir / f"{stem}_numbered_原位.dxf")
-    suffix = f"{int(width_mm)}x{int(height_mm)}"
-    nested_path = str(output_dir / f"{stem}_nested_{suffix}.dxf")
-    report_path = str(output_dir / f"{stem}_report_{suffix}.json")
-
-    context = JobContext(
-        dxf_path=dxf_path,
-        unit=unit,
-        nesting_profile=profile,
-        width_mm=width_mm,
-        height_mm=height_mm,
-        thickness_mm=thickness_mm,
-        trials=trials,
-        seed=seed,
-        budget=budget,
-        quick=quick,
-        pairing=pairing,
-        skip_unnumbered=skip_unnumbered,
-        output_dir=output_dir,
-    )
-
-    session_id = f"agent-{stem}-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-    session = WorkflowSession(session_id=session_id)
-    store = WorkflowSessionStore(output_dir)
     try:
-        provider = build_agent_plan_provider(agent_provider)
+        runtime = AgentRuntime(
+            dxf_path,
+            width_mm,
+            height_mm,
+            thickness_mm,
+            unit,
+            profile,
+            provider_name=agent_provider,
+            trials=trials,
+            seed=seed,
+            budget=budget,
+            quick=quick,
+            pairing=pairing,
+            skip_unnumbered=skip_unnumbered,
+            output_dir=output_dir,
+        )
     except (LLMError, ValueError) as exc:
         print(f"[agent] {exc}")
         return 1
-    worker = Worker(build_tool_handlers(context))
-    loop = AgentLoop(session, worker, provider, store=store)
 
-    if agent_provider == "queue":
-        provider.enqueue(
-            build_initial_plan(
-                dxf_path,
-                numbered_path,
-                skip_unnumbered=skip_unnumbered,
-            )
-        )
-
+    result = runtime.run_next()
     while True:
-        result = loop.run_next(context)
         print(f"[agent] stage={result.stage} blocked={result.blocked} "
               f"completed={result.completed}")
 
@@ -189,8 +165,8 @@ def run_agent_mode(
             print("Agent loop blocked.")
             return 1
         if result.completed:
-            print(f"DXF: {nested_path}")
-            print(f"报告: {report_path}")
+            print(f"DXF: {runtime.nested_path}")
+            print(f"报告: {runtime.report_path}")
             return 0
         if not result.confirmation_required:
             print("Agent loop stopped without a confirmation gate or terminal state.")
@@ -207,24 +183,8 @@ def run_agent_mode(
 
         answer = input(prompt).strip().lower()
         if answer not in ("y", "yes"):
-            session.cancel("用户拒绝确认")
-            store.save(session)
+            runtime.cancel()
             print("已取消。")
             return 1
 
-        if agent_provider == "queue":
-            provider.enqueue(
-                plan_after_confirmation(
-                    result.stage,
-                    width_mm=width_mm,
-                    height_mm=height_mm,
-                    thickness_mm=thickness_mm,
-                    nested_path=nested_path,
-                    report_path=report_path,
-                    trials=trials,
-                    seed=seed,
-                    budget=budget,
-                    quick=quick,
-                    pairing=pairing,
-                )
-            )
+        result = runtime.confirm("yes")
