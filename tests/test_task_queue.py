@@ -77,3 +77,54 @@ def test_file_task_queue_survives_restart_after_failure(tmp_path):
     assert loaded.status == TaskStatus.FAILED
     assert loaded.error == "bad"
     assert recovered.has_pending() is False
+
+
+def test_task_queue_retries_then_succeeds():
+    calls = []
+
+    def flaky(payload):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("first attempt failed")
+        return payload["value"] * 2
+
+    queue = InMemoryTaskQueue()
+    queue.enqueue(
+        Task(
+            task_type="flaky",
+            payload={"value": 5},
+            max_attempts=2,
+            retry_delay_s=0,
+        )
+    )
+
+    finished = queue.run_all({"flaky": flaky})
+
+    assert finished[0].result == 10
+    assert finished[0].attempts == 2
+    assert any(event["event"] == "retry" for event in finished[0].audit_log)
+
+
+def test_file_task_queue_retries_then_persists_success(tmp_path):
+    calls = []
+
+    def flaky(payload):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("first attempt failed")
+        return payload["value"] * 2
+
+    queue = FileTaskQueue(tmp_path)
+    task = queue.enqueue(
+        Task(
+            task_type="flaky",
+            payload={"value": 6},
+            max_attempts=2,
+            retry_delay_s=0,
+        )
+    )
+
+    finished = queue.run_all({"flaky": flaky})
+
+    assert finished[0].result == 12
+    assert queue.load(task.task_id).attempts == 2

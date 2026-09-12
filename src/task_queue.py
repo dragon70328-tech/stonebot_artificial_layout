@@ -36,6 +36,7 @@ class Task:
     attempts: int = 0
     max_attempts: int = 1
     timeout_s: float = 60.0
+    retry_delay_s: float = 0.0
     result: Any = None
     error: str | None = None
     audit_log: list[dict[str, Any]] = field(default_factory=list)
@@ -81,6 +82,7 @@ class Task:
             "attempts": self.attempts,
             "max_attempts": self.max_attempts,
             "timeout_s": self.timeout_s,
+            "retry_delay_s": self.retry_delay_s,
             "result": self.result,
             "error": self.error,
             "audit_log": self.audit_log,
@@ -97,6 +99,7 @@ class Task:
             task_id=data["task_id"],
             max_attempts=int(data.get("max_attempts", 1)),
             timeout_s=float(data.get("timeout_s", 60.0)),
+            retry_delay_s=float(data.get("retry_delay_s", 0.0)),
         )
         task.status = TaskStatus(data["status"])
         task.attempts = int(data.get("attempts", 0))
@@ -110,6 +113,47 @@ class Task:
 
 
 Handler = Callable[[dict[str, Any]], Any]
+
+
+def _run_task_with_retry(
+    task: Task,
+    handlers: dict[str, Handler],
+    timeout_s: float | None,
+) -> None:
+    handler = handlers.get(task.task_type)
+    if handler is None:
+        task.mark_failed(f"no handler for task type {task.task_type}")
+        return
+
+    effective_timeout = timeout_s or task.timeout_s
+    while task.attempts < task.max_attempts:
+        task.mark_started()
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(handler, task.payload)
+                result = future.result(timeout=effective_timeout)
+        except FutureTimeout:
+            task.mark_timed_out()
+            return
+        except Exception as exc:  # noqa: BLE001 - task boundary
+            last_error = str(exc)
+        else:
+            task.mark_succeeded(result)
+            return
+
+        if task.attempts < task.max_attempts:
+            task.status = TaskStatus.PENDING
+            task.error = None
+            task.finished_at = None
+            task._audit(
+                "retry",
+                attempt=task.attempts + 1,
+                error=last_error,
+            )
+            if task.retry_delay_s:
+                time.sleep(task.retry_delay_s * task.attempts)
+        else:
+            task.mark_failed(last_error)
 
 
 class InMemoryTaskQueue:
@@ -148,24 +192,7 @@ class InMemoryTaskQueue:
         handlers: dict[str, Handler],
         timeout_s: float | None,
     ) -> None:
-        handler = handlers.get(task.task_type)
-        if handler is None:
-            task.mark_failed(f"no handler for task type {task.task_type}")
-            return
-
-        effective_timeout = timeout_s or task.timeout_s
-        task.mark_started()
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(handler, task.payload)
-            try:
-                result = future.result(timeout=effective_timeout)
-            except FutureTimeout:
-                task.mark_timed_out()
-                return
-            except Exception as exc:  # noqa: BLE001 - task boundary
-                task.mark_failed(str(exc))
-                return
-        task.mark_succeeded(result)
+        _run_task_with_retry(task, handlers, timeout_s)
 
 
 class FileTaskQueue:
@@ -236,21 +263,4 @@ class FileTaskQueue:
         handlers: dict[str, Handler],
         timeout_s: float | None,
     ) -> None:
-        handler = handlers.get(task.task_type)
-        if handler is None:
-            task.mark_failed(f"no handler for task type {task.task_type}")
-            return
-
-        effective_timeout = timeout_s or task.timeout_s
-        task.mark_started()
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(handler, task.payload)
-            try:
-                result = future.result(timeout=effective_timeout)
-            except FutureTimeout:
-                task.mark_timed_out()
-                return
-            except Exception as exc:  # noqa: BLE001 - task boundary
-                task.mark_failed(str(exc))
-                return
-        task.mark_succeeded(result)
+        _run_task_with_retry(task, handlers, timeout_s)
