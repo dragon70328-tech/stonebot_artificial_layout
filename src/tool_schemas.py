@@ -110,6 +110,15 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         fields={"decision": "string"},
         required=("decision",),
     ),
+    "write_numbered_dxf": ToolSpec(
+        name="write_numbered_dxf",
+        stage=WorkflowStage.AUDITED,
+        advances_to=None,
+        description="Write the numbered in-place check DXF.",
+        fields={"path": "string"},
+        required=("path",),
+        production_write=False,
+    ),
     "nest_parts": ToolSpec(
         name="nest_parts",
         stage=WorkflowStage.NUMBERING_CONFIRMED,
