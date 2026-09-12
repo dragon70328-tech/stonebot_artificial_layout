@@ -273,6 +273,26 @@ class JobManager:
             runtime.confirm(decision)
         return runtime
 
+    def run(
+        self,
+        job_id: str,
+        *,
+        run_in_background: bool = True,
+    ) -> AgentRuntime:
+        runtime = self.get(job_id)
+        stage = WorkflowStage(runtime.session.current_stage)
+        if stage in {WorkflowStage.COMPLETED, WorkflowStage.CANCELLED}:
+            raise JobStateError(f"job is terminal: {stage.value}")
+        if stage == WorkflowStage.BLOCKED:
+            raise JobStateError("blocked job must be recovered before running")
+        if runtime.last_result and runtime.last_result.confirmation_required:
+            raise JobStateError("job is waiting for confirmation; use /confirm")
+        if run_in_background:
+            self._spawn(runtime, runtime.resume)
+        else:
+            runtime.resume()
+        return runtime
+
     def cancel(self, job_id: str) -> AgentRuntime:
         runtime = self.get(job_id)
         runtime.cancel()
@@ -374,6 +394,15 @@ def download_artifact(job_id: str, artifact_name: str) -> FileResponse:
 def confirm_job(job_id: str, request: ConfirmationRequest) -> JSONResponse:
     try:
         runtime = manager.confirm(job_id, request.decision)
+    except JobStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return JSONResponse(status_code=202, content=runtime.status())
+
+
+@app.post("/jobs/{job_id}/run", status_code=202)
+def run_job(job_id: str) -> JSONResponse:
+    try:
+        runtime = manager.run(job_id)
     except JobStateError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return JSONResponse(status_code=202, content=runtime.status())

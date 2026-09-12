@@ -6,6 +6,7 @@ from src.http_api import (
     JobStateError,
     app,
 )
+from src.workflow_session import WorkflowStage
 
 
 def _ok_handlers():
@@ -35,6 +36,9 @@ class SyncJobManager(JobManager):
 
     def confirm(self, job_id, decision, *, run_in_background=True):
         return super().confirm(job_id, decision, run_in_background=False)
+
+    def run(self, job_id, *, run_in_background=True):
+        return super().run(job_id, run_in_background=False)
 
 
 def _job_request(tmp_path):
@@ -198,3 +202,23 @@ def test_download_artifact(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert response.content == b'{"sheets": 2}'
+
+
+def test_run_endpoint_resumes_non_gate_job(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    manager = SyncJobManager(tmp_path)
+    monkeypatch.setattr("src.http_api.manager", manager)
+    client = TestClient(app)
+
+    runtime = manager.create(_job_request(tmp_path), run_in_background=False)
+    runtime.session.stage = WorkflowStage.NUMBERING_CONFIRMED
+    runtime.last_result = None
+
+    response = client.post(f"/jobs/{runtime.session_id}/run")
+
+    assert response.status_code == 202
+    assert response.json()["stage"] == "nested_reported"
+    assert response.json()["confirmation_required"] is True

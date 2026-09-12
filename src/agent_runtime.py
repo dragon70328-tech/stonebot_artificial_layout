@@ -17,13 +17,14 @@ from src.agent_cli import (
     plan_after_confirmation,
 )
 from src.agent_loop import AgentLoop, AgentLoopResult
+from src.ai_planning import ToolCall
 from src.artifact_store import ArtifactStore
 from src.job_context import JobContext
 from src.session_store import WorkflowSessionStore
 from src.tool_handlers import build_tool_handlers
 from src.units import UnitSystem
 from src.worker import Worker
-from src.workflow_session import WorkflowSession
+from src.workflow_session import FORWARD_FLOW, WorkflowSession, WorkflowStage
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -168,6 +169,52 @@ class AgentRuntime:
                 )
             )
         return self.run_next()
+
+    def resume(self) -> AgentLoopResult:
+        """Continue a recovered non-gate session from its current stage."""
+        if self.provider_name == "queue":
+            plan = self._plan_for_current_stage()
+            if plan:
+                self.provider.enqueue(plan)
+        return self.run_next()
+
+    def _plan_for_current_stage(self) -> list[ToolCall]:
+        stage = self.session.stage
+        if stage == WorkflowStage.NUMBERING_CONFIRMED:
+            return [
+                ToolCall(
+                    "nest_parts",
+                    {
+                        "sheet_width": self.context.width_mm,
+                        "sheet_height": self.context.height_mm,
+                        "thickness": self.context.thickness_mm,
+                        "trials": self.context.trials,
+                        "seed": self.context.seed,
+                        "budget": self.context.budget,
+                        "quick": self.context.quick,
+                        "pairing": self.context.pairing,
+                    },
+                )
+            ]
+
+        tool_stages = {
+            "analyze_drawing": WorkflowStage.UPLOADED,
+            "match_profile": WorkflowStage.ANALYZED,
+            "read_dxf": WorkflowStage.PROFILE_MATCHED,
+            "audit_drawing": WorkflowStage.READ,
+            "assign_numbers": WorkflowStage.AUDITED,
+            "write_numbered_dxf": WorkflowStage.AUDITED,
+        }
+        current_index = FORWARD_FLOW.index(stage)
+        return [
+            call
+            for call in build_initial_plan(
+                str(self.dxf_path),
+                self.numbered_path,
+                skip_unnumbered=self.context.skip_unnumbered,
+            )
+            if FORWARD_FLOW.index(tool_stages[call.tool]) >= current_index
+        ]
 
     def cancel(self) -> None:
         self.session.cancel("用户取消任务")

@@ -1,7 +1,7 @@
 from src.agent_runtime import AgentRuntime
 from src.constraints import PROFILE_MIN_SHEETS
 from src.units import UnitSystem
-from src.workflow_session import WorkflowStage
+from src.workflow_session import WorkflowSession, WorkflowStage
 
 
 def _ok_handlers():
@@ -108,3 +108,35 @@ def test_agent_runtime_records_existing_artifacts(tmp_path, monkeypatch):
     assert ref["path"] == str(artifact_path)
     assert ref["digest"]
     assert "session_artifacts" in runtime.status()
+
+
+def test_agent_runtime_resume_from_non_gate_stage(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    session = WorkflowSession(session_id="runtime-resume")
+    session.stage = WorkflowStage.NUMBERING_CONFIRMED
+    runtime = AgentRuntime(
+        "demo.dxf",
+        3200,
+        1600,
+        20,
+        UnitSystem.METRIC,
+        PROFILE_MIN_SHEETS,
+        provider_name="queue",
+        trials=1,
+        seed=0,
+        budget=0,
+        quick=True,
+        pairing=False,
+        skip_unnumbered=True,
+        output_dir=tmp_path,
+        session_id="runtime-resume",
+        restore_session=session,
+    )
+
+    result = runtime.resume()
+
+    assert result.stage == WorkflowStage.NESTED_REPORTED.value
+    assert result.confirmation_required is True
