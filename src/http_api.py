@@ -15,6 +15,7 @@ import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -92,7 +93,7 @@ def _safe_upload_name(filename: str) -> str:
     return f"{safe_stem}.dxf"
 
 
-def load_tenant_api_keys() -> dict[str, str]:
+def load_tenant_api_keys() -> dict[str, Any]:
     raw = os.environ.get("STONEBOT_TENANT_API_KEYS")
     if raw:
         try:
@@ -105,26 +106,72 @@ def load_tenant_api_keys() -> dict[str, str]:
     return {}
 
 
+@dataclass
+class TenantAuth:
+    tenant_id: str
+    roles: set[str] = field(default_factory=set)
+
+    def has_role(self, role: str) -> bool:
+        return "admin" in self.roles or role in self.roles
+
+
+def _normalize_credential(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, str):
+        return {
+            "key": value,
+            "expires_at": None,
+            "roles": ["admin"],
+        }
+    if isinstance(value, dict) and isinstance(value.get("key"), str):
+        return {
+            "key": value["key"],
+            "expires_at": value.get("expires_at"),
+            "roles": list(value.get("roles") or []),
+        }
+    return None
+
+
 def get_authenticated_tenant(
     x_api_key: str = Header(default=""),
     x_tenant_id: str = Header(default="default"),
-) -> str:
+) -> TenantAuth:
     keys = load_tenant_api_keys()
     tenant_id = x_tenant_id.strip() or "default"
     if not keys:
-        return tenant_id
-    if not x_api_key or keys.get(tenant_id) != x_api_key:
+        return TenantAuth(tenant_id=tenant_id, roles={"admin"})
+    credential = _normalize_credential(keys.get(tenant_id))
+    if credential is None:
         raise HTTPException(status_code=401, detail="invalid tenant credentials")
-    return tenant_id
+    if (
+        credential["expires_at"] is not None
+        and time.time() > float(credential["expires_at"])
+    ):
+        raise HTTPException(status_code=401, detail="tenant credential expired")
+    if not x_api_key or credential["key"] != x_api_key:
+        raise HTTPException(status_code=401, detail="invalid tenant credentials")
+    return TenantAuth(
+        tenant_id=tenant_id,
+        roles=set(credential["roles"]),
+    )
 
 
-def _ensure_tenant_match(header_tenant: str, target_tenant: str) -> None:
+def _ensure_tenant_match(auth: TenantAuth, target_tenant: str) -> None:
     if not load_tenant_api_keys():
         return
-    if header_tenant != target_tenant:
+    if auth.tenant_id != target_tenant:
         raise HTTPException(
             status_code=403,
             detail="tenant mismatch",
+        )
+
+
+def _require_role(auth: TenantAuth, role: str) -> None:
+    if not load_tenant_api_keys():
+        return
+    if not auth.has_role(role):
+        raise HTTPException(
+            status_code=403,
+            detail=f"missing required role: {role}",
         )
 
 
@@ -424,12 +471,12 @@ app = FastAPI(
 )
 
 
-def _require_job_tenant(job_id: str, tenant: str) -> None:
+def _require_job_tenant(job_id: str, auth: TenantAuth) -> None:
     try:
         actual_tenant = manager.tenant_for_job(job_id)
     except JobStateError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    _ensure_tenant_match(tenant, actual_tenant)
+    _ensure_tenant_match(auth, actual_tenant)
 
 
 @app.get("/health")
@@ -443,8 +490,9 @@ async def upload_input(
     request: Request,
     tenant_id: str = "default",
     project_id: str = "uploads",
-    tenant: str = Depends(get_authenticated_tenant),
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
 ) -> JSONResponse:
+    _require_role(tenant, "operator")
     _ensure_tenant_match(tenant, tenant_id)
     safe_name = _safe_upload_name(filename)
     data = await request.body()
@@ -483,8 +531,9 @@ async def upload_input(
 @app.post("/jobs", status_code=202)
 def create_job(
     request: JobCreateRequest,
-    tenant: str = Depends(get_authenticated_tenant),
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
 ) -> JSONResponse:
+    _require_role(tenant, "operator")
     _ensure_tenant_match(tenant, request.tenant_id)
     try:
         runtime = manager.create(request)
@@ -495,15 +544,15 @@ def create_job(
 
 @app.get("/jobs")
 def list_jobs(
-    tenant: str = Depends(get_authenticated_tenant),
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
 ) -> dict[str, Any]:
-    return {"jobs": manager.list_jobs(tenant)}
+    return {"jobs": manager.list_jobs(tenant.tenant_id)}
 
 
 @app.get("/jobs/{job_id}")
 def get_job(
     job_id: str,
-    tenant: str = Depends(get_authenticated_tenant),
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
 ) -> dict[str, Any]:
     _require_job_tenant(job_id, tenant)
     try:
@@ -515,7 +564,7 @@ def get_job(
 @app.get("/jobs/{job_id}/tasks")
 def list_job_tasks(
     job_id: str,
-    tenant: str = Depends(get_authenticated_tenant),
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
 ) -> dict[str, Any]:
     _require_job_tenant(job_id, tenant)
     try:
@@ -532,8 +581,9 @@ def list_job_tasks(
 def retry_job_task(
     job_id: str,
     task_id: str,
-    tenant: str = Depends(get_authenticated_tenant),
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
 ) -> JSONResponse:
+    _require_role(tenant, "operator")
     _require_job_tenant(job_id, tenant)
     try:
         task = manager.retry_task(job_id, task_id)
@@ -550,7 +600,7 @@ def retry_job_task(
 def download_artifact(
     job_id: str,
     artifact_name: str,
-    tenant: str = Depends(get_authenticated_tenant),
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
 ) -> FileResponse:
     _require_job_tenant(job_id, tenant)
     try:
@@ -574,8 +624,9 @@ def download_artifact(
 def confirm_job(
     job_id: str,
     request: ConfirmationRequest,
-    tenant: str = Depends(get_authenticated_tenant),
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
 ) -> JSONResponse:
+    _require_role(tenant, "operator")
     _require_job_tenant(job_id, tenant)
     try:
         runtime = manager.confirm(job_id, request.decision)
@@ -587,8 +638,9 @@ def confirm_job(
 @app.post("/jobs/{job_id}/run", status_code=202)
 def run_job(
     job_id: str,
-    tenant: str = Depends(get_authenticated_tenant),
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
 ) -> JSONResponse:
+    _require_role(tenant, "operator")
     _require_job_tenant(job_id, tenant)
     try:
         runtime = manager.run(job_id)
@@ -600,8 +652,9 @@ def run_job(
 @app.post("/jobs/{job_id}/cancel")
 def cancel_job(
     job_id: str,
-    tenant: str = Depends(get_authenticated_tenant),
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
 ) -> dict[str, Any]:
+    _require_role(tenant, "operator")
     _require_job_tenant(job_id, tenant)
     try:
         return manager.cancel(job_id).status()

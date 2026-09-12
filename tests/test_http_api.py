@@ -379,6 +379,68 @@ def test_auth_rejects_tenant_mismatch(tmp_path, monkeypatch):
     assert response.status_code == 403
 
 
+def test_auth_rejects_expired_tenant_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    monkeypatch.setattr(
+        "src.http_api.load_tenant_api_keys",
+        lambda: {
+            "tenant-a": {
+                "key": "secret-a",
+                "expires_at": time.time() - 10,
+                "roles": ["admin"],
+            }
+        },
+    )
+    manager = SyncJobManager(tmp_path)
+    monkeypatch.setattr("src.http_api.manager", manager)
+    client = TestClient(app)
+
+    response = client.post(
+        "/jobs",
+        json=_tenant_request(tmp_path, "tenant-a").model_dump(),
+        headers={
+            "X-API-Key": "secret-a",
+            "X-Tenant-ID": "tenant-a",
+        },
+    )
+
+    assert response.status_code == 401
+
+
+def test_auth_requires_operator_role(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    monkeypatch.setattr(
+        "src.http_api.load_tenant_api_keys",
+        lambda: {
+            "tenant-a": {
+                "key": "secret-a",
+                "expires_at": None,
+                "roles": ["viewer"],
+            }
+        },
+    )
+    manager = SyncJobManager(tmp_path)
+    monkeypatch.setattr("src.http_api.manager", manager)
+    client = TestClient(app)
+
+    response = client.post(
+        "/jobs",
+        json=_tenant_request(tmp_path, "tenant-a").model_dump(),
+        headers={
+            "X-API-Key": "secret-a",
+            "X-Tenant-ID": "tenant-a",
+        },
+    )
+
+    assert response.status_code == 403
+
+
 def test_fastapi_lifespan_shuts_down_worker(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "src.agent_runtime.build_tool_handlers",
