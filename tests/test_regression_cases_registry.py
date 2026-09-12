@@ -34,3 +34,9 @@ def test_regression_case_names_are_unique():
     names = [case["name"] for case in cases]
 
     assert len(names) == len(set(names))
+
+
+def test_regression_cases_declare_slow_flag():
+    cases = _load_check_output_cases().CASES
+
+    assert all(isinstance(case.get("slow"), bool) for case in cases)

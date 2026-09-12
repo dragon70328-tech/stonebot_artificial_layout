@@ -23,6 +23,7 @@ from src.units import UnitSystem
 CASES = [
     {
         "name": "canada3l_bridge",
+        "slow": True,
         "dxf": "output/20260829_164306_加拿大3L/加拿大3L_numbered_原位.dxf",
         "width": 3230.0,
         "height": 1830.0,
@@ -31,6 +32,7 @@ CASES = [
     },
     {
         "name": "cgr45_bridge",
+        "slow": True,
         "dxf": "output/20260815_144424_CGR45final/CGR45final_numbered_原位.dxf",
         "width": 3200.0,
         "height": 1800.0,
@@ -39,6 +41,7 @@ CASES = [
     },
     {
         "name": "blockd_bridge",
+        "slow": True,
         "dxf": "output/20260828_145844_Block D - 6F大堂地台石 廠方切石圖/Block D - 6F大堂地台石 廠方切石圖_numbered_原位.dxf",
         "width": 3200.0,
         "height": 1800.0,
@@ -47,6 +50,7 @@ CASES = [
     },
     {
         "name": "mercury_bridge",
+        "slow": True,
         "dxf": "output/20260830_185527_水星项目户型及排板/水星项目户型及排板_numbered_原位.dxf",
         "width": 3200.0,
         "height": 1600.0,
@@ -55,6 +59,7 @@ CASES = [
     },
     {
         "name": "outlets1_waterjet",
+        "slow": True,
         "dxf": "output/20260820_181251_东莞奥特莱斯1/东莞奥特莱斯1_numbered_原位.dxf",
         "width": 3200.0,
         "height": 1600.0,
@@ -67,6 +72,7 @@ CASES = [
     },
     {
         "name": "outlets2_waterjet",
+        "slow": True,
         "dxf": "output/20260820_180030_东莞奥特莱斯2/东莞奥特莱斯2_numbered_原位.dxf",
         "width": 3200.0,
         "height": 1600.0,
@@ -84,9 +90,13 @@ def main() -> int:
     failed = []
     args = [arg for arg in sys.argv[1:]]
     require_all = "--require-all" in args
+    skip_slow = "--skip-slow" in args
     only = {arg for arg in args if not arg.startswith("--")}
     selected = [case for case in CASES if not only or case["name"] in only]
     for case in selected:
+        if skip_slow and case.get("slow"):
+            print(f"[SKIP] {case['name']}: slow case skipped")
+            continue
         dxf_path = PROJECT_ROOT / case["dxf"]
         if not dxf_path.exists():
             if require_all:

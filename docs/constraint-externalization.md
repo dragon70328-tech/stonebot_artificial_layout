@@ -31,7 +31,7 @@
 | 编号匹配优先级 | `_assign_numbers_by_containment` / `_assign_numbers_by_nearest_room` | 配置匹配策略：先包含后距离、仅距离、仅户型标签 |
 | 编号搜索半径 | `search_radius=5000`、`20000` | 按 DXF 坐标量级自动推荐或用户配置 |
 | 户型标签识别 | `_collect_room_texts` 中“户型/套/B7a”等硬编码 | 正则/字典配置 |
-| 同户型同板 | `group_mode="one_set_per_sheet"` 尚未实装 | 从户型标签生成 `group_id`，再由引擎执行 |
+| 同户型同板 | `src/workflow.py::assign_group_ids` / `_split_normal_parts_by_group` | 已实装 `group_id` 生成与分组排板 |
 | 特殊板判定 | `part_fits` 不满足普通板则视为特殊板 | 规则可配置：尺寸阈值、形状类型、指定编号 |
 | 推边候选步长 | `postprocess.py step=50.0` | 后处理参数 |
 | 边缘对齐容差 | `postprocess.py snap_tol=2.0` | 后处理参数 |

@@ -33,7 +33,7 @@ STAGE_TOOLS: dict[WorkflowStage, set[str]] = {
     WorkflowStage.ANALYZED: {"match_profile"},
     WorkflowStage.PROFILE_MATCHED: {"read_dxf"},
     WorkflowStage.READ: {"audit_drawing"},
-    WorkflowStage.AUDITED: {"assign_numbers"},
+    WorkflowStage.AUDITED: {"assign_numbers", "confirm_numbering"},
     WorkflowStage.NUMBERING_CONFIRMED: {"nest_parts"},
     WorkflowStage.NESTED_REPORTED: {"postprocess"},
     WorkflowStage.POSTPROCESS_CONFIRMED: {"write_dxf", "write_report"},

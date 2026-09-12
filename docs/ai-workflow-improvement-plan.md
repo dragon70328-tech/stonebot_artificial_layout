@@ -24,7 +24,7 @@
 
 | 当前系统 | 目标系统 |
 |----------|----------|
-| 只支持 DXF 输入 | 支持 DWG 转 DXF 后读取 |
+| 只支持 DXF 输入 | 保持 DXF 单一输入，DWG/PDF 由用户先转为 DXF |
 | 排板前自动生成编号检查文件 | 由用户确认编号需求后再生成 |
 | 排板完成后可选择确认板数 | 每个关键节点均可确认/打断/回退 |
 | 后处理在排板结果输出前自动执行 | 先输出排板 DXF，用户确认后再后处理 |
@@ -489,8 +489,8 @@ uploaded
 - `src/dxf_writer.py::write_numbered_parts_dxf`：原位编号 DXF。
 - `src/task_queue.py`、`src/artifact_store.py`、`src/tenant_store.py`：任务、产物、租户边界。
 
-### 后续需新增
-- `tool_schemas.py`：把工具注册为带 JSON Schema 的 ToolCall。
-- `orchestrator.py`：大模型对话循环，参数补全与结果解释。
-- `worker.py`：调用现有脚本/函数，超时、重试、取消。
-- 原位确认产物：`numbered_原位.dxf` 作为正式阶段产物，未确认前不允许排板。
+### 已新增基础闭环
+- `tool_schemas.py`：已把工具注册为带 JSON Schema 的 ToolCall。
+- `orchestrator.py`：已实现阶段门控、Worker 调度与状态迁移。
+- `worker.py`：已实现超时、重试与结构化 `ToolResult`。
+- 仍待新增：大模型对话循环、参数补全与结果解释；原位确认产物作为正式阶段产物接入 `ArtifactStore`。

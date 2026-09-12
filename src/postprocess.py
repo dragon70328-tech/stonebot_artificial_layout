@@ -458,6 +458,7 @@ class PostProcessor:
 
         order = sorted(refs, key=lambda item: item[1].area, reverse=True)
         placed = []
+        placed_bounds = []
         assignment = {}
 
         for ref in order:
@@ -471,13 +472,23 @@ class PostProcessor:
             best_score = None
 
             for cx, cy in candidates:
-                target = affinity.translate(ref_outer, cx - minx, cy - miny)
-                tb = target.bounds
+                dx = cx - minx
+                dy = cy - miny
+                tb = (minx + dx, miny + dy, maxx + dx, maxy + dy)
                 if tb[0] < -EPS or tb[1] < -EPS or \
                    tb[2] > self.w + EPS or tb[3] > self.h + EPS:
                     continue
-                if any(self._too_close(target, o, gap_mm) for o in placed):
-                    continue
+                nearby = [
+                    o for o, ob in zip(placed, placed_bounds)
+                    if self._bbox_may_conflict(tb, ob, gap_mm)
+                ]
+                if nearby:
+                    target = affinity.translate(ref_outer, dx, dy)
+                    if any(
+                        self._too_close(target, o, gap_mm)
+                        for o in nearby
+                    ):
+                        continue
 
                 edge_dist = min(tb[0], self.w - tb[2], tb[1], self.h - tb[3])
                 corner_penalty = (abs(tb[0] - target_corner[0]) +
@@ -491,9 +502,11 @@ class PostProcessor:
                 return False
 
             assignment[id(p)] = best
-            placed.append(affinity.translate(ref_outer,
-                                             best[0] - minx,
-                                             best[1] - miny))
+            placed_poly = affinity.translate(
+                ref_outer, best[0] - minx, best[1] - miny
+            )
+            placed.append(placed_poly)
+            placed_bounds.append(placed_poly.bounds)
 
         for ref in refs:
             p, ref_outer, ref_poly, ref_holes, ref_label = ref
@@ -565,6 +578,18 @@ class PostProcessor:
         if gap_mm <= 0:
             return shapely.relate_pattern(a, b, _OVERLAP_PATTERN)
         return a.distance(b) < gap_mm - GAP_TOL
+
+    @staticmethod
+    def _bbox_may_conflict(a_bounds, b_bounds, gap_mm):
+        """Return False when bounding boxes prove geometries cannot conflict."""
+        aminx, aminy, amaxx, amaxy = a_bounds
+        bminx, bminy, bmaxx, bmaxy = b_bounds
+        dx = max(0.0, max(aminx, bminx) - min(amaxx, bmaxx))
+        dy = max(0.0, max(aminy, bminy) - min(amaxy, bmaxy))
+        if gap_mm <= 0:
+            return dx <= EPS and dy <= EPS
+        min_gap = gap_mm - GAP_TOL
+        return dx < min_gap and dy < min_gap
 
     def _slide_sheet(self, sheet, gap_mm=0.0):
         # 标记已滑过的面板（靠边后不再滑第二次）
@@ -690,27 +715,55 @@ class PostProcessor:
             return 0.0
         mag = (dir_x**2 + dir_y**2)**0.5
         ux, uy = dir_x / mag, dir_y / mag
+        minx, miny, maxx, maxy = orig_poly.bounds
+        other_bounds = [o.bounds for o in others]
 
         hi = 1.0
-        for _ in range(30):
-            test = affinity.translate(orig_poly, ux*hi, uy*hi)
-            tb = test.bounds
+        for _ in range(20):
+            tb = (
+                minx + ux * hi,
+                miny + uy * hi,
+                maxx + ux * hi,
+                maxy + uy * hi,
+            )
             if tb[0] < -EPS or tb[1] < -EPS or tb[2] > self.w+EPS or tb[3] > self.h+EPS:
                 break
-            if any(self._too_close(test, o, gap_mm) for o in others):
+            nearby = [
+                o for o, ob in zip(others, other_bounds)
+                if self._bbox_may_conflict(tb, ob, gap_mm)
+            ]
+            if nearby:
+                test = affinity.translate(orig_poly, ux*hi, uy*hi)
+            if nearby and any(
+                self._too_close(test, o, gap_mm)
+                for o in nearby
+            ):
                 break
             hi *= 2
             if hi > 100000:
                 break
 
         lo = 0.0
-        for _ in range(50):
+        for _ in range(30):
             mid = (lo + hi) / 2
-            test = affinity.translate(orig_poly, ux*mid, uy*mid)
-            tb = test.bounds
+            tb = (
+                minx + ux * mid,
+                miny + uy * mid,
+                maxx + ux * mid,
+                maxy + uy * mid,
+            )
             if tb[0] < -EPS or tb[1] < -EPS or tb[2] > self.w+EPS or tb[3] > self.h+EPS:
                 hi = mid; continue
-            if any(self._too_close(test, o, gap_mm) for o in others):
+            nearby = [
+                o for o, ob in zip(others, other_bounds)
+                if self._bbox_may_conflict(tb, ob, gap_mm)
+            ]
+            if nearby:
+                test = affinity.translate(orig_poly, ux*mid, uy*mid)
+            if nearby and any(
+                self._too_close(test, o, gap_mm)
+                for o in nearby
+            ):
                 hi = mid; continue
             lo = mid
         return lo

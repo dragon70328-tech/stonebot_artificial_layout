@@ -1,11 +1,11 @@
 # 项目整体改进路线图
 
-> 更新时间：2026-08-30
+> 更新时间：2026-09-12
 > 范围：以当前仓库状态为基线，按优先级推进；每完成一项勾选并记录验证结果。
 
 ## 当前基线
 
-- 全量测试：`python -X utf8 -m pytest -q` 通过，当前 `171 passed`。
+- 全量测试：`python -X utf8 -m pytest -q` 通过，当前 `189 passed`。
 - 多案例回归脚本：`scripts/check_output_cases.py`，覆盖加拿大 3L、CGR45、Block D、水星、东莞奥特莱斯 1/2。
 - 桥切 `min_gap` 已内建到排板引擎，后处理已对靠边、对齐、通切加入间距感知。
 - DXF 生成前检查已落地：`main.py` 写出 `*_postprocess_check.json`，几何校验失败阻止最终 DXF。
@@ -13,10 +13,10 @@
 
 当前已知短板：
 
-- `main.py` 仍约 1534 行，排板、后处理、写文件编排尚未完全拆出。
-- 水星完整桥切排板回归约 9~10 分钟，慢案例策略仍不便于高频迭代。
+- `main.py` 约 `1228` 行，CLI/审图/交互编排仍集中在单点；已新增 `tool_schemas.py`、`orchestrator.py`、`worker.py` 作为最小编排闭环。
+- 水星完整桥切排板回归约 `8.3` 分钟；新增 `scripts/profile_nesting_hotspots.py`，后处理 bbox 预筛后合成基准由约 `42s` 降至 `38s`。
 - 水星顶点恢复已覆盖已知三类模式，新异常顶点仍需按文档补回归夹具。
-- SaaS 组件主要是契约与内存实现，尚未接入真实 Worker、持久化队列与外部租户存储。
+- SaaS 组件已具备 `WorkflowSession`、`ArtifactStore`、`TaskQueue`、`TenantStore` 与编排/Worker 骨架，但尚未接入持久化队列、真实 Worker 与外部租户存储。
 - 加拿大 3L 的 22 张最优结果仍依赖 `--budget 180`，短预算稳定性待验证。
 
 ## 执行顺序
