@@ -8,6 +8,9 @@ needed to move read/number/nest/postprocess/write into separate workers later.
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
+import threading
 import time
 import uuid
 from collections import deque
@@ -206,6 +209,225 @@ class InMemoryTaskQueue:
         timeout_s: float | None,
     ) -> None:
         _run_task_with_retry(task, handlers, timeout_s)
+
+
+class SqliteTaskQueue:
+    """SQLite-backed FIFO queue for the SaaS database boundary."""
+
+    def __init__(self, root: str | Path) -> None:
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(
+            str(self.root / "tasks.sqlite3"),
+            check_same_thread=False,
+        )
+        self.conn.row_factory = sqlite3.Row
+        self._lock = threading.RLock()
+        self.finished: list[Task] = []
+        self._init_schema()
+
+    def _init_schema(self) -> None:
+        with self.conn:
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tasks (
+                    task_id TEXT PRIMARY KEY,
+                    task_type TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    attempts INTEGER NOT NULL,
+                    max_attempts INTEGER NOT NULL,
+                    timeout_s REAL NOT NULL,
+                    retry_delay_s REAL NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    result_json TEXT,
+                    error TEXT,
+                    audit_log_json TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    started_at REAL,
+                    finished_at REAL
+                )
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_tasks_status_sequence
+                ON tasks(status, sequence, created_at)
+                """
+            )
+
+    def _json_or_none(self, value: Any) -> str | None:
+        return json.dumps(value, ensure_ascii=False) if value is not None else None
+
+    def _json_loads(self, value: str | None) -> Any:
+        return json.loads(value) if value else None
+
+    def _task_from_row(self, row: sqlite3.Row) -> Task:
+        task = Task(
+            task_type=row["task_type"],
+            payload=json.loads(row["payload_json"]),
+            task_id=row["task_id"],
+            max_attempts=int(row["max_attempts"]),
+            timeout_s=float(row["timeout_s"]),
+            retry_delay_s=float(row["retry_delay_s"]),
+        )
+        task.status = TaskStatus(row["status"])
+        task.attempts = int(row["attempts"])
+        task.sequence = int(row["sequence"])
+        task.result = self._json_loads(row["result_json"])
+        task.error = row["error"]
+        task.audit_log = list(self._json_loads(row["audit_log_json"]) or [])
+        task.created_at = float(row["created_at"])
+        task.started_at = row["started_at"]
+        task.finished_at = row["finished_at"]
+        return task
+
+    def _write(self, task: Task) -> None:
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO tasks (
+                    task_id, task_type, payload_json, status, attempts,
+                    max_attempts, timeout_s, retry_delay_s, sequence,
+                    result_json, error, audit_log_json, created_at,
+                    started_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    task_type=excluded.task_type,
+                    payload_json=excluded.payload_json,
+                    status=excluded.status,
+                    attempts=excluded.attempts,
+                    max_attempts=excluded.max_attempts,
+                    timeout_s=excluded.timeout_s,
+                    retry_delay_s=excluded.retry_delay_s,
+                    sequence=excluded.sequence,
+                    result_json=excluded.result_json,
+                    error=excluded.error,
+                    audit_log_json=excluded.audit_log_json,
+                    created_at=excluded.created_at,
+                    started_at=excluded.started_at,
+                    finished_at=excluded.finished_at
+                """,
+                (
+                    task.task_id,
+                    task.task_type,
+                    json.dumps(task.payload, ensure_ascii=False),
+                    task.status.value,
+                    task.attempts,
+                    task.max_attempts,
+                    task.timeout_s,
+                    task.retry_delay_s,
+                    task.sequence,
+                    self._json_or_none(task.result),
+                    task.error,
+                    json.dumps(task.audit_log, ensure_ascii=False),
+                    task.created_at,
+                    task.started_at,
+                    task.finished_at,
+                ),
+            )
+
+    def enqueue(self, task: Task) -> Task:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT COALESCE(MAX(sequence), 0) AS max_sequence FROM tasks"
+            ).fetchone()
+            task.sequence = int(row["max_sequence"]) + 1
+            task._audit("enqueued")
+            self._write(task)
+            return task
+
+    def load(self, task_id: str) -> Task:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT * FROM tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"task not found: {task_id}")
+            return self._task_from_row(row)
+
+    def has_pending(self) -> bool:
+        with self._lock:
+            row = self.conn.execute(
+                """
+                SELECT 1 FROM tasks WHERE status = ? LIMIT 1
+                """,
+                (TaskStatus.PENDING.value,),
+            ).fetchone()
+            return row is not None
+
+    def list_tasks(self) -> list[Task]:
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                SELECT * FROM tasks
+                ORDER BY sequence, created_at, task_id
+                """
+            ).fetchall()
+            return [self._task_from_row(row) for row in rows]
+
+    def dead_letters(self) -> list[Task]:
+        return [
+            task
+            for task in self.list_tasks()
+            if task.status == TaskStatus.DEAD_LETTER
+        ]
+
+    def retry_task(self, task_id: str) -> Task:
+        with self._lock:
+            task = self.load(task_id)
+            if task.status not in {
+                TaskStatus.FAILED,
+                TaskStatus.TIMED_OUT,
+                TaskStatus.DEAD_LETTER,
+            }:
+                raise ValueError(
+                    f"task {task_id} cannot be retried from {task.status.value}"
+                )
+            task.status = TaskStatus.PENDING
+            task.attempts = 0
+            task.error = None
+            task.finished_at = None
+            task.result = None
+            task._audit("requeued")
+            self._write(task)
+            return task
+
+    def run_all(
+        self,
+        handlers: dict[str, Handler],
+        *,
+        timeout_s: float | None = None,
+    ) -> list[Task]:
+        with self._lock:
+            pending = [
+                task
+                for task in self.list_tasks()
+                if task.status == TaskStatus.PENDING
+            ]
+            results: list[Task] = []
+            for task in pending:
+                self._run_task(task, handlers, timeout_s)
+                self._write(task)
+                results.append(task)
+                self.finished.append(task)
+            return results
+
+    def _run_task(
+        self,
+        task: Task,
+        handlers: dict[str, Handler],
+        timeout_s: float | None,
+    ) -> None:
+        _run_task_with_retry(task, handlers, timeout_s)
+
+
+def build_task_queue(root: str | Path) -> FileTaskQueue | SqliteTaskQueue:
+    """Select the queue backend from ``STONEBOT_TASK_STORE``."""
+    if os.environ.get("STONEBOT_TASK_STORE", "file").strip().lower() == "sqlite":
+        return SqliteTaskQueue(root)
+    return FileTaskQueue(root)
 
 
 class FileTaskQueue:

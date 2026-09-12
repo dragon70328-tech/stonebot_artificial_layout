@@ -192,6 +192,27 @@ def test_job_manager_recovers_session_from_disk(tmp_path, monkeypatch):
     assert recovered.session.current_stage == "nested_reported"
 
 
+def test_job_manager_uses_sqlite_job_repository(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    monkeypatch.setenv("STONEBOT_JOB_STORE", "sqlite")
+    root = tmp_path / "manager-root"
+    request = _job_request(tmp_path)
+
+    first_manager = JobManager(root)
+    first_runtime = first_manager.create(request, run_in_background=False)
+    first_runtime.run_next()
+    job_id = first_runtime.session_id
+
+    second_manager = JobManager(root)
+    recovered = second_manager.get(job_id)
+
+    assert recovered.session.current_stage == "audited"
+    assert second_manager.tenant_for_job(job_id) == "default"
+
+
 def test_download_artifact(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "src.agent_runtime.build_tool_handlers",

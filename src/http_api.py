@@ -28,10 +28,11 @@ from src.agent_runtime import AgentRuntime
 from src.artifact_store import content_digest
 from src.constraints import PROFILE_MIN_SHEETS, PROFILES
 from src.input_guard import DXFInputLimits, check_dxf_file
+from src.job_repository import build_job_repository
 from src.llm_client import LLMError
 from src.object_store import build_object_store
 from src.session_store import WorkflowSessionStore
-from src.task_queue import FileTaskQueue, Task
+from src.task_queue import Task, build_task_queue
 from src.tenant_store import TenantError, TenantStore
 from src.units import UnitSystem
 from src.workflow_session import WorkflowStage
@@ -190,17 +191,12 @@ class JobManager:
         self.root.mkdir(parents=True, exist_ok=True)
         self.object_store = build_object_store(self.root / "object_store")
         self.tenant_store = TenantStore(self.root / "tenants")
-        self.jobs_root = self.root / "jobs"
-        self.jobs_root.mkdir(parents=True, exist_ok=True)
-        self.task_queue = FileTaskQueue(self.root / "queue")
+        self.job_repository = build_job_repository(self.root)
+        self.task_queue = build_task_queue(self.root / "queue")
         self._jobs: dict[str, AgentRuntime] = {}
         self._lock = threading.RLock()
         self._worker_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
-
-    def _manifest_path(self, job_id: str) -> Path:
-        safe_id = _SAFE_ID.sub("_", job_id).strip("_")
-        return self.jobs_root / f"{safe_id}.json"
 
     def _project_id(self, request: JobCreateRequest) -> str:
         return request.project_id or Path(request.dxf_path).stem
@@ -245,21 +241,16 @@ class JobManager:
         runtime: AgentRuntime,
         request: JobCreateRequest,
     ) -> None:
-        payload = {
-            "job_id": runtime.session_id,
-            "request": request.model_dump(),
-            "created_at": time.time(),
-        }
-        self._manifest_path(runtime.session_id).write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        self.job_repository.save(
+            runtime.session_id,
+            request.model_dump(),
+            time.time(),
         )
 
     def _load_runtime(self, job_id: str) -> AgentRuntime:
-        manifest_path = self._manifest_path(job_id)
-        if not manifest_path.exists():
+        payload = self.job_repository.get(job_id)
+        if payload is None:
             raise JobStateError(f"job not found: {job_id}")
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         request = JobCreateRequest(**payload["request"])
         session_store = WorkflowSessionStore(self._output_dir(request))
         if not session_store.exists(job_id):
@@ -285,10 +276,9 @@ class JobManager:
         return runtime
 
     def tenant_for_job(self, job_id: str) -> str:
-        manifest_path = self._manifest_path(job_id)
-        if not manifest_path.exists():
+        payload = self.job_repository.get(job_id)
+        if payload is None:
             raise JobStateError(f"job not found: {job_id}")
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         return payload["request"].get("tenant_id", "default")
 
     def store_input(
@@ -409,7 +399,7 @@ class JobManager:
 
     def list_jobs(self, tenant_id: str | None = None) -> list[dict[str, Any]]:
         with self._lock:
-            job_ids = {path.stem for path in self.jobs_root.glob("*.json")}
+            job_ids = set(self.job_repository.list_job_ids())
             job_ids.update(self._jobs)
             if tenant_id is not None:
                 job_ids = {

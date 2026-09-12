@@ -1,6 +1,13 @@
 import time
 
-from src.task_queue import FileTaskQueue, InMemoryTaskQueue, Task, TaskStatus
+from src.task_queue import (
+    FileTaskQueue,
+    InMemoryTaskQueue,
+    SqliteTaskQueue,
+    Task,
+    TaskStatus,
+    build_task_queue,
+)
 
 
 def test_task_queue_runs_fifo_and_marks_succeeded():
@@ -172,3 +179,56 @@ def test_file_task_queue_retries_dead_letter_task(tmp_path):
     assert retried.attempts == 0
     assert retried.error is None
     assert any(event["event"] == "requeued" for event in retried.audit_log)
+
+
+def test_sqlite_task_queue_persists_and_runs(tmp_path):
+    first = SqliteTaskQueue(tmp_path)
+    first.enqueue(Task(task_type="double", payload={"value": 2}))
+    first.enqueue(Task(task_type="double", payload={"value": 3}))
+
+    second = SqliteTaskQueue(tmp_path)
+    assert second.has_pending() is True
+    finished = second.run_all({"double": lambda payload: payload["value"] * 2})
+
+    assert [task.result for task in finished] == [4, 6]
+    assert all(task.status == TaskStatus.SUCCEEDED for task in finished)
+    assert second.load(finished[0].task_id).status == TaskStatus.SUCCEEDED
+
+
+def test_sqlite_task_queue_retries_dead_letter_task(tmp_path):
+    def always_boom(payload):
+        raise RuntimeError("bad")
+
+    queue = SqliteTaskQueue(tmp_path)
+    task = queue.enqueue(
+        Task(
+            task_type="always_boom",
+            payload={},
+            max_attempts=2,
+            retry_delay_s=0,
+        )
+    )
+    queue.run_all({"always_boom": always_boom})
+
+    retried = queue.retry_task(task.task_id)
+
+    assert retried.status == TaskStatus.PENDING
+    assert retried.attempts == 0
+    assert retried.error is None
+    assert any(event["event"] == "requeued" for event in retried.audit_log)
+
+
+def test_build_task_queue_selects_sqlite(tmp_path, monkeypatch):
+    monkeypatch.setenv("STONEBOT_TASK_STORE", "sqlite")
+
+    queue = build_task_queue(tmp_path)
+
+    assert isinstance(queue, SqliteTaskQueue)
+
+
+def test_build_task_queue_defaults_to_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("STONEBOT_TASK_STORE", raising=False)
+
+    queue = build_task_queue(tmp_path)
+
+    assert isinstance(queue, FileTaskQueue)
