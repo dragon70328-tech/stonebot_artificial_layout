@@ -14,18 +14,21 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from src.agent_runtime import AgentRuntime
+from src.artifact_store import content_digest
 from src.constraints import PROFILE_MIN_SHEETS, PROFILES
+from src.input_guard import DXFInputLimits, check_dxf_file
 from src.llm_client import LLMError
 from src.units import UnitSystem
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_-]+")
+UPLOAD_ROOT = PROJECT_ROOT / "output" / "uploads"
 
 
 class JobCreateRequest(BaseModel):
@@ -69,6 +72,15 @@ def _build_profile(request: JobCreateRequest):
 def _safe_project(value: str) -> str:
     safe = _SAFE_ID.sub("_", value).strip("_")
     return safe or "unnamed"
+
+
+def _safe_upload_name(filename: str) -> str:
+    raw_name = Path(filename).name
+    if not raw_name.lower().endswith(".dxf"):
+        raise HTTPException(status_code=400, detail="only .dxf input is accepted")
+    stem = raw_name[: -len(".dxf")]
+    safe_stem = _SAFE_ID.sub("_", stem).strip("_") or "upload"
+    return f"{safe_stem}.dxf"
 
 
 class JobManager:
@@ -188,6 +200,38 @@ manager = JobManager(PROJECT_ROOT / "output" / "api_jobs")
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/inputs/{filename}", status_code=201)
+async def upload_input(filename: str, request: Request) -> JSONResponse:
+    safe_name = _safe_upload_name(filename)
+    data = await request.body()
+    limits = DXFInputLimits()
+    if len(data) > limits.max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"file size exceeds {limits.max_bytes} bytes",
+        )
+
+    digest = content_digest(data)
+    upload_root = UPLOAD_ROOT
+    upload_root.mkdir(parents=True, exist_ok=True)
+    path = upload_root / f"{Path(safe_name).stem}_{digest[:12]}.dxf"
+    path.write_bytes(data)
+
+    violations = check_dxf_file(path, limits)
+    if violations:
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="; ".join(violations))
+
+    return JSONResponse(
+        status_code=201,
+        content={
+            "dxf_path": str(path),
+            "bytes": len(data),
+            "digest": digest,
+        },
+    )
 
 
 @app.post("/jobs", status_code=202)
