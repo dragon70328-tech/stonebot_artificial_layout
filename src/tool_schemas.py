@@ -99,7 +99,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         stage=WorkflowStage.AUDITED,
         advances_to=None,
         description="Assign original/automatic numbers; human confirms next.",
-        fields={"path": "string"},
+        fields={"path": "string", "skip_unnumbered": "boolean"},
         required=("path",),
     ),
     "confirm_numbering": ToolSpec(
@@ -124,7 +124,16 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         stage=WorkflowStage.NUMBERING_CONFIRMED,
         advances_to=WorkflowStage.NESTED_REPORTED,
         description="Run the deterministic nesting engine.",
-        fields={"sheet_width": "number", "sheet_height": "number"},
+        fields={
+            "sheet_width": "number",
+            "sheet_height": "number",
+            "thickness": "number",
+            "trials": "number",
+            "seed": "number",
+            "budget": "number",
+            "quick": "boolean",
+            "pairing": "boolean",
+        },
         required=("sheet_width", "sheet_height"),
     ),
     "postprocess": ToolSpec(

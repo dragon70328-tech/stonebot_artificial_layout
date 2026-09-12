@@ -1,0 +1,96 @@
+from src.agent_runtime import AgentRuntime
+from src.constraints import PROFILE_MIN_SHEETS
+from src.units import UnitSystem
+from src.workflow_session import WorkflowStage
+
+
+def _ok_handlers():
+    def ok(arguments):
+        return {"ok": True}
+
+    return {
+        "analyze_drawing": ok,
+        "match_profile": ok,
+        "read_dxf": ok,
+        "audit_drawing": ok,
+        "assign_numbers": ok,
+        "write_numbered_dxf": ok,
+        "confirm_numbering": ok,
+        "nest_parts": ok,
+        "postprocess": ok,
+        "write_dxf": ok,
+        "write_report": ok,
+    }
+
+
+def _make_runtime(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    return AgentRuntime(
+        "demo.dxf",
+        3200,
+        1600,
+        20,
+        UnitSystem.METRIC,
+        PROFILE_MIN_SHEETS,
+        provider_name="queue",
+        trials=1,
+        seed=0,
+        budget=0,
+        quick=True,
+        pairing=False,
+        skip_unnumbered=True,
+        output_dir=tmp_path,
+        session_id="runtime-1",
+    )
+
+
+def test_agent_runtime_runs_to_first_confirmation(tmp_path, monkeypatch):
+    runtime = _make_runtime(tmp_path, monkeypatch)
+
+    result = runtime.run_next()
+
+    assert result.confirmation_required is True
+    assert result.stage == WorkflowStage.AUDITED.value
+    assert runtime.status()["stage"] == WorkflowStage.AUDITED.value
+
+
+def test_agent_runtime_confirm_advances_through_all_gates(tmp_path, monkeypatch):
+    runtime = _make_runtime(tmp_path, monkeypatch)
+    runtime.run_next()
+
+    nested = runtime.confirm("yes")
+    assert nested.stage == WorkflowStage.NESTED_REPORTED.value
+    assert nested.confirmation_required is True
+
+    postprocess = runtime.confirm("confirm")
+    assert postprocess.stage == WorkflowStage.POSTPROCESS_CONFIRMED.value
+    assert postprocess.confirmation_required is True
+
+    completed = runtime.confirm("y")
+    assert completed.completed is True
+    assert runtime.status()["completed"] is True
+
+
+def test_agent_runtime_rejects_confirmation(tmp_path, monkeypatch):
+    runtime = _make_runtime(tmp_path, monkeypatch)
+    runtime.run_next()
+
+    result = runtime.confirm("no")
+
+    assert result.completed is False
+    assert result.confirmation_required is False
+    assert runtime.status()["stage"] == WorkflowStage.CANCELLED.value
+
+
+def test_agent_runtime_confirm_without_gate_raises(tmp_path, monkeypatch):
+    runtime = _make_runtime(tmp_path, monkeypatch)
+
+    try:
+        runtime.confirm("yes")
+    except RuntimeError as exc:
+        assert "no confirmation gate" in str(exc)
+    else:
+        raise AssertionError("RuntimeError was not raised")

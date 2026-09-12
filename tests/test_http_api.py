@@ -1,0 +1,117 @@
+from fastapi.testclient import TestClient
+
+from src.http_api import (
+    JobCreateRequest,
+    JobManager,
+    JobStateError,
+    app,
+)
+
+
+def _ok_handlers():
+    def ok(arguments):
+        return {"ok": True}
+
+    return {
+        "analyze_drawing": ok,
+        "match_profile": ok,
+        "read_dxf": ok,
+        "audit_drawing": ok,
+        "assign_numbers": ok,
+        "write_numbered_dxf": ok,
+        "confirm_numbering": ok,
+        "nest_parts": ok,
+        "postprocess": ok,
+        "write_dxf": ok,
+        "write_report": ok,
+    }
+
+
+class SyncJobManager(JobManager):
+    def create(self, request, *, run_in_background=True):
+        runtime = super().create(request, run_in_background=False)
+        runtime.run_next()
+        return runtime
+
+    def confirm(self, job_id, decision, *, run_in_background=True):
+        return super().confirm(job_id, decision, run_in_background=False)
+
+
+def _job_request(tmp_path):
+    return JobCreateRequest(
+        dxf_path="demo.dxf",
+        width_mm=3200,
+        height_mm=1600,
+        thickness_mm=20,
+        profile="min_sheets",
+        provider="queue",
+        trials=1,
+        seed=0,
+        budget=0,
+        quick=True,
+        pairing=False,
+        skip_unnumbered=True,
+    )
+
+
+def test_job_manager_confirm_without_gate_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    manager = JobManager(tmp_path)
+    runtime = manager.create(_job_request(tmp_path), run_in_background=False)
+
+    try:
+        manager.confirm(runtime.session_id, "yes", run_in_background=False)
+    except JobStateError as exc:
+        assert "no confirmation gate" in str(exc)
+    else:
+        raise AssertionError("JobStateError was not raised")
+
+
+def test_http_job_flow_reaches_three_confirmations(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    monkeypatch.setattr("src.http_api.manager", SyncJobManager(tmp_path))
+    client = TestClient(app)
+
+    created = client.post("/jobs", json=_job_request(tmp_path).model_dump())
+    assert created.status_code == 202
+    body = created.json()
+    job_id = body["job_id"]
+    assert body["stage"] == "audited"
+    assert body["confirmation_required"] is True
+
+    nested = client.post(
+        f"/jobs/{job_id}/confirm",
+        json={"decision": "yes"},
+    )
+    assert nested.status_code == 202
+    assert nested.json()["stage"] == "nested_reported"
+
+    postprocess = client.post(
+        f"/jobs/{job_id}/confirm",
+        json={"decision": "confirm"},
+    )
+    assert postprocess.status_code == 202
+    assert postprocess.json()["stage"] == "postprocess_confirmed"
+
+    completed = client.post(
+        f"/jobs/{job_id}/confirm",
+        json={"decision": "y"},
+    )
+    assert completed.status_code == 202
+    assert completed.json()["completed"] is True
+
+
+def test_http_health(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.http_api.manager", SyncJobManager(tmp_path))
+    client = TestClient(app)
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
