@@ -1,3 +1,5 @@
+import time
+
 from fastapi.testclient import TestClient
 
 from src.http_api import (
@@ -222,3 +224,22 @@ def test_run_endpoint_resumes_non_gate_job(tmp_path, monkeypatch):
     assert response.status_code == 202
     assert response.json()["stage"] == "nested_reported"
     assert response.json()["confirmation_required"] is True
+
+
+def test_background_job_is_driven_by_file_queue(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    manager = JobManager(tmp_path)
+
+    runtime = manager.create(_job_request(tmp_path), run_in_background=True)
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if manager.get(runtime.session_id).session.current_stage == "audited":
+            break
+        time.sleep(0.05)
+
+    assert manager.get(runtime.session_id).session.current_stage == "audited"
+    assert manager.task_queue.has_pending() is False
+    manager._stop_event.set()

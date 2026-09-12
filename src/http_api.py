@@ -27,6 +27,7 @@ from src.constraints import PROFILE_MIN_SHEETS, PROFILES
 from src.input_guard import DXFInputLimits, check_dxf_file
 from src.llm_client import LLMError
 from src.session_store import WorkflowSessionStore
+from src.task_queue import FileTaskQueue, Task
 from src.tenant_store import TenantError, TenantStore
 from src.units import UnitSystem
 from src.workflow_session import WorkflowStage
@@ -98,8 +99,11 @@ class JobManager:
         self.tenant_store = TenantStore(self.root / "tenants")
         self.jobs_root = self.root / "jobs"
         self.jobs_root.mkdir(parents=True, exist_ok=True)
+        self.task_queue = FileTaskQueue(self.root / "queue")
         self._jobs: dict[str, AgentRuntime] = {}
         self._lock = threading.RLock()
+        self._worker_thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
 
     def _manifest_path(self, job_id: str) -> Path:
         safe_id = _SAFE_ID.sub("_", job_id).strip("_")
@@ -185,23 +189,45 @@ class JobManager:
         )
         return runtime
 
-    def _spawn(self, runtime: AgentRuntime, action) -> None:
-        def target() -> None:
-            try:
-                action()
-            except Exception as exc:  # noqa: BLE001 - HTTP thread boundary
-                runtime.last_error = str(exc)
-                try:
-                    runtime.session.block(f"runtime error: {exc}")
-                except ValueError:
-                    pass
-                runtime.store.save(runtime.session)
+    def _task_handlers(self) -> dict[str, Any]:
+        return {
+            "run_job": lambda payload: self.get(
+                payload["job_id"]
+            ).resume().to_dict(),
+            "confirm_job": lambda payload: self.get(
+                payload["job_id"]
+            ).confirm(payload["decision"]).to_dict(),
+        }
 
-        threading.Thread(
-            target=target,
+    def _enqueue_action(self, task_type: str, payload: dict[str, Any]) -> None:
+        self.task_queue.enqueue(
+            Task(
+                task_type=task_type,
+                payload=payload,
+                timeout_s=3600.0,
+            )
+        )
+        self._ensure_worker()
+
+    def _ensure_worker(self) -> None:
+        if (
+            self._worker_thread is not None
+            and self._worker_thread.is_alive()
+        ):
+            return
+
+        def worker_loop() -> None:
+            while not self._stop_event.wait(0.1):
+                if not self.task_queue.has_pending():
+                    continue
+                self.task_queue.run_all(self._task_handlers())
+
+        self._worker_thread = threading.Thread(
+            target=worker_loop,
             daemon=True,
-            name=f"agent-{runtime.session_id}",
-        ).start()
+            name="job-task-worker",
+        )
+        self._worker_thread.start()
 
     def create(
         self,
@@ -221,7 +247,10 @@ class JobManager:
             self._jobs[runtime.session_id] = runtime
             self._write_manifest(runtime, request)
         if run_in_background:
-            self._spawn(runtime, runtime.run_next)
+            self._enqueue_action(
+                "run_job",
+                {"job_id": runtime.session_id},
+            )
         return runtime
 
     def get(self, job_id: str) -> AgentRuntime:
@@ -268,7 +297,13 @@ class JobManager:
         if runtime.last_result is None or not runtime.last_result.confirmation_required:
             raise JobStateError("no confirmation gate is waiting")
         if run_in_background:
-            self._spawn(runtime, lambda: runtime.confirm(decision))
+            self._enqueue_action(
+                "confirm_job",
+                {
+                    "job_id": job_id,
+                    "decision": decision,
+                },
+            )
         else:
             runtime.confirm(decision)
         return runtime
@@ -288,7 +323,10 @@ class JobManager:
         if runtime.last_result and runtime.last_result.confirmation_required:
             raise JobStateError("job is waiting for confirmation; use /confirm")
         if run_in_background:
-            self._spawn(runtime, runtime.resume)
+            self._enqueue_action(
+                "run_job",
+                {"job_id": job_id},
+            )
         else:
             runtime.resume()
         return runtime
