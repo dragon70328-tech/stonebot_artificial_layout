@@ -1,8 +1,13 @@
+import pytest
+
 from src.agent_cli import (
     QueuePlanProvider,
+    build_agent_plan_provider,
     build_initial_plan,
     plan_after_confirmation,
 )
+from src.llm_client import LLMError
+from src.llm_plan_provider import LLMPlanProvider
 from src.workflow_session import WorkflowStage
 
 
@@ -70,3 +75,30 @@ def test_queue_plan_provider_returns_fifo_then_empty():
     assert provider.plan(None, None) == [{"tool": "a"}]
     assert provider.plan(None, None) == [{"tool": "b"}]
     assert provider.plan(None, None) == []
+
+
+def test_build_agent_plan_provider_defaults_to_queue():
+    provider = build_agent_plan_provider("queue")
+
+    assert isinstance(provider, QueuePlanProvider)
+
+
+def test_build_agent_plan_provider_llm_requires_api_key(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with pytest.raises(LLMError):
+        build_agent_plan_provider("llm")
+
+
+def test_build_agent_plan_provider_llm_returns_llm_provider(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "secret")
+
+    provider = build_agent_plan_provider("llm")
+
+    assert isinstance(provider, LLMPlanProvider)
+    assert provider.client.api_key == "secret"
+
+
+def test_build_agent_plan_provider_rejects_unknown():
+    with pytest.raises(ValueError):
+        build_agent_plan_provider("unknown")

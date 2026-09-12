@@ -14,6 +14,9 @@ from typing import Any
 from src.agent_loop import AgentLoop
 from src.ai_planning import ToolCall
 from src.job_context import JobContext
+from src.llm_client import LLMError
+from src.llm_plan_provider import LLMPlanProvider
+from src.openai_llm_client import OpenAICompatibleClient
 from src.session_store import WorkflowSessionStore
 from src.tool_handlers import build_tool_handlers
 from src.units import UnitSystem
@@ -35,6 +38,19 @@ class QueuePlanProvider:
         if not self.queue:
             return []
         return self.queue.pop(0)
+
+
+def build_agent_plan_provider(provider_name: str):
+    if provider_name == "llm":
+        client = OpenAICompatibleClient()
+        if not client.api_key:
+            raise LLMError(
+                "OPENAI_API_KEY is not configured for --agent-provider llm"
+            )
+        return LLMPlanProvider(client)
+    if provider_name != "queue":
+        raise ValueError(f"unknown agent provider: {provider_name}")
+    return QueuePlanProvider()
 
 
 def _make_output_dir(dxf_path: str) -> Path:
@@ -112,6 +128,7 @@ def run_agent_mode(
     thickness_mm: float,
     unit: UnitSystem,
     profile,
+    agent_provider: str = "queue",
     *,
     trials: int,
     seed: int,
@@ -146,17 +163,22 @@ def run_agent_mode(
     session_id = f"agent-{stem}-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
     session = WorkflowSession(session_id=session_id)
     store = WorkflowSessionStore(output_dir)
-    provider = QueuePlanProvider()
+    try:
+        provider = build_agent_plan_provider(agent_provider)
+    except (LLMError, ValueError) as exc:
+        print(f"[agent] {exc}")
+        return 1
     worker = Worker(build_tool_handlers(context))
     loop = AgentLoop(session, worker, provider, store=store)
 
-    provider.enqueue(
-        build_initial_plan(
-            dxf_path,
-            numbered_path,
-            skip_unnumbered=skip_unnumbered,
+    if agent_provider == "queue":
+        provider.enqueue(
+            build_initial_plan(
+                dxf_path,
+                numbered_path,
+                skip_unnumbered=skip_unnumbered,
+            )
         )
-    )
 
     while True:
         result = loop.run_next(context)
@@ -190,18 +212,19 @@ def run_agent_mode(
             print("已取消。")
             return 1
 
-        provider.enqueue(
-            plan_after_confirmation(
-                result.stage,
-                width_mm=width_mm,
-                height_mm=height_mm,
-                thickness_mm=thickness_mm,
-                nested_path=nested_path,
-                report_path=report_path,
-                trials=trials,
-                seed=seed,
-                budget=budget,
-                quick=quick,
-                pairing=pairing,
+        if agent_provider == "queue":
+            provider.enqueue(
+                plan_after_confirmation(
+                    result.stage,
+                    width_mm=width_mm,
+                    height_mm=height_mm,
+                    thickness_mm=thickness_mm,
+                    nested_path=nested_path,
+                    report_path=report_path,
+                    trials=trials,
+                    seed=seed,
+                    budget=budget,
+                    quick=quick,
+                    pairing=pairing,
+                )
             )
-        )

@@ -122,6 +122,9 @@ def parse_args():
                    help="加工方式：bridge=桥切机，waterjet=水刀，laser=激光")
     p.add_argument("--agent", action="store_true",
                    help="使用本地 agent loop 模式（带三处确认门）")
+    p.add_argument("--agent-provider", type=str, default="queue",
+                    choices=["queue", "llm"],
+                    help="agent 计划来源：queue=确定性计划，llm=OpenAI-compatible LLM")
 
     # 约束覆盖（可与 --profile 组合，也可独立使用）
     p.add_argument("--rotation", type=str, default=None,
@@ -1215,6 +1218,7 @@ def main():
                 args.thickness,
                 unit,
                 profile,
+                agent_provider=args.agent_provider,
                 trials=trials,
                 seed=args.seed,
                 budget=budget,
