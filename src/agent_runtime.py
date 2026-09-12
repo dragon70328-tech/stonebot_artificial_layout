@@ -48,6 +48,7 @@ class AgentRuntime:
         skip_unnumbered: bool,
         output_dir: Path | None = None,
         session_id: str | None = None,
+        restore_session: WorkflowSession | None = None,
     ) -> None:
         self.provider_name = provider_name
         self.dxf_path = Path(dxf_path)
@@ -80,7 +81,9 @@ class AgentRuntime:
             session_id
             or f"agent-{stem}-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
         )
-        self.session = WorkflowSession(session_id=self.session_id)
+        self.session = restore_session or WorkflowSession(
+            session_id=self.session_id
+        )
         self.store = WorkflowSessionStore(self.output_dir)
         self.artifact_store = ArtifactStore(self.output_dir / "artifacts")
         self.provider = build_agent_plan_provider(provider_name)
@@ -91,7 +94,7 @@ class AgentRuntime:
             self.provider,
             store=self.store,
         )
-        if provider_name == "queue":
+        if provider_name == "queue" and restore_session is None:
             self.provider.enqueue(
                 build_initial_plan(
                     str(self.dxf_path),

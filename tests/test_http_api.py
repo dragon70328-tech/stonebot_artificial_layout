@@ -149,3 +149,52 @@ def test_upload_input_rejects_non_dxf(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 400
+
+
+def test_job_manager_recovers_session_from_disk(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    root = tmp_path / "manager-root"
+    request = _job_request(tmp_path)
+
+    first_manager = JobManager(root)
+    first_runtime = first_manager.create(request, run_in_background=False)
+    first_runtime.run_next()
+    job_id = first_runtime.session_id
+
+    second_manager = JobManager(root)
+    recovered = second_manager.get(job_id)
+
+    assert recovered.session.current_stage == "audited"
+    assert recovered.last_result.confirmation_required is True
+
+    second_manager.confirm(job_id, "yes", run_in_background=False)
+    assert recovered.session.current_stage == "nested_reported"
+
+
+def test_download_artifact(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    manager = SyncJobManager(tmp_path)
+    monkeypatch.setattr("src.http_api.manager", manager)
+    client = TestClient(app)
+
+    runtime = manager.create(_job_request(tmp_path), run_in_background=False)
+    artifact_path = tmp_path / "report.json"
+    artifact_path.write_text('{"sheets": 2}', encoding="utf-8")
+    runtime.session.artifacts["report"] = {
+        "path": str(artifact_path),
+        "digest": "test-digest",
+        "artifact_id": "report:test",
+    }
+
+    response = client.get(
+        f"/jobs/{runtime.session_id}/artifacts/report",
+    )
+
+    assert response.status_code == 200
+    assert response.content == b'{"sheets": 2}'
