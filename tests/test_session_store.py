@@ -1,4 +1,8 @@
-from src.session_store import WorkflowSessionStore
+from src.session_store import (
+    SqliteWorkflowSessionStore,
+    WorkflowSessionStore,
+    build_session_store,
+)
 from src.workflow_session import WorkflowSession, WorkflowStage
 
 
@@ -40,3 +44,26 @@ def test_workflow_session_store_lists_saved_sessions(tmp_path):
     store.save(WorkflowSession(session_id="job-b"))
 
     assert store.list_sessions() == ["job-a", "job-b"]
+
+
+def test_sqlite_workflow_session_round_trip(tmp_path):
+    session = WorkflowSession(session_id="job-sqlite")
+    session.transition(WorkflowStage.ANALYZED, summary={"dxf": "a.dxf"})
+
+    store = SqliteWorkflowSessionStore(tmp_path / "sessions.sqlite3")
+    store.save(session)
+
+    loaded = store.load("job-sqlite")
+
+    assert loaded.stage == WorkflowStage.ANALYZED
+    assert store.exists("job-sqlite") is True
+    assert store.list_sessions() == ["job-sqlite"]
+
+
+def test_build_session_store_selects_sqlite(tmp_path, monkeypatch):
+    monkeypatch.setenv("STONEBOT_SESSION_STORE", "sqlite")
+
+    assert isinstance(
+        build_session_store(tmp_path),
+        SqliteWorkflowSessionStore,
+    )

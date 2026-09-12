@@ -31,7 +31,11 @@ from src.input_guard import DXFInputLimits, check_dxf_file
 from src.job_repository import build_job_repository
 from src.llm_client import LLMError
 from src.object_store import build_object_store
-from src.session_store import WorkflowSessionStore
+from src.session_store import (
+    SqliteWorkflowSessionStore,
+    WorkflowSessionStore,
+    build_session_store,
+)
 from src.task_queue import Task, build_task_queue
 from src.tenant_store import TenantError, TenantStore
 from src.units import UnitSystem
@@ -192,6 +196,11 @@ class JobManager:
         self.object_store = build_object_store(self.root / "object_store")
         self.tenant_store = TenantStore(self.root / "tenants")
         self.job_repository = build_job_repository(self.root)
+        self.session_store = build_session_store(self.root / "sessions")
+        self._sqlite_sessions = isinstance(
+            self.session_store,
+            SqliteWorkflowSessionStore,
+        )
         self.task_queue = build_task_queue(self.root / "queue")
         self._jobs: dict[str, AgentRuntime] = {}
         self._lock = threading.RLock()
@@ -207,6 +216,11 @@ class JobManager:
             request.tenant_id,
             project_id,
         ) / "runs"
+
+    def _session_store_for(self, request: JobCreateRequest):
+        if self._sqlite_sessions:
+            return self.session_store
+        return WorkflowSessionStore(self._output_dir(request))
 
     def _make_runtime(
         self,
@@ -231,6 +245,7 @@ class JobManager:
             skip_unnumbered=request.skip_unnumbered,
             object_store=self.object_store,
             artifact_object_prefix=f"jobs/{job_id}/artifacts",
+            session_store=self._session_store_for(request),
             output_dir=self._output_dir(request),
             session_id=job_id,
             restore_session=restore_session,
@@ -252,7 +267,7 @@ class JobManager:
         if payload is None:
             raise JobStateError(f"job not found: {job_id}")
         request = JobCreateRequest(**payload["request"])
-        session_store = WorkflowSessionStore(self._output_dir(request))
+        session_store = self._session_store_for(request)
         if not session_store.exists(job_id):
             raise JobStateError(f"job session missing: {job_id}")
         runtime = self._make_runtime(

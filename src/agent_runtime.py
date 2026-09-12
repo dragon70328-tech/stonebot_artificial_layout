@@ -21,7 +21,7 @@ from src.ai_planning import ToolCall
 from src.artifact_store import ArtifactStore
 from src.job_context import JobContext
 from src.object_store import ObjectStore
-from src.session_store import WorkflowSessionStore
+from src.session_store import SqliteWorkflowSessionStore, WorkflowSessionStore
 from src.tool_handlers import build_tool_handlers
 from src.units import UnitSystem
 from src.worker import Worker
@@ -50,6 +50,7 @@ class AgentRuntime:
         skip_unnumbered: bool,
         object_store: ObjectStore | None = None,
         artifact_object_prefix: str | None = None,
+        session_store: WorkflowSessionStore | SqliteWorkflowSessionStore | None = None,
         output_dir: Path | None = None,
         session_id: str | None = None,
         restore_session: WorkflowSession | None = None,
@@ -92,7 +93,7 @@ class AgentRuntime:
         self.artifact_object_prefix = (
             artifact_object_prefix or f"jobs/{self.session_id}/artifacts"
         ).rstrip("/")
-        self.store = WorkflowSessionStore(self.output_dir)
+        self.store = session_store or WorkflowSessionStore(self.output_dir)
         self.artifact_store = ArtifactStore(self.output_dir / "artifacts")
         self.provider = build_agent_plan_provider(provider_name)
         self.worker = Worker(build_tool_handlers(self.context))
