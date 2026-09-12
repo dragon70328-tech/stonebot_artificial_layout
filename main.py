@@ -79,6 +79,7 @@ from src.workflow import (
 from src.postprocess import estimate_kerf_material, validate_kerf_material
 from src.artifact_store import ArtifactStore
 from src.workflow_session import WorkflowSession, WorkflowStage
+from src.agent_cli import run_agent_mode
 # ═══════════════════════════════════════════════════════════════
 #  CLI 参数
 # ═══════════════════════════════════════════════════════════════
@@ -119,6 +120,8 @@ def parse_args():
     p.add_argument("--process", type=str, default=None,
                    choices=["bridge", "waterjet", "laser"],
                    help="加工方式：bridge=桥切机，waterjet=水刀，laser=激光")
+    p.add_argument("--agent", action="store_true",
+                   help="使用本地 agent loop 模式（带三处确认门）")
 
     # 约束覆盖（可与 --profile 组合，也可独立使用）
     p.add_argument("--rotation", type=str, default=None,
@@ -1202,6 +1205,24 @@ def main():
         convert_to_mm(raw_oversize[0], unit),
         convert_to_mm(raw_oversize[1], unit),
     )
+
+    if args.agent:
+        sys.exit(
+            run_agent_mode(
+                dxf_path,
+                width,
+                height,
+                args.thickness,
+                unit,
+                profile,
+                trials=trials,
+                seed=args.seed,
+                budget=budget,
+                quick=quick,
+                pairing=args.pairing,
+                skip_unnumbered=not args.include_unnumbered,
+            )
+        )
 
     outcome = run(
         dxf_path, width, height, args.thickness, unit,

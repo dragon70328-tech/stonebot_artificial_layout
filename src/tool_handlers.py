@@ -94,7 +94,7 @@ def _read_dxf(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
 def _audit_drawing(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
     path = _set_input_path(ctx, args)
     if ctx.drawing_profile is None:
-        raise ValueError("audit_drawing requires a matched drawing profile")
+        return {"issues": 0, "skipped": True}
     ctx.audit_issues = audit_drawing(path, ctx.drawing_profile)
     return {"issues": len(ctx.audit_issues)}
 
