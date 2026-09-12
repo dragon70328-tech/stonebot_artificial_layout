@@ -776,19 +776,17 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     stem = Path(dxf_path).stem
     out_dir = None
     store = None
-    session_artifacts: dict = {}
 
     def _track_artifact(stage: WorkflowStage, path) -> None:
         if store is None or path is None:
             return
         ref = store.track(project_id, stage.value, path)
-        session_artifacts[ref.artifact_id] = ref.to_dict()
+        session.record_artifact(ref.artifact_id, ref.to_dict())
 
     def _write_session_file() -> None:
         if out_dir is None:
             return
         payload = session.to_dict()
-        payload["artifacts"] = session_artifacts
         (out_dir / f"{stem}_workflow_session.json").write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",

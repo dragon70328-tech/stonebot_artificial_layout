@@ -67,6 +67,20 @@ class StageRecord:
             "artifact_id": self.artifact_id,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "StageRecord":
+        return cls(
+            stage=data["stage"],
+            started_at=float(data["started_at"]),
+            finished_at=(
+                float(data["finished_at"])
+                if data.get("finished_at") is not None
+                else None
+            ),
+            summary=dict(data.get("summary") or {}),
+            artifact_id=data.get("artifact_id"),
+        )
+
 
 @dataclass
 class WorkflowSession:
@@ -75,6 +89,7 @@ class WorkflowSession:
     session_id: str
     stage: WorkflowStage = WorkflowStage.UPLOADED
     history: list[StageRecord] = field(default_factory=list)
+    artifacts: dict[str, Any] = field(default_factory=dict)
 
     @property
     def current_stage(self) -> str:
@@ -203,4 +218,21 @@ class WorkflowSession:
             "session_id": self.session_id,
             "current_stage": self.current_stage,
             "history": [record.to_dict() for record in self.history],
+            "artifacts": self.artifacts,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "WorkflowSession":
+        session = cls(
+            session_id=data["session_id"],
+            stage=WorkflowStage(data.get("current_stage", WorkflowStage.UPLOADED.value)),
+            history=[
+                StageRecord.from_dict(record)
+                for record in data.get("history", [])
+            ],
+            artifacts=dict(data.get("artifacts") or {}),
+        )
+        return session
+
+    def record_artifact(self, artifact_id: str, artifact: dict[str, Any]) -> None:
+        self.artifacts[artifact_id] = artifact
