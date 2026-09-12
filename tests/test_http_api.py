@@ -61,6 +61,12 @@ def _job_request(tmp_path):
     )
 
 
+def _tenant_request(tmp_path, tenant_id):
+    payload = _job_request(tmp_path).model_dump()
+    payload["tenant_id"] = tenant_id
+    return JobCreateRequest(**payload)
+
+
 def test_job_manager_confirm_without_gate_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "src.agent_runtime.build_tool_handlers",
@@ -316,3 +322,58 @@ def test_job_manager_shutdown_stops_worker(tmp_path, monkeypatch):
 
     assert manager._worker_thread is not None
     assert manager._worker_thread.is_alive() is False
+
+
+def test_auth_requires_valid_tenant_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    monkeypatch.setattr(
+        "src.http_api.load_tenant_api_keys",
+        lambda: {"tenant-a": "secret-a"},
+    )
+    manager = SyncJobManager(tmp_path)
+    monkeypatch.setattr("src.http_api.manager", manager)
+    client = TestClient(app)
+
+    unauthorized = client.post(
+        "/jobs",
+        json=_tenant_request(tmp_path, "tenant-a").model_dump(),
+    )
+    assert unauthorized.status_code == 401
+
+    authorized = client.post(
+        "/jobs",
+        json=_tenant_request(tmp_path, "tenant-a").model_dump(),
+        headers={
+            "X-API-Key": "secret-a",
+            "X-Tenant-ID": "tenant-a",
+        },
+    )
+    assert authorized.status_code == 202
+
+
+def test_auth_rejects_tenant_mismatch(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    monkeypatch.setattr(
+        "src.http_api.load_tenant_api_keys",
+        lambda: {"tenant-a": "secret-a"},
+    )
+    manager = SyncJobManager(tmp_path)
+    monkeypatch.setattr("src.http_api.manager", manager)
+    client = TestClient(app)
+
+    response = client.post(
+        "/jobs",
+        json=_tenant_request(tmp_path, "tenant-b").model_dump(),
+        headers={
+            "X-API-Key": "secret-a",
+            "X-Tenant-ID": "tenant-a",
+        },
+    )
+
+    assert response.status_code == 403

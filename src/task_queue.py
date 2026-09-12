@@ -38,6 +38,7 @@ class Task:
     max_attempts: int = 1
     timeout_s: float = 60.0
     retry_delay_s: float = 0.0
+    sequence: int = 0
     result: Any = None
     error: str | None = None
     audit_log: list[dict[str, Any]] = field(default_factory=list)
@@ -90,6 +91,7 @@ class Task:
             "max_attempts": self.max_attempts,
             "timeout_s": self.timeout_s,
             "retry_delay_s": self.retry_delay_s,
+            "sequence": self.sequence,
             "result": self.result,
             "error": self.error,
             "audit_log": self.audit_log,
@@ -108,6 +110,7 @@ class Task:
             timeout_s=float(data.get("timeout_s", 60.0)),
             retry_delay_s=float(data.get("retry_delay_s", 0.0)),
         )
+        task.sequence = int(data.get("sequence", 0))
         task.status = TaskStatus(data["status"])
         task.attempts = int(data.get("attempts", 0))
         task.result = data.get("result")
@@ -234,6 +237,11 @@ class FileTaskQueue:
         return tasks
 
     def enqueue(self, task: Task) -> Task:
+        existing = self._load_all()
+        task.sequence = max(
+            (item.sequence for item in existing),
+            default=0,
+        ) + 1
         task._audit("enqueued")
         self._write(task)
         return task
@@ -249,7 +257,9 @@ class FileTaskQueue:
 
     def list_tasks(self) -> list[Task]:
         tasks = self._load_all()
-        tasks.sort(key=lambda task: (task.created_at, task.task_id))
+        tasks.sort(
+            key=lambda task: (task.sequence, task.created_at, task.task_id)
+        )
         return tasks
 
     def dead_letters(self) -> list[Task]:
@@ -284,10 +294,9 @@ class FileTaskQueue:
     ) -> list[Task]:
         pending = [
             task
-            for task in self._load_all()
+            for task in self.list_tasks()
             if task.status == TaskStatus.PENDING
         ]
-        pending.sort(key=lambda task: (task.created_at, task.task_id))
         results: list[Task] = []
         for task in pending:
             self._run_task(task, handlers, timeout_s)

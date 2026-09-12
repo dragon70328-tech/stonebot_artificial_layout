@@ -9,6 +9,7 @@ daemon thread so the web process stays responsive.
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -16,7 +17,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -88,6 +89,42 @@ def _safe_upload_name(filename: str) -> str:
     stem = raw_name[: -len(".dxf")]
     safe_stem = _SAFE_ID.sub("_", stem).strip("_") or "upload"
     return f"{safe_stem}.dxf"
+
+
+def load_tenant_api_keys() -> dict[str, str]:
+    raw = os.environ.get("STONEBOT_TENANT_API_KEYS")
+    if raw:
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+    single_key = os.environ.get("STONEBOT_API_KEY")
+    if single_key:
+        return {"default": single_key}
+    return {}
+
+
+def get_authenticated_tenant(
+    x_api_key: str = Header(default=""),
+    x_tenant_id: str = Header(default="default"),
+) -> str:
+    keys = load_tenant_api_keys()
+    tenant_id = x_tenant_id.strip() or "default"
+    if not keys:
+        return tenant_id
+    if not x_api_key or keys.get(tenant_id) != x_api_key:
+        raise HTTPException(status_code=401, detail="invalid tenant credentials")
+    return tenant_id
+
+
+def _ensure_tenant_match(header_tenant: str, target_tenant: str) -> None:
+    if not load_tenant_api_keys():
+        return
+    if header_tenant != target_tenant:
+        raise HTTPException(
+            status_code=403,
+            detail="tenant mismatch",
+        )
 
 
 class JobManager:
@@ -189,6 +226,13 @@ class JobManager:
         )
         return runtime
 
+    def tenant_for_job(self, job_id: str) -> str:
+        manifest_path = self._manifest_path(job_id)
+        if not manifest_path.exists():
+            raise JobStateError(f"job not found: {job_id}")
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        return payload["request"].get("tenant_id", "default")
+
     def _task_handlers(self) -> dict[str, Any]:
         return {
             "run_job": lambda payload: self.get(
@@ -261,10 +305,16 @@ class JobManager:
                 self._jobs[job_id] = runtime
             return runtime
 
-    def list_jobs(self) -> list[dict[str, Any]]:
+    def list_jobs(self, tenant_id: str | None = None) -> list[dict[str, Any]]:
         with self._lock:
             job_ids = {path.stem for path in self.jobs_root.glob("*.json")}
             job_ids.update(self._jobs)
+            if tenant_id is not None:
+                job_ids = {
+                    job_id
+                    for job_id in job_ids
+                    if self.tenant_for_job(job_id) == tenant_id
+                }
             return [
                 {
                     "job_id": job_id,
@@ -361,6 +411,14 @@ app = FastAPI(title="Stonebot Nesting Agent API", version="0.1.0")
 manager = JobManager(PROJECT_ROOT / "output" / "api_jobs")
 
 
+def _require_job_tenant(job_id: str, tenant: str) -> None:
+    try:
+        actual_tenant = manager.tenant_for_job(job_id)
+    except JobStateError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _ensure_tenant_match(tenant, actual_tenant)
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -372,7 +430,9 @@ async def upload_input(
     request: Request,
     tenant_id: str = "default",
     project_id: str = "uploads",
+    tenant: str = Depends(get_authenticated_tenant),
 ) -> JSONResponse:
+    _ensure_tenant_match(tenant, tenant_id)
     safe_name = _safe_upload_name(filename)
     data = await request.body()
     limits = DXFInputLimits()
@@ -408,7 +468,11 @@ async def upload_input(
 
 
 @app.post("/jobs", status_code=202)
-def create_job(request: JobCreateRequest) -> JSONResponse:
+def create_job(
+    request: JobCreateRequest,
+    tenant: str = Depends(get_authenticated_tenant),
+) -> JSONResponse:
+    _ensure_tenant_match(tenant, request.tenant_id)
     try:
         runtime = manager.create(request)
     except (LLMError, TenantError, ValueError) as exc:
@@ -417,12 +481,18 @@ def create_job(request: JobCreateRequest) -> JSONResponse:
 
 
 @app.get("/jobs")
-def list_jobs() -> dict[str, Any]:
-    return {"jobs": manager.list_jobs()}
+def list_jobs(
+    tenant: str = Depends(get_authenticated_tenant),
+) -> dict[str, Any]:
+    return {"jobs": manager.list_jobs(tenant)}
 
 
 @app.get("/jobs/{job_id}")
-def get_job(job_id: str) -> dict[str, Any]:
+def get_job(
+    job_id: str,
+    tenant: str = Depends(get_authenticated_tenant),
+) -> dict[str, Any]:
+    _require_job_tenant(job_id, tenant)
     try:
         return manager.get(job_id).status()
     except JobStateError as exc:
@@ -430,7 +500,11 @@ def get_job(job_id: str) -> dict[str, Any]:
 
 
 @app.get("/jobs/{job_id}/tasks")
-def list_job_tasks(job_id: str) -> dict[str, Any]:
+def list_job_tasks(
+    job_id: str,
+    tenant: str = Depends(get_authenticated_tenant),
+) -> dict[str, Any]:
+    _require_job_tenant(job_id, tenant)
     try:
         manager.get(job_id)
     except JobStateError as exc:
@@ -442,7 +516,12 @@ def list_job_tasks(job_id: str) -> dict[str, Any]:
 
 
 @app.post("/jobs/{job_id}/tasks/{task_id}/retry", status_code=202)
-def retry_job_task(job_id: str, task_id: str) -> JSONResponse:
+def retry_job_task(
+    job_id: str,
+    task_id: str,
+    tenant: str = Depends(get_authenticated_tenant),
+) -> JSONResponse:
+    _require_job_tenant(job_id, tenant)
     try:
         task = manager.retry_task(job_id, task_id)
     except JobStateError as exc:
@@ -455,7 +534,12 @@ def retry_job_task(job_id: str, task_id: str) -> JSONResponse:
 
 
 @app.get("/jobs/{job_id}/artifacts/{artifact_name}")
-def download_artifact(job_id: str, artifact_name: str) -> FileResponse:
+def download_artifact(
+    job_id: str,
+    artifact_name: str,
+    tenant: str = Depends(get_authenticated_tenant),
+) -> FileResponse:
+    _require_job_tenant(job_id, tenant)
     try:
         runtime = manager.get(job_id)
     except JobStateError as exc:
@@ -474,7 +558,12 @@ def download_artifact(job_id: str, artifact_name: str) -> FileResponse:
 
 
 @app.post("/jobs/{job_id}/confirm")
-def confirm_job(job_id: str, request: ConfirmationRequest) -> JSONResponse:
+def confirm_job(
+    job_id: str,
+    request: ConfirmationRequest,
+    tenant: str = Depends(get_authenticated_tenant),
+) -> JSONResponse:
+    _require_job_tenant(job_id, tenant)
     try:
         runtime = manager.confirm(job_id, request.decision)
     except JobStateError as exc:
@@ -483,7 +572,11 @@ def confirm_job(job_id: str, request: ConfirmationRequest) -> JSONResponse:
 
 
 @app.post("/jobs/{job_id}/run", status_code=202)
-def run_job(job_id: str) -> JSONResponse:
+def run_job(
+    job_id: str,
+    tenant: str = Depends(get_authenticated_tenant),
+) -> JSONResponse:
+    _require_job_tenant(job_id, tenant)
     try:
         runtime = manager.run(job_id)
     except JobStateError as exc:
@@ -492,7 +585,11 @@ def run_job(job_id: str) -> JSONResponse:
 
 
 @app.post("/jobs/{job_id}/cancel")
-def cancel_job(job_id: str) -> dict[str, Any]:
+def cancel_job(
+    job_id: str,
+    tenant: str = Depends(get_authenticated_tenant),
+) -> dict[str, Any]:
+    _require_job_tenant(job_id, tenant)
     try:
         return manager.cancel(job_id).status()
     except JobStateError as exc:
