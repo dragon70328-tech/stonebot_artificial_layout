@@ -25,6 +25,7 @@ class TaskStatus(str, Enum):
     FAILED = "failed"
     TIMED_OUT = "timed_out"
     DEGRADED = "degraded"
+    DEAD_LETTER = "dead_letter"
 
 
 @dataclass
@@ -66,6 +67,12 @@ class Task:
         self.error = error
         self.finished_at = time.time()
         self._audit(self.status.value, error=error)
+
+    def mark_dead_letter(self, error: str) -> None:
+        self.status = TaskStatus.DEAD_LETTER
+        self.error = error
+        self.finished_at = time.time()
+        self._audit("dead_letter", error=error)
 
     def mark_timed_out(self) -> None:
         self.status = TaskStatus.TIMED_OUT
@@ -153,7 +160,10 @@ def _run_task_with_retry(
             if task.retry_delay_s:
                 time.sleep(task.retry_delay_s * task.attempts)
         else:
-            task.mark_failed(last_error)
+            if task.max_attempts > 1:
+                task.mark_dead_letter(last_error)
+            else:
+                task.mark_failed(last_error)
 
 
 class InMemoryTaskQueue:
@@ -236,6 +246,18 @@ class FileTaskQueue:
 
     def has_pending(self) -> bool:
         return any(task.status == TaskStatus.PENDING for task in self._load_all())
+
+    def list_tasks(self) -> list[Task]:
+        tasks = self._load_all()
+        tasks.sort(key=lambda task: (task.created_at, task.task_id))
+        return tasks
+
+    def dead_letters(self) -> list[Task]:
+        return [
+            task
+            for task in self.list_tasks()
+            if task.status == TaskStatus.DEAD_LETTER
+        ]
 
     def run_all(
         self,

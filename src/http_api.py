@@ -283,6 +283,13 @@ class JobManager:
                 for job_id in sorted(job_ids)
             ]
 
+    def list_tasks(self, job_id: str) -> list[dict[str, Any]]:
+        return [
+            task.to_dict()
+            for task in self.task_queue.list_tasks()
+            if task.payload.get("job_id") == job_id
+        ]
+
     def confirm(
         self,
         job_id: str,
@@ -407,6 +414,18 @@ def get_job(job_id: str) -> dict[str, Any]:
         return manager.get(job_id).status()
     except JobStateError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/jobs/{job_id}/tasks")
+def list_job_tasks(job_id: str) -> dict[str, Any]:
+    try:
+        manager.get(job_id)
+    except JobStateError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "job_id": job_id,
+        "tasks": manager.list_tasks(job_id),
+    }
 
 
 @app.get("/jobs/{job_id}/artifacts/{artifact_name}")

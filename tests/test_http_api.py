@@ -243,3 +243,29 @@ def test_background_job_is_driven_by_file_queue(tmp_path, monkeypatch):
     assert manager.get(runtime.session_id).session.current_stage == "audited"
     assert manager.task_queue.has_pending() is False
     manager._stop_event.set()
+
+
+def test_list_job_tasks_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    manager = JobManager(tmp_path)
+    monkeypatch.setattr("src.http_api.manager", manager)
+    client = TestClient(app)
+
+    runtime = manager.create(_job_request(tmp_path), run_in_background=True)
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if manager.get(runtime.session_id).session.current_stage == "audited":
+            break
+        time.sleep(0.05)
+
+    response = client.get(f"/jobs/{runtime.session_id}/tasks")
+
+    assert response.status_code == 200
+    tasks = response.json()["tasks"]
+    assert len(tasks) == 1
+    assert tasks[0]["task_type"] == "run_job"
+    assert tasks[0]["status"] == "succeeded"
+    manager._stop_event.set()
