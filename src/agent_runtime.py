@@ -20,6 +20,7 @@ from src.agent_loop import AgentLoop, AgentLoopResult
 from src.ai_planning import ToolCall
 from src.artifact_store import ArtifactStore
 from src.job_context import JobContext
+from src.object_store import ObjectStore
 from src.session_store import WorkflowSessionStore
 from src.tool_handlers import build_tool_handlers
 from src.units import UnitSystem
@@ -47,6 +48,8 @@ class AgentRuntime:
         quick: bool,
         pairing: bool,
         skip_unnumbered: bool,
+        object_store: ObjectStore | None = None,
+        artifact_object_prefix: str | None = None,
         output_dir: Path | None = None,
         session_id: str | None = None,
         restore_session: WorkflowSession | None = None,
@@ -85,6 +88,10 @@ class AgentRuntime:
         self.session = restore_session or WorkflowSession(
             session_id=self.session_id
         )
+        self.object_store = object_store
+        self.artifact_object_prefix = (
+            artifact_object_prefix or f"jobs/{self.session_id}/artifacts"
+        ).rstrip("/")
         self.store = WorkflowSessionStore(self.output_dir)
         self.artifact_store = ArtifactStore(self.output_dir / "artifacts")
         self.provider = build_agent_plan_provider(provider_name)
@@ -237,7 +244,20 @@ class AgentRuntime:
                 self.session.current_stage,
                 path,
             )
-            self.session.artifacts[key] = ref.to_dict()
+            artifact = ref.to_dict()
+            if self.object_store is not None:
+                try:
+                    object_key = (
+                        f"{self.artifact_object_prefix}/{key}/{Path(path).name}"
+                    )
+                    object_ref = self.object_store.put_bytes(
+                        object_key,
+                        Path(path).read_bytes(),
+                    )
+                    artifact["object_key"] = object_ref["key"]
+                except Exception:  # noqa: BLE001 - local path remains fallback
+                    pass
+            self.session.artifacts[key] = artifact
 
     def status(self) -> dict[str, Any]:
         snapshot = self.context.snapshot()

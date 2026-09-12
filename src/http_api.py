@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from src.agent_loop import AgentLoopResult
@@ -29,6 +29,7 @@ from src.artifact_store import content_digest
 from src.constraints import PROFILE_MIN_SHEETS, PROFILES
 from src.input_guard import DXFInputLimits, check_dxf_file
 from src.llm_client import LLMError
+from src.object_store import build_object_store
 from src.session_store import WorkflowSessionStore
 from src.task_queue import FileTaskQueue, Task
 from src.tenant_store import TenantError, TenantStore
@@ -91,6 +92,12 @@ def _safe_upload_name(filename: str) -> str:
     stem = raw_name[: -len(".dxf")]
     safe_stem = _SAFE_ID.sub("_", stem).strip("_") or "upload"
     return f"{safe_stem}.dxf"
+
+
+def _safe_download_name(filename: str) -> str:
+    raw_name = Path(filename).name
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", raw_name).strip("._")
+    return safe_name or "artifact"
 
 
 def load_tenant_api_keys() -> dict[str, Any]:
@@ -181,6 +188,7 @@ class JobManager:
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
+        self.object_store = build_object_store(self.root / "object_store")
         self.tenant_store = TenantStore(self.root / "tenants")
         self.jobs_root = self.root / "jobs"
         self.jobs_root.mkdir(parents=True, exist_ok=True)
@@ -225,6 +233,8 @@ class JobManager:
             quick=request.quick,
             pairing=request.pairing,
             skip_unnumbered=request.skip_unnumbered,
+            object_store=self.object_store,
+            artifact_object_prefix=f"jobs/{job_id}/artifacts",
             output_dir=self._output_dir(request),
             session_id=job_id,
             restore_session=restore_session,
@@ -280,6 +290,50 @@ class JobManager:
             raise JobStateError(f"job not found: {job_id}")
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         return payload["request"].get("tenant_id", "default")
+
+    def store_input(
+        self,
+        tenant_id: str,
+        project_id: str,
+        safe_name: str,
+        data: bytes,
+    ) -> tuple[Path, dict[str, object]]:
+        """Persist an uploaded DXF in object storage and materialize a local copy."""
+        self.tenant_store.create_project(tenant_id, project_id)
+        object_key = (
+            f"tenants/{tenant_id}/projects/{project_id}/inputs/{safe_name}"
+        )
+        object_ref = self.object_store.put_bytes(object_key, data)
+
+        working_dir = self.tenant_store.project_dir(tenant_id, project_id) / "inputs"
+        working_dir.mkdir(parents=True, exist_ok=True)
+        digest = content_digest(data)
+        path = working_dir / f"{Path(safe_name).stem}_{digest[:12]}.dxf"
+        path.write_bytes(self.object_store.get_bytes(str(object_ref["key"])))
+        return path, object_ref
+
+    def get_artifact_bytes(
+        self,
+        job_id: str,
+        artifact_name: str,
+    ) -> tuple[bytes, str]:
+        """Read artifact bytes from object storage, falling back to local disk."""
+        runtime = self.get(job_id)
+        artifact = runtime.session.artifacts.get(artifact_name)
+        if not isinstance(artifact, dict):
+            raise JobStateError("artifact not found")
+
+        object_key = artifact.get("object_key")
+        if object_key and self.object_store.exists(str(object_key)):
+            filename = Path(str(artifact.get("path", ""))).name or (
+                f"{artifact_name}.dxf"
+            )
+            return self.object_store.get_bytes(str(object_key)), filename
+
+        path = Path(str(artifact.get("path", "")))
+        if not path.exists() or not path.is_file():
+            raise JobStateError("artifact file missing")
+        return path.read_bytes(), path.name
 
     def _task_handlers(self) -> dict[str, Any]:
         return {
@@ -505,23 +559,26 @@ async def upload_input(
 
     digest = content_digest(data)
     try:
-        manager.tenant_store.create_project(tenant_id, project_id)
+        path, object_ref = manager.store_input(
+            tenant_id,
+            project_id,
+            safe_name,
+            data,
+        )
     except TenantError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    upload_root = manager.tenant_store.project_dir(tenant_id, project_id) / "inputs"
-    upload_root.mkdir(parents=True, exist_ok=True)
-    path = upload_root / f"{Path(safe_name).stem}_{digest[:12]}.dxf"
-    path.write_bytes(data)
 
     violations = check_dxf_file(path, limits)
     if violations:
         path.unlink(missing_ok=True)
+        manager.object_store.delete(str(object_ref["key"]))
         raise HTTPException(status_code=400, detail="; ".join(violations))
 
     return JSONResponse(
         status_code=201,
         content={
             "dxf_path": str(path),
+            "object_key": object_ref["key"],
             "bytes": len(data),
             "digest": digest,
         },
@@ -601,22 +658,19 @@ def download_artifact(
     job_id: str,
     artifact_name: str,
     tenant: TenantAuth = Depends(get_authenticated_tenant),
-) -> FileResponse:
+) -> Response:
     _require_job_tenant(job_id, tenant)
     try:
-        runtime = manager.get(job_id)
+        data, filename = manager.get_artifact_bytes(job_id, artifact_name)
     except JobStateError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    artifact = runtime.session.artifacts.get(artifact_name)
-    if not isinstance(artifact, dict):
-        raise HTTPException(status_code=404, detail="artifact not found")
-    path = Path(artifact.get("path", ""))
-    if not path.exists() or not path.is_file():
-        raise HTTPException(status_code=404, detail="artifact file missing")
-    return FileResponse(
-        path,
-        filename=path.name,
+    safe_filename = _safe_download_name(filename)
+    return Response(
+        content=data,
         media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_filename}"',
+        },
     )
 
 

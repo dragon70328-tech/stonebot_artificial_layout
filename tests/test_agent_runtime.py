@@ -1,5 +1,6 @@
 from src.agent_runtime import AgentRuntime
 from src.constraints import PROFILE_MIN_SHEETS
+from src.object_store import LocalObjectStore
 from src.units import UnitSystem
 from src.workflow_session import WorkflowSession, WorkflowStage
 
@@ -108,6 +109,20 @@ def test_agent_runtime_records_existing_artifacts(tmp_path, monkeypatch):
     assert ref["path"] == str(artifact_path)
     assert ref["digest"]
     assert "session_artifacts" in runtime.status()
+
+
+def test_agent_runtime_records_object_key_for_artifact(tmp_path, monkeypatch):
+    runtime = _make_runtime(tmp_path, monkeypatch)
+    artifact_path = tmp_path / "numbered.dxf"
+    artifact_path.write_text("fake dxf", encoding="utf-8")
+    runtime.context.numbered_dxf_path = artifact_path
+    runtime.object_store = LocalObjectStore(tmp_path / "objects")
+
+    runtime._record_artifacts()
+
+    ref = runtime.session.artifacts["numbered_dxf"]
+    assert ref["object_key"].startswith("jobs/runtime-1/artifacts/")
+    assert runtime.object_store.get_bytes(ref["object_key"]) == b"fake dxf"
 
 
 def test_agent_runtime_resume_from_non_gate_stage(tmp_path, monkeypatch):

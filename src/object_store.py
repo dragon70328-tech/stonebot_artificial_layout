@@ -7,6 +7,7 @@ be replaced by an S3-compatible backend without changing callers.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Protocol
 
@@ -62,3 +63,104 @@ class LocalObjectStore:
     def delete(self, key: str) -> None:
         path = self._safe_path(key)
         path.unlink(missing_ok=True)
+
+
+class S3ObjectStore:
+    """S3-compatible object store using the optional ``boto3`` dependency."""
+
+    def __init__(
+        self,
+        bucket: str,
+        *,
+        endpoint_url: str | None = None,
+        region: str | None = None,
+        prefix: str = "",
+        access_key_id: str | None = None,
+        secret_access_key: str | None = None,
+    ) -> None:
+        try:
+            import boto3
+            from botocore.exceptions import ClientError
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError(
+                "S3ObjectStore requires boto3; install boto3 to use "
+                "STONEBOT_OBJECT_STORE=s3"
+            ) from exc
+
+        self._client_error = ClientError
+        self.bucket = bucket
+        self.prefix = prefix.strip("/")
+        self.client = boto3.client(
+            "s3",
+            endpoint_url=endpoint_url,
+            region_name=region,
+            aws_access_key_id=access_key_id,
+            aws_secret_access_key=secret_access_key,
+        )
+
+    def _key(self, key: str) -> str:
+        clean = key.replace("\\", "/").lstrip("/")
+        if (
+            not clean
+            or clean == ".."
+            or clean.startswith("../")
+            or "/../" in clean
+        ):
+            raise ValueError(f"object key escapes store prefix: {key!r}")
+        return f"{self.prefix}/{clean}" if self.prefix else clean
+
+    def put_bytes(self, key: str, data: bytes) -> dict[str, object]:
+        object_key = self._key(key)
+        self.client.put_object(Bucket=self.bucket, Key=object_key, Body=data)
+        return {
+            "key": object_key,
+            "size": len(data),
+            "store": "s3",
+            "bucket": self.bucket,
+        }
+
+    def get_bytes(self, key: str) -> bytes:
+        response = self.client.get_object(
+            Bucket=self.bucket,
+            Key=self._key(key),
+        )
+        return response["Body"].read()
+
+    def exists(self, key: str) -> bool:
+        try:
+            self.client.head_object(Bucket=self.bucket, Key=self._key(key))
+        except self._client_error as exc:
+            error_code = str(exc.response.get("Error", {}).get("Code", ""))
+            if error_code in {"404", "NoSuchKey", "NotFound"}:
+                return False
+            raise
+        return True
+
+    def delete(self, key: str) -> None:
+        self.client.delete_object(Bucket=self.bucket, Key=self._key(key))
+
+
+def build_object_store(root: str | Path | None = None) -> ObjectStore:
+    """Create the configured object store.
+
+    Defaults to a local filesystem store. Set ``STONEBOT_OBJECT_STORE=s3`` or
+    ``STONEBOT_S3_BUCKET`` to select the S3-compatible adapter. Optional S3
+    settings are read from the corresponding ``STONEBOT_S3_*`` environment
+    variables.
+    """
+    mode = os.environ.get("STONEBOT_OBJECT_STORE", "local").strip().lower()
+    bucket = os.environ.get("STONEBOT_S3_BUCKET")
+    if mode == "s3" or bucket:
+        if not bucket:
+            raise RuntimeError(
+                "STONEBOT_S3_BUCKET is required when STONEBOT_OBJECT_STORE=s3"
+            )
+        return S3ObjectStore(
+            bucket,
+            endpoint_url=os.environ.get("STONEBOT_S3_ENDPOINT_URL"),
+            region=os.environ.get("STONEBOT_S3_REGION"),
+            prefix=os.environ.get("STONEBOT_S3_PREFIX", ""),
+            access_key_id=os.environ.get("STONEBOT_S3_ACCESS_KEY_ID"),
+            secret_access_key=os.environ.get("STONEBOT_S3_SECRET_ACCESS_KEY"),
+        )
+    return LocalObjectStore(root or Path("output") / "object_store")

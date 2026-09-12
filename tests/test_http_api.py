@@ -131,7 +131,8 @@ def test_http_health(tmp_path, monkeypatch):
 
 
 def test_upload_input_accepts_dxf_bytes(tmp_path, monkeypatch):
-    monkeypatch.setattr("src.http_api.manager", SyncJobManager(tmp_path))
+    manager = SyncJobManager(tmp_path)
+    monkeypatch.setattr("src.http_api.manager", manager)
     client = TestClient(app)
 
     response = client.post(
@@ -146,8 +147,12 @@ def test_upload_input_accepts_dxf_bytes(tmp_path, monkeypatch):
     assert body["dxf_path"].endswith(".dxf")
     assert body["bytes"] > 0
     assert body["digest"]
+    assert body["object_key"].startswith(
+        "tenants/tenant-a/projects/project-1/inputs/"
+    )
     assert "tenant-a" in body["dxf_path"]
     assert "project-1" in body["dxf_path"]
+    assert manager.object_store.exists(body["object_key"]) is True
 
 
 def test_upload_input_rejects_non_dxf(tmp_path, monkeypatch):
@@ -211,6 +216,35 @@ def test_download_artifact(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert response.content == b'{"sheets": 2}'
+
+
+def test_download_artifact_prefers_object_store(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    manager = SyncJobManager(tmp_path)
+    monkeypatch.setattr("src.http_api.manager", manager)
+    client = TestClient(app)
+
+    runtime = manager.create(_job_request(tmp_path), run_in_background=False)
+    object_key = (
+        f"jobs/{runtime.session_id}/artifacts/report/report.json"
+    )
+    manager.object_store.put_bytes(object_key, b'{"sheets": 3}')
+    runtime.session.artifacts["report"] = {
+        "path": str(tmp_path / "missing.json"),
+        "object_key": object_key,
+        "digest": "object-store-digest",
+    }
+
+    response = client.get(
+        f"/jobs/{runtime.session_id}/artifacts/report",
+    )
+
+    assert response.status_code == 200
+    assert response.content == b'{"sheets": 3}'
+    assert "missing.json" in response.headers["content-disposition"]
 
 
 def test_run_endpoint_resumes_non_gate_job(tmp_path, monkeypatch):
