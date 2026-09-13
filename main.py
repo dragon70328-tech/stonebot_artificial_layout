@@ -199,11 +199,12 @@ def parse_args():
 #  辅助
 # ═══════════════════════════════════════════════════════════════
 
-def make_output_dir(dxf_path: str) -> Path:
+def make_output_dir(dxf_path: str, *, root: Path | None = None) -> Path:
     """按 时间戳_文件名 创建输出子目录"""
     stem = Path(dxf_path).stem
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = PROJECT_ROOT / "output" / f"{ts}_{stem}"
+    base_dir = root if root is not None else PROJECT_ROOT / "output"
+    out_dir = base_dir / f"{ts}_{stem}"
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
 
@@ -699,7 +700,8 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         reader_options: dict | None = None,
         input_limits=None,
         kerf_mm: float = 0.0,
-        sheet_oversize: tuple[float, float] | None = None) -> None:
+        sheet_oversize: tuple[float, float] | None = None,
+        output_root: Path | None = None) -> None:
     """核心排板流程"""
     if profile is None:
         profile = PROFILE_MIN_SHEETS
@@ -799,7 +801,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         )
 
     if not report_only:
-        out_dir = make_output_dir(dxf_path)
+        out_dir = make_output_dir(dxf_path, root=output_root)
         store = ArtifactStore(out_dir)
         recognized_json = out_dir / f"{stem}_recognized.json"
         recognized_json.write_text(

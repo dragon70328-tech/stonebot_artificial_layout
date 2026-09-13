@@ -9,6 +9,7 @@ daemon thread so the web process stays responsive.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import re
@@ -22,16 +23,21 @@ from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from src.agent_loop import AgentLoopResult
 from src.agent_runtime import AgentRuntime
 from src.artifact_store import content_digest
 from src.constraints import PROFILE_MIN_SHEETS, PROFILES
+from src.conversation_planner import ConversationPlanner
+from src.conversation_store import ConversationStore
+from src.dxf_writer import write_nested_dxf
 from src.input_guard import DXFInputLimits, check_dxf_file
 from src.job_repository import build_job_repository
 from src.llm_client import LLMError
 from src.object_store import build_object_store
+from src.nesting_reviewer import find_reductions, load_nested_dxf
 from src.session_store import (
     SqliteWorkflowSessionStore,
     WorkflowSessionStore,
@@ -46,7 +52,14 @@ from src.workflow_session import WorkflowStage
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PORTAL_NESTING_DIR = PROJECT_ROOT / "portal" / "nesting"
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_-]+")
+logger = logging.getLogger("stonebot.api")
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=os.environ.get("STONEBOT_LOG_LEVEL", "INFO"),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
 
 
 class JobCreateRequest(BaseModel):
@@ -70,6 +83,20 @@ class JobCreateRequest(BaseModel):
 
 class ConfirmationRequest(BaseModel):
     decision: str
+
+
+class ReviewRequest(BaseModel):
+    max_reductions: int = 1
+
+
+class ConversationCreateRequest(BaseModel):
+    tenant_id: str = "default"
+
+
+class ConversationMessageRequest(BaseModel):
+    role: Literal["user", "assistant"] = "user"
+    content: str
+    attachments: list[dict[str, Any]] | None = None
 
 
 class JobStateError(RuntimeError):
@@ -178,6 +205,26 @@ def _ensure_tenant_match(auth: TenantAuth, target_tenant: str) -> None:
             status_code=403,
             detail="tenant mismatch",
         )
+
+
+def _latest_attachment_path(conversation) -> str | None:
+    """Return the newest local DXF path attached to a conversation."""
+    for message in reversed(conversation.messages):
+        for attachment in reversed(message.attachments or []):
+            if not isinstance(attachment, dict):
+                continue
+            for key in ("dxf_path", "local_path", "path", "file_path"):
+                value = attachment.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+    return None
+
+
+def _resolve_conversation_job(conversation, intent: dict[str, Any]) -> str:
+    job_id = intent.get("job_id") or conversation.job_id
+    if not job_id:
+        raise HTTPException(status_code=400, detail="job_id is required")
+    return str(job_id)
 
 
 def _require_role(auth: TenantAuth, role: str) -> None:
@@ -369,6 +416,10 @@ class JobManager:
             "confirm_job": lambda payload: self.get(
                 payload["job_id"]
             ).confirm(payload["decision"]).to_dict(),
+            "review_job": lambda payload: self.review(
+                payload["job_id"],
+                int(payload.get("max_reductions", 1)),
+            ),
         }
 
     def _enqueue_action(self, task_type: str, payload: dict[str, Any]) -> None:
@@ -459,6 +510,13 @@ class JobManager:
 
     def _ensure_worker(self) -> None:
         if (
+            os.environ.get("STONEBOT_WORKER_ENABLED", "1")
+            .strip()
+            .lower()
+            in {"0", "false", "no"}
+        ):
+            return
+        if (
             self._worker_thread is not None
             and self._worker_thread.is_alive()
         ):
@@ -504,6 +562,7 @@ class JobManager:
         with self._lock:
             self._jobs[runtime.session_id] = runtime
             self._write_manifest(runtime, request)
+            runtime.store.save(runtime.session)
         if run_in_background:
             self._enqueue_action(
                 "run_job",
@@ -622,8 +681,102 @@ class JobManager:
         runtime.cancel()
         return runtime
 
+    def review(
+        self,
+        job_id: str,
+        max_reductions: int = 1,
+    ) -> dict[str, Any]:
+        """Run the post-nesting local reviewer against an existing nested DXF."""
+        runtime = self.get(job_id)
+        nested_path = Path(
+            runtime.context.nested_dxf_path
+            or runtime.nested_path
+        )
+        if not nested_path.exists():
+            raise JobStateError("nested dxf artifact not found")
 
-manager = JobManager(PROJECT_ROOT / "output" / "api_jobs")
+        result = load_nested_dxf(
+            nested_path,
+            thickness=runtime.context.thickness_mm,
+        )
+        profile = runtime.context.nesting_profile
+        candidates, reduced = find_reductions(
+            result,
+            profile=profile,
+            max_reductions=max_reductions,
+        )
+        if not candidates:
+            return {
+                "reviewed": False,
+                "original_total_sheets": result.total_sheets,
+                "reduced_total_sheets": result.total_sheets,
+                "reductions": [],
+                "artifacts": {},
+            }
+
+        stem = nested_path.stem
+        out_dxf = runtime.output_dir / f"{stem}_reviewed.dxf"
+        out_report = runtime.output_dir / f"{stem}_reviewed.json"
+        write_nested_dxf(reduced, str(out_dxf), unit_system=result.unit)
+        report_payload = {
+            "original_total_sheets": result.total_sheets,
+            "reduced_total_sheets": reduced.total_sheets,
+            "reductions": [
+                {
+                    "removed_sheet_index": candidate.removed_sheet_index,
+                    "moved_parts": candidate.moved_parts,
+                    "target_sheets": candidate.target_sheets,
+                }
+                for candidate in candidates
+            ],
+        }
+        out_report.write_text(
+            json.dumps(report_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        project_id = runtime.context.project_id or runtime.dxf_path.stem
+        artifacts = {}
+        for key, path in (
+            ("reviewed_dxf", out_dxf),
+            ("review_report", out_report),
+        ):
+            ref = runtime.artifact_store.track(
+                project_id,
+                runtime.session.current_stage,
+                path,
+            )
+            artifact = ref.to_dict()
+            if runtime.object_store is not None:
+                object_key = (
+                    f"{runtime.artifact_object_prefix}/{key}/{path.name}"
+                )
+                object_ref = runtime.object_store.put_bytes(
+                    object_key,
+                    path.read_bytes(),
+                )
+                artifact["object_key"] = object_ref["key"]
+            runtime.session.artifacts[key] = artifact
+            artifacts[key] = artifact
+        runtime.store.save(runtime.session)
+        return {
+            "reviewed": True,
+            "original_total_sheets": result.total_sheets,
+            "reduced_total_sheets": reduced.total_sheets,
+            "reductions": report_payload["reductions"],
+            "artifacts": artifacts,
+        }
+
+
+manager = JobManager(
+    Path(
+        os.environ.get(
+            "STONEBOT_DATA_ROOT",
+            str(PROJECT_ROOT / "output" / "api_jobs"),
+        )
+    )
+)
+conversation_store = ConversationStore(manager.root / "conversations")
 
 
 @asynccontextmanager
@@ -649,7 +802,229 @@ def _require_job_tenant(job_id: str, auth: TenantAuth) -> None:
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "service": "stonebot-nesting-api",
+        "data_root": str(manager.root),
+    }
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    logger.info(
+        "%s %s -> %s %.1fms",
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed_ms,
+    )
+    return response
+
+
+@app.post("/conversations", status_code=201)
+def create_conversation(
+    request: ConversationCreateRequest,
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
+) -> JSONResponse:
+    _ensure_tenant_match(tenant, request.tenant_id)
+    conversation = conversation_store.create(request.tenant_id)
+    return JSONResponse(
+        status_code=201,
+        content=conversation.to_dict(),
+    )
+
+
+@app.get("/conversations")
+def list_conversations(
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
+) -> dict[str, Any]:
+    return {
+        "conversations": [
+            conversation.to_dict()
+            for conversation in conversation_store.list(tenant.tenant_id)
+        ]
+    }
+
+
+@app.get("/conversations/{conversation_id}")
+def get_conversation(
+    conversation_id: str,
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
+) -> dict[str, Any]:
+    conversation = conversation_store.get(tenant.tenant_id, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    return conversation.to_dict()
+
+
+@app.get("/conversations/{conversation_id}/artifacts")
+def get_conversation_artifacts(
+    conversation_id: str,
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
+) -> dict[str, Any]:
+    conversation = conversation_store.get(tenant.tenant_id, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    if not conversation.job_id:
+        return {"job_id": None, "artifacts": {}}
+    _require_job_tenant(conversation.job_id, tenant)
+    try:
+        status = manager.get(conversation.job_id).status()
+    except JobStateError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "job_id": conversation.job_id,
+        "artifacts": status.get("artifacts") or {},
+        "session_artifacts": status.get("session_artifacts") or {},
+    }
+
+
+@app.post("/conversations/{conversation_id}/messages", status_code=201)
+def add_conversation_message(
+    conversation_id: str,
+    request: ConversationMessageRequest,
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
+) -> JSONResponse:
+    message = conversation_store.add_message(
+        tenant.tenant_id,
+        conversation_id,
+        role=request.role,
+        content=request.content,
+        attachments=request.attachments,
+    )
+    if message is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    return JSONResponse(status_code=201, content=message.__dict__)
+
+
+@app.post("/conversations/{conversation_id}/respond", status_code=202)
+def respond_to_conversation(
+    conversation_id: str,
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
+) -> JSONResponse:
+    conversation = conversation_store.get(tenant.tenant_id, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+
+    messages = [
+        {
+            "role": message.role,
+            "content": message.content,
+            "attachments": message.attachments,
+        }
+        for message in conversation.messages
+    ]
+    attachments = [
+        attachment
+        for message in conversation.messages
+        for attachment in message.attachments
+    ]
+    try:
+        intent = ConversationPlanner().plan(
+            messages,
+            attachments=attachments,
+        )
+    except LLMError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    action = intent["action"]
+    try:
+        if action == "create_job":
+            dxf_path = intent.get("dxf_path") or _latest_attachment_path(
+                conversation
+            )
+            if not dxf_path:
+                raise HTTPException(status_code=400, detail="dxf_path is required")
+            request = JobCreateRequest(
+                dxf_path=str(dxf_path),
+                tenant_id=tenant.tenant_id,
+                width_mm=float(intent["width_mm"]),
+                height_mm=float(intent["height_mm"]),
+                thickness_mm=float(intent.get("thickness_mm", 20.0)),
+                unit=intent.get("unit", "metric"),
+                profile=intent.get("profile", "min_sheets"),
+                process=intent.get("process"),
+                provider=intent.get("provider", "queue"),
+                trials=int(intent.get("trials", 1)),
+                seed=int(intent.get("seed", 0)),
+                budget=float(intent.get("budget", 0.0)),
+                quick=bool(intent.get("quick", True)),
+                pairing=bool(intent.get("pairing", False)),
+                skip_unnumbered=bool(intent.get("skip_unnumbered", True)),
+            )
+            runtime = manager.create(request, run_in_background=True)
+            conversation_store.set_job_id(
+                tenant.tenant_id,
+                conversation_id,
+                runtime.session_id,
+            )
+            assistant_content = (
+                f"已创建识图排板任务 {runtime.session_id}，"
+                f"当前阶段：{runtime.session.current_stage}"
+            )
+            result_payload = runtime.status()
+        elif action == "review_job":
+            job_id = _resolve_conversation_job(conversation, intent)
+            result_payload = manager.review(
+                job_id,
+                max_reductions=int(intent.get("max_reductions", 1)),
+            )
+            assistant_content = (
+                f"回看完成：{result_payload.get('original_total_sheets')} -> "
+                f"{result_payload.get('reduced_total_sheets')} 张板"
+            )
+        elif action == "get_job":
+            job_id = _resolve_conversation_job(conversation, intent)
+            result_payload = manager.get(job_id).status()
+            assistant_content = f"当前任务状态：{result_payload.get('stage')}"
+        elif action == "confirm_job":
+            job_id = _resolve_conversation_job(conversation, intent)
+            runtime = manager.confirm(
+                job_id,
+                str(intent.get("decision", "")),
+            )
+            result_payload = runtime.status()
+            assistant_content = (
+                f"已确认任务 {job_id}，当前阶段："
+                f"{result_payload.get('stage')}"
+            )
+        elif action == "run_job":
+            job_id = _resolve_conversation_job(conversation, intent)
+            runtime = manager.run(job_id)
+            result_payload = runtime.status()
+            assistant_content = (
+                f"已继续任务 {job_id}，当前阶段："
+                f"{result_payload.get('stage')}"
+            )
+        elif action == "cancel_job":
+            job_id = _resolve_conversation_job(conversation, intent)
+            runtime = manager.cancel(job_id)
+            result_payload = runtime.status()
+            assistant_content = f"已取消任务 {job_id}"
+        else:
+            raise HTTPException(status_code=400, detail="unsupported action")
+    except (JobStateError, LLMError, TenantError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    conversation_store.add_message(
+        tenant.tenant_id,
+        conversation_id,
+        role="assistant",
+        content=assistant_content,
+    )
+    return JSONResponse(
+        status_code=202,
+        content={
+            "conversation_id": conversation_id,
+            "intent": intent,
+            "result": result_payload,
+        },
+    )
 
 
 @app.post("/inputs/{filename}", status_code=201)
@@ -853,3 +1228,35 @@ def cancel_job(
         return manager.cancel(job_id).status()
     except JobStateError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/jobs/{job_id}/review", status_code=202)
+def review_job(
+    job_id: str,
+    request: ReviewRequest,
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
+) -> JSONResponse:
+    _require_role(tenant, "operator")
+    _require_job_tenant(job_id, tenant)
+    try:
+        manager.get(job_id)
+    except JobStateError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    manager._enqueue_action(
+        "review_job",
+        {
+            "job_id": job_id,
+            "max_reductions": request.max_reductions,
+        },
+    )
+    return JSONResponse(
+        status_code=202,
+        content={
+            "job_id": job_id,
+            "status": "review_queued",
+        },
+    )
+
+
+if PORTAL_NESTING_DIR.exists():
+    app.mount("/", StaticFiles(directory=PORTAL_NESTING_DIR, html=True), name="portal-nesting")

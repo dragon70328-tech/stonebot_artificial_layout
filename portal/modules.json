@@ -1,0 +1,16 @@
+[
+  {
+    "id": "qa",
+    "name": "标准问答",
+    "description": "石材行业标准知识库问答",
+    "path": "/qa/",
+    "enabled": true
+  },
+  {
+    "id": "nesting",
+    "name": "识图排板",
+    "description": "DXF 读图、审图、排板和排板后回看",
+    "path": "/nesting/",
+    "enabled": true
+  }
+]

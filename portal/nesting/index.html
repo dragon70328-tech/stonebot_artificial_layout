@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>识图排板对话</title>
+  <style>
+    :root {
+      --bg: #f5f6f8;
+      --panel: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --accent: #2563eb;
+      --border: #e5e7eb;
+      --user: #e8f1ff;
+      --assistant: #f9fafb;
+      --danger: #dc2626;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    header h1 { margin: 0; font-size: 18px; }
+    header a { color: var(--accent); text-decoration: none; }
+
+    main {
+      max-width: 880px;
+      margin: 0 auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      min-height: calc(100vh - 100px);
+    }
+
+    #messages {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding-bottom: 16px;
+    }
+
+    .message {
+      max-width: 78%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.55;
+    }
+
+    .message.user {
+      align-self: flex-end;
+      background: var(--user);
+    }
+
+    .message.assistant {
+      align-self: flex-start;
+      background: var(--assistant);
+    }
+
+    .message pre {
+      margin: 8px 0 0;
+      font-size: 12px;
+      color: var(--muted);
+      overflow-x: auto;
+    }
+
+    .attachment {
+      display: inline-block;
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      background: var(--panel);
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+      padding: 4px 8px;
+    }
+
+    .downloads {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .downloads a {
+      font-size: 12px;
+      color: var(--accent);
+      text-decoration: none;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 4px 8px;
+      background: var(--panel);
+    }
+
+    .composer {
+      position: sticky;
+      bottom: 0;
+      background: var(--bg);
+      padding-top: 8px;
+    }
+
+    .composer-box {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 52px;
+      resize: vertical;
+      border: 0;
+      outline: none;
+      font: inherit;
+      color: inherit;
+    }
+
+    .composer-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+    }
+
+    button:disabled { opacity: .55; cursor: not-allowed; }
+
+    .status-line {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .error {
+      color: var(--danger);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>识图排板对话</h1>
+    <a href="../">返回总界面</a>
+  </header>
+
+  <main>
+    <div id="messages"></div>
+    <div class="composer">
+      <div class="composer-box">
+        <textarea id="input" placeholder="例如：3200x1800 排板；板数不合适回看能不能少一张"></textarea>
+        <div class="composer-actions">
+          <input id="file" type="file" accept=".dxf">
+          <button id="send" class="primary">发送</button>
+          <button data-text="查看当前任务状态">查看状态</button>
+          <button data-text="确认，继续下一步">确认</button>
+          <button data-text="继续运行任务">继续运行</button>
+          <button data-text="取消当前任务">取消任务</button>
+          <button data-text="板数不合适，回看能不能少一张">回看减板</button>
+        </div>
+        <div id="status" class="status-line"></div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const API_BASE = ".";
+    const state = {
+      conversationId: null,
+      lastUpload: null,
+      messages: [],
+      busy: false,
+      pollTimers: [],
+    };
+
+    const messagesEl = document.getElementById("messages");
+    const inputEl = document.getElementById("input");
+    const sendEl = document.getElementById("send");
+    const fileEl = document.getElementById("file");
+    const statusEl = document.getElementById("status");
+
+    function setStatus(text, isError = false) {
+      statusEl.textContent = text;
+      statusEl.className = isError ? "status-line error" : "status-line";
+    }
+
+    function renderMessages() {
+      messagesEl.innerHTML = state.messages.map((message) => {
+        const attachments = (message.attachments || []).map((item) => {
+          const path = item.dxf_path || item.path || item.local_path || "";
+          return `<span class="attachment">附件：${escapeHtml(path)}</span>`;
+        }).join("");
+        const result = message.result
+          ? `<pre>${escapeHtml(JSON.stringify(message.result, null, 2))}</pre>`
+          : "";
+        const downloads = renderDownloads(message.result);
+        return `
+          <div class="message ${message.role}">
+            <div>${escapeHtml(message.content)}</div>
+            ${attachments}
+            ${downloads}
+            ${result}
+          </div>
+        `;
+      }).join("");
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function renderDownloads(result) {
+      if (!result || !result.job_id) return "";
+      const jobId = encodeURIComponent(result.job_id);
+      const artifactKeys = {
+        "numbered_dxf": "编号原位DXF",
+        "nested_dxf": "排板DXF",
+        "report": "排板报告",
+        "check": "编号检查",
+      };
+      const links = [];
+      const artifacts = result.artifacts || {};
+      for (const [key, path] of Object.entries(artifacts)) {
+        if (!path || !artifactKeys[key]) continue;
+        links.push(
+          `<a href="${API_BASE}/jobs/${jobId}/artifacts/${key}">${artifactKeys[key]}</a>`
+        );
+      }
+      return links.length ? `<div class="downloads">${links.join("")}</div>` : "";
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    async function api(path, options = {}) {
+      const response = await fetch(`${API_BASE}${path}`, {
+        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+        ...options,
+      });
+      const contentType = response.headers.get("content-type") || "";
+      const payload = contentType.includes("application/json")
+        ? await response.json()
+        : await response.text();
+      if (!response.ok) {
+        const detail = payload && payload.detail ? payload.detail : payload;
+        throw new Error(detail || `HTTP ${response.status}`);
+      }
+      return payload;
+    }
+
+    async function ensureConversation() {
+      if (state.conversationId) return;
+      const conversation = await api("/conversations", {
+        method: "POST",
+        body: JSON.stringify({ tenant_id: "default" }),
+      });
+      state.conversationId = conversation.id;
+      setStatus(`会话 ${conversation.id} 已创建`);
+    }
+
+    async function uploadFile(file) {
+      if (!file) return null;
+      if (!file.name.toLowerCase().endsWith(".dxf")) {
+        throw new Error("仅支持 DXF 文件");
+      }
+      const path = `/inputs/${encodeURIComponent(file.name)}`;
+      const response = await fetch(`${API_BASE}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: file,
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || `HTTP ${response.status}`);
+      }
+      return payload;
+    }
+
+    async function sendMessage(content, attachments = []) {
+      await ensureConversation();
+      const message = await api(
+        `/conversations/${state.conversationId}/messages`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            role: "user",
+            content,
+            attachments,
+          }),
+        },
+      );
+      state.messages.push(message);
+      renderMessages();
+
+      const response = await api(
+        `/conversations/${state.conversationId}/respond`,
+        { method: "POST" },
+      );
+      state.messages.push({
+        role: "assistant",
+        content: response.result
+          ? `已处理：${response.intent.action}`
+          : "已处理",
+        result: response.result,
+      });
+      renderMessages();
+      if (response.result && response.result.job_id) {
+        pollJob(response.result.job_id, state.messages.length - 1);
+      }
+      return response;
+    }
+
+    function pollJob(jobId, messageIndex) {
+      const timer = setInterval(async () => {
+        try {
+          const status = await api(`/jobs/${encodeURIComponent(jobId)}`);
+          state.messages[messageIndex].result = status;
+          renderMessages();
+          if (
+            status.completed ||
+            status.blocked ||
+            status.confirmation_required ||
+            status.stage === "cancelled"
+          ) {
+            clearInterval(timer);
+          }
+        } catch (error) {
+          clearInterval(timer);
+        }
+      }, 2000);
+      state.pollTimers.push(timer);
+    }
+
+    async function handleSend() {
+      const content = inputEl.value.trim();
+      if (!content) return;
+      if (state.busy) return;
+      state.busy = true;
+      sendEl.disabled = true;
+      try {
+        const attachments = state.lastUpload ? [state.lastUpload] : [];
+        await sendMessage(content, attachments);
+        state.lastUpload = null;
+        inputEl.value = "";
+        setStatus("已完成");
+      } catch (error) {
+        setStatus(error.message, true);
+      } finally {
+        state.busy = false;
+        sendEl.disabled = false;
+      }
+    }
+
+    async function handleQuickAction(event) {
+      const button = event.target.closest("button[data-text]");
+      if (!button || state.busy) return;
+      state.busy = true;
+      sendEl.disabled = true;
+      try {
+        await sendMessage(button.dataset.text);
+      } catch (error) {
+        setStatus(error.message, true);
+      } finally {
+        state.busy = false;
+        sendEl.disabled = false;
+      }
+    }
+
+    fileEl.addEventListener("change", async () => {
+      const file = fileEl.files[0];
+      if (!file) return;
+      try {
+        await ensureConversation();
+        state.lastUpload = await uploadFile(file);
+        setStatus(`已上传 ${file.name}，请继续输入大板尺寸或排板要求`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    });
+
+    sendEl.addEventListener("click", handleSend);
+    inputEl.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        handleSend();
+      }
+    });
+    document.querySelectorAll("button[data-text]").forEach((button) => {
+      button.addEventListener("click", handleQuickAction);
+    });
+
+    renderMessages();
+  </script>
+</body>
+</html>

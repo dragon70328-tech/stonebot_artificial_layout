@@ -1,5 +1,6 @@
 import hashlib
 import json
+from pathlib import Path
 
 import ezdxf
 
@@ -41,7 +42,7 @@ def _profile():
     )
 
 
-def _run(dxf_path, **overrides):
+def _run(dxf_path, output_root, **overrides):
     kwargs = dict(
         unit=UnitSystem.METRIC,
         trials=1,
@@ -54,13 +55,14 @@ def _run(dxf_path, **overrides):
         profile=app.PROFILES["quick"],
         confirm_sheet_count=False,
         quick=True,
+        output_root=output_root,
     )
     kwargs.update(overrides)
     return app.run(str(dxf_path), 1000, 800, 20, **kwargs)
 
 
-def _latest_session_payload(stem):
-    candidates = sorted(app.PROJECT_ROOT.glob(f"output/*_{stem}"))
+def _latest_session_payload(stem, output_root):
+    candidates = sorted(Path(output_root).glob(f"*_{stem}"))
     assert candidates, "no output directory created"
     session_file = candidates[-1] / f"{stem}_workflow_session.json"
     assert session_file.exists(), f"missing {session_file}"
@@ -71,10 +73,10 @@ def test_cli_run_records_completed_workflow_session(tmp_path):
     dxf_path = tmp_path / "session_full.dxf"
     _make_dxf(dxf_path)
 
-    outcome = _run(dxf_path)
+    outcome = _run(dxf_path, tmp_path)
 
     assert not outcome["geometry_errors"]
-    payload, _out_dir = _latest_session_payload("session_full")
+    payload, _out_dir = _latest_session_payload("session_full", tmp_path)
     stages = [record["stage"] for record in payload["history"]]
     assert stages == [
         "analyzed",
@@ -104,10 +106,10 @@ def test_cli_check_only_stops_at_postprocess_confirmed(tmp_path):
     dxf_path = tmp_path / "session_check.dxf"
     _make_dxf(dxf_path)
 
-    outcome = _run(dxf_path, check_only=True)
+    outcome = _run(dxf_path, tmp_path, check_only=True)
 
     assert outcome["check_only"] is True
-    payload, _out_dir = _latest_session_payload("session_check")
+    payload, _out_dir = _latest_session_payload("session_check", tmp_path)
     stages = [record["stage"] for record in payload["history"]]
     assert payload["current_stage"] == "postprocess_confirmed"
     assert "completed" not in stages

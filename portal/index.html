@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StoneBot 统一入口</title>
+  <style>
+    :root {
+      --bg: #f5f6f8;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --accent: #2563eb;
+      --border: #e5e7eb;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    main {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 48px 24px;
+    }
+
+    h1 { margin: 0 0 8px; font-size: 32px; }
+    .subtitle { margin: 0 0 32px; color: var(--muted); }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 20px;
+    }
+
+    a.card {
+      display: block;
+      padding: 24px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      text-decoration: none;
+      color: inherit;
+      transition: border-color .15s, box-shadow .15s, transform .15s;
+    }
+
+    a.card:hover {
+      border-color: var(--accent);
+      box-shadow: 0 8px 20px rgba(37, 99, 235, .12);
+      transform: translateY(-2px);
+    }
+
+    .card h2 { margin: 0 0 10px; font-size: 20px; }
+    .card p { margin: 0; color: var(--muted); line-height: 1.6; }
+
+    .empty {
+      padding: 24px;
+      color: var(--muted);
+      border: 1px dashed var(--border);
+      border-radius: 14px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>StoneBot 统一入口</h1>
+    <p class="subtitle">选择你要使用的功能模块</p>
+    <div id="modules" class="grid">
+      <div class="empty">正在加载模块...</div>
+    </div>
+  </main>
+
+  <script>
+    async function loadModules() {
+      const container = document.getElementById("modules");
+      try {
+        const response = await fetch("./modules.json", { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const modules = await response.json();
+        const enabled = modules.filter((item) => item.enabled !== false);
+        if (!enabled.length) {
+          container.innerHTML = '<div class="empty">暂无可用的模块</div>';
+          return;
+        }
+        container.innerHTML = enabled.map((item) => `
+          <a class="card" href="${item.path}">
+            <h2>${item.name}</h2>
+            <p>${item.description || ""}</p>
+          </a>
+        `).join("");
+      } catch (error) {
+        container.innerHTML = '<div class="empty">模块配置加载失败</div>';
+      }
+    }
+
+    loadModules();
+  </script>
+</body>
+</html>

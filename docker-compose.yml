@@ -1,0 +1,26 @@
+services:
+  api:
+    build: .
+    container_name: stonebot-nesting-api
+    environment:
+      STONEBOT_DATA_ROOT: /data
+      STONEBOT_TASK_STORE: sqlite
+      STONEBOT_WORKER_ENABLED: "0"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+
+  worker:
+    build: .
+    container_name: stonebot-nesting-worker
+    command: ["python", "-X", "utf8", "scripts/api_worker.py"]
+    environment:
+      STONEBOT_DATA_ROOT: /data
+      STONEBOT_TASK_STORE: sqlite
+      STONEBOT_WORKER_ENABLED: "1"
+      STONEBOT_WORKER_ID: worker-1
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

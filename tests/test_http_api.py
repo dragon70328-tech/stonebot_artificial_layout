@@ -112,6 +112,15 @@ def test_job_manager_confirm_without_gate_raises(tmp_path, monkeypatch):
         raise AssertionError("JobStateError was not raised")
 
 
+def test_job_manager_can_disable_inline_worker(tmp_path, monkeypatch):
+    monkeypatch.setenv("STONEBOT_WORKER_ENABLED", "0")
+    manager = JobManager(tmp_path)
+
+    manager._ensure_worker()
+
+    assert manager._worker_thread is None
+
+
 def test_http_job_flow_reaches_three_confirmations(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "src.agent_runtime.build_tool_handlers",
@@ -156,7 +165,20 @@ def test_http_health(tmp_path, monkeypatch):
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["service"] == "stonebot-nesting-api"
+    assert payload["data_root"] == str(tmp_path)
+
+
+def test_root_serves_nesting_chat_frontend(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.http_api.manager", SyncJobManager(tmp_path))
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "识图排板对话" in response.text
 
 
 def test_upload_input_accepts_dxf_bytes(tmp_path, monkeypatch):
@@ -426,6 +448,36 @@ def test_background_job_leases_sqlite_queue_when_worker_id_set(tmp_path, monkeyp
     assert any(event["event"] == "leased" for event in tasks[0]["audit_log"])
     assert any(event["event"] == "released" for event in tasks[0]["audit_log"])
     manager._stop_event.set()
+
+
+def test_separate_worker_process_can_consume_queued_job(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    monkeypatch.setenv("STONEBOT_TASK_STORE", "sqlite")
+    monkeypatch.setenv("STONEBOT_WORKER_ENABLED", "0")
+    api = JobManager(tmp_path)
+    runtime = api.create(_job_request(tmp_path), run_in_background=True)
+    assert api.task_queue.has_pending() is True
+    assert api._worker_thread is None
+
+    monkeypatch.setenv("STONEBOT_WORKER_ENABLED", "1")
+    monkeypatch.setenv("STONEBOT_WORKER_ID", "worker-b")
+    worker = JobManager(tmp_path)
+    worker._ensure_worker()
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if worker.get(runtime.session_id).session.current_stage == "audited":
+            break
+        time.sleep(0.05)
+
+    assert worker.get(runtime.session_id).session.current_stage == "audited"
+    tasks = worker.list_tasks(runtime.session_id)
+    assert tasks[0]["status"] == "succeeded"
+    api._stop_event.set()
+    worker._stop_event.set()
 
 
 def test_list_job_tasks_endpoint(tmp_path, monkeypatch):
