@@ -77,26 +77,33 @@ class S3ObjectStore:
         prefix: str = "",
         access_key_id: str | None = None,
         secret_access_key: str | None = None,
+        client: object | None = None,
+        client_error: type[Exception] | None = None,
     ) -> None:
-        try:
-            import boto3
-            from botocore.exceptions import ClientError
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise RuntimeError(
-                "S3ObjectStore requires boto3; install boto3 to use "
-                "STONEBOT_OBJECT_STORE=s3"
-            ) from exc
-
-        self._client_error = ClientError
+        if client is not None:
+            self._client_error = client_error or Exception
+        else:
+            try:
+                import boto3
+                from botocore.exceptions import ClientError
+            except ImportError as exc:  # pragma: no cover - optional dependency
+                raise RuntimeError(
+                    "S3ObjectStore requires boto3; install boto3 to use "
+                    "STONEBOT_OBJECT_STORE=s3"
+                ) from exc
+            self._client_error = ClientError
         self.bucket = bucket
         self.prefix = prefix.strip("/")
-        self.client = boto3.client(
-            "s3",
-            endpoint_url=endpoint_url,
-            region_name=region,
-            aws_access_key_id=access_key_id,
-            aws_secret_access_key=secret_access_key,
-        )
+        if client is not None:
+            self.client = client
+        else:
+            self.client = boto3.client(
+                "s3",
+                endpoint_url=endpoint_url,
+                region_name=region,
+                aws_access_key_id=access_key_id,
+                aws_secret_access_key=secret_access_key,
+            )
 
     def _key(self, key: str) -> str:
         clean = key.replace("\\", "/").lstrip("/")
@@ -130,7 +137,8 @@ class S3ObjectStore:
         try:
             self.client.head_object(Bucket=self.bucket, Key=self._key(key))
         except self._client_error as exc:
-            error_code = str(exc.response.get("Error", {}).get("Code", ""))
+            response = getattr(exc, "response", {})
+            error_code = str(response.get("Error", {}).get("Code", ""))
             if error_code in {"404", "NoSuchKey", "NotFound"}:
                 return False
             raise
@@ -140,27 +148,45 @@ class S3ObjectStore:
         self.client.delete_object(Bucket=self.bucket, Key=self._key(key))
 
 
+def _s3_options(mode: str) -> dict[str, object]:
+    """Resolve S3 connection options, with local MinIO/LocalStack defaults."""
+    endpoint_url = os.environ.get("STONEBOT_S3_ENDPOINT_URL")
+    access_key_id = os.environ.get("STONEBOT_S3_ACCESS_KEY_ID")
+    secret_access_key = os.environ.get("STONEBOT_S3_SECRET_ACCESS_KEY")
+    if mode == "minio":
+        endpoint_url = endpoint_url or "http://localhost:9000"
+        access_key_id = access_key_id or "minioadmin"
+        secret_access_key = secret_access_key or "minioadmin"
+    elif mode == "localstack":
+        endpoint_url = endpoint_url or "http://localhost:4566"
+        access_key_id = access_key_id or "test"
+        secret_access_key = secret_access_key or "test"
+    return {
+        "endpoint_url": endpoint_url,
+        "region": os.environ.get("STONEBOT_S3_REGION"),
+        "prefix": os.environ.get("STONEBOT_S3_PREFIX", ""),
+        "access_key_id": access_key_id,
+        "secret_access_key": secret_access_key,
+    }
+
+
 def build_object_store(root: str | Path | None = None) -> ObjectStore:
     """Create the configured object store.
 
-    Defaults to a local filesystem store. Set ``STONEBOT_OBJECT_STORE=s3`` or
-    ``STONEBOT_S3_BUCKET`` to select the S3-compatible adapter. Optional S3
-    settings are read from the corresponding ``STONEBOT_S3_*`` environment
-    variables.
+    Defaults to a local filesystem store. Set ``STONEBOT_OBJECT_STORE=s3``,
+    ``minio``, or ``localstack`` (or ``STONEBOT_S3_BUCKET``) to select the
+    S3-compatible adapter. MinIO/LocalStack presets supply local endpoint and
+    credential defaults while still allowing ``STONEBOT_S3_*`` overrides.
     """
     mode = os.environ.get("STONEBOT_OBJECT_STORE", "local").strip().lower()
     bucket = os.environ.get("STONEBOT_S3_BUCKET")
-    if mode == "s3" or bucket:
+    if mode in {"s3", "minio", "localstack"} or bucket:
         if not bucket:
             raise RuntimeError(
-                "STONEBOT_S3_BUCKET is required when STONEBOT_OBJECT_STORE=s3"
+                f"STONEBOT_S3_BUCKET is required when STONEBOT_OBJECT_STORE={mode}"
             )
         return S3ObjectStore(
             bucket,
-            endpoint_url=os.environ.get("STONEBOT_S3_ENDPOINT_URL"),
-            region=os.environ.get("STONEBOT_S3_REGION"),
-            prefix=os.environ.get("STONEBOT_S3_PREFIX", ""),
-            access_key_id=os.environ.get("STONEBOT_S3_ACCESS_KEY_ID"),
-            secret_access_key=os.environ.get("STONEBOT_S3_SECRET_ACCESS_KEY"),
+            **_s3_options(mode),
         )
     return LocalObjectStore(root or Path("output") / "object_store")

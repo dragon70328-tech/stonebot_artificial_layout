@@ -48,6 +48,8 @@ class Task:
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
+    lease_owner: str | None = None
+    lease_expires_at: float | None = None
 
     def _audit(self, event: str, **extra: Any) -> None:
         self.audit_log.append(
@@ -84,6 +86,23 @@ class Task:
         self.finished_at = time.time()
         self._audit("timed_out", timeout_s=self.timeout_s)
 
+    def mark_leased(self, owner: str, lease_seconds: float) -> None:
+        self.lease_owner = owner
+        self.lease_expires_at = time.time() + lease_seconds
+        self._audit("leased", owner=owner, lease_seconds=lease_seconds)
+
+    def clear_lease(self) -> None:
+        if self.lease_owner is None and self.lease_expires_at is None:
+            return
+        self.lease_owner = None
+        self.lease_expires_at = None
+        self._audit("released")
+
+    def lease_expired(self, now: float | None = None) -> bool:
+        return self.lease_expires_at is not None and (
+            self.lease_expires_at <= (time.time() if now is None else now)
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "task_id": self.task_id,
@@ -101,6 +120,8 @@ class Task:
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            "lease_owner": self.lease_owner,
+            "lease_expires_at": self.lease_expires_at,
         }
 
     @classmethod
@@ -122,36 +143,53 @@ class Task:
         task.created_at = float(data["created_at"])
         task.started_at = data.get("started_at")
         task.finished_at = data.get("finished_at")
+        task.lease_owner = data.get("lease_owner")
+        task.lease_expires_at = data.get("lease_expires_at")
         return task
 
 
 Handler = Callable[[dict[str, Any]], Any]
+TaskEventCallback = Callable[[str, Task], None]
+
+
+def _emit_task_event(
+    event: str,
+    task: Task,
+    on_event: TaskEventCallback | None,
+) -> None:
+    if on_event is not None:
+        on_event(event, task)
 
 
 def _run_task_with_retry(
     task: Task,
     handlers: dict[str, Handler],
     timeout_s: float | None,
+    on_event: TaskEventCallback | None = None,
 ) -> None:
     handler = handlers.get(task.task_type)
     if handler is None:
         task.mark_failed(f"no handler for task type {task.task_type}")
+        _emit_task_event("failed", task, on_event)
         return
 
     effective_timeout = timeout_s or task.timeout_s
     while task.attempts < task.max_attempts:
         task.mark_started()
+        _emit_task_event("started", task, on_event)
         try:
             with ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(handler, task.payload)
                 result = future.result(timeout=effective_timeout)
         except FutureTimeout:
             task.mark_timed_out()
+            _emit_task_event("timed_out", task, on_event)
             return
         except Exception as exc:  # noqa: BLE001 - task boundary
             last_error = str(exc)
         else:
             task.mark_succeeded(result)
+            _emit_task_event("succeeded", task, on_event)
             return
 
         if task.attempts < task.max_attempts:
@@ -163,13 +201,16 @@ def _run_task_with_retry(
                 attempt=task.attempts + 1,
                 error=last_error,
             )
+            _emit_task_event("retry_scheduled", task, on_event)
             if task.retry_delay_s:
                 time.sleep(task.retry_delay_s * task.attempts)
         else:
             if task.max_attempts > 1:
                 task.mark_dead_letter(last_error)
+                _emit_task_event("dead_letter", task, on_event)
             else:
                 task.mark_failed(last_error)
+                _emit_task_event("failed", task, on_event)
 
 
 class InMemoryTaskQueue:
@@ -192,12 +233,13 @@ class InMemoryTaskQueue:
         handlers: dict[str, Handler],
         *,
         timeout_s: float | None = None,
+        on_event: TaskEventCallback | None = None,
     ) -> list[Task]:
         """Run queued tasks in FIFO order and return finished tasks."""
         results: list[Task] = []
         while self._queue:
             task = self._queue.popleft()
-            self._run_task(task, handlers, timeout_s)
+            self._run_task(task, handlers, timeout_s, on_event)
             results.append(task)
             self.finished.append(task)
         return results
@@ -207,23 +249,33 @@ class InMemoryTaskQueue:
         task: Task,
         handlers: dict[str, Handler],
         timeout_s: float | None,
+        on_event: TaskEventCallback | None = None,
     ) -> None:
-        _run_task_with_retry(task, handlers, timeout_s)
+        _run_task_with_retry(task, handlers, timeout_s, on_event)
 
 
 class SqliteTaskQueue:
     """SQLite-backed FIFO queue for the SaaS database boundary."""
 
-    def __init__(self, root: str | Path) -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
         self.root = Path(root)
+        self._lock = threading.RLock()
+        self.finished: list[Task] = []
+        if conn is not None:
+            self.conn = conn
+            self.conn.row_factory = sqlite3.Row
+            return
         self.root.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(
             str(self.root / "tasks.sqlite3"),
             check_same_thread=False,
         )
         self.conn.row_factory = sqlite3.Row
-        self._lock = threading.RLock()
-        self.finished: list[Task] = []
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -245,16 +297,29 @@ class SqliteTaskQueue:
                     audit_log_json TEXT NOT NULL,
                     created_at REAL NOT NULL,
                     started_at REAL,
-                    finished_at REAL
+                    finished_at REAL,
+                    lease_owner TEXT,
+                    lease_expires_at REAL
                 )
                 """
             )
             self.conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_tasks_status_sequence
-                ON tasks(status, sequence, created_at)
+                    ON tasks(status, sequence, created_at)
                 """
             )
+            self._ensure_lease_columns()
+
+    def _ensure_lease_columns(self) -> None:
+        columns = {
+            str(row["name"])
+            for row in self.conn.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        if "lease_owner" not in columns:
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN lease_owner TEXT")
+        if "lease_expires_at" not in columns:
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN lease_expires_at REAL")
 
     def _json_or_none(self, value: Any) -> str | None:
         return json.dumps(value, ensure_ascii=False) if value is not None else None
@@ -280,6 +345,10 @@ class SqliteTaskQueue:
         task.created_at = float(row["created_at"])
         task.started_at = row["started_at"]
         task.finished_at = row["finished_at"]
+        task.lease_owner = row["lease_owner"] if "lease_owner" in row.keys() else None
+        task.lease_expires_at = (
+            row["lease_expires_at"] if "lease_expires_at" in row.keys() else None
+        )
         return task
 
     def _write(self, task: Task) -> None:
@@ -290,8 +359,8 @@ class SqliteTaskQueue:
                     task_id, task_type, payload_json, status, attempts,
                     max_attempts, timeout_s, retry_delay_s, sequence,
                     result_json, error, audit_log_json, created_at,
-                    started_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    started_at, finished_at, lease_owner, lease_expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(task_id) DO UPDATE SET
                     task_type=excluded.task_type,
                     payload_json=excluded.payload_json,
@@ -306,7 +375,9 @@ class SqliteTaskQueue:
                     audit_log_json=excluded.audit_log_json,
                     created_at=excluded.created_at,
                     started_at=excluded.started_at,
-                    finished_at=excluded.finished_at
+                    finished_at=excluded.finished_at,
+                    lease_owner=excluded.lease_owner,
+                    lease_expires_at=excluded.lease_expires_at
                 """,
                 (
                     task.task_id,
@@ -324,6 +395,8 @@ class SqliteTaskQueue:
                     task.created_at,
                     task.started_at,
                     task.finished_at,
+                    task.lease_owner,
+                    task.lease_expires_at,
                 ),
             )
 
@@ -390,7 +463,30 @@ class SqliteTaskQueue:
             task.error = None
             task.finished_at = None
             task.result = None
+            task.clear_lease()
             task._audit("requeued")
+            self._write(task)
+            return task
+
+    def claim_next(
+        self,
+        worker_id: str,
+        *,
+        lease_seconds: float = 60.0,
+    ) -> Task | None:
+        """Atomically claim one pending, unleased task for a worker."""
+        with self._lock:
+            return self._claim_next_locked(worker_id, lease_seconds)
+
+    def release_lease(self, task_id: str, worker_id: str) -> Task:
+        """Release a previously claimed task back to the pending pool."""
+        with self._lock:
+            task = self.load(task_id)
+            if task.lease_owner != worker_id:
+                raise ValueError(
+                    f"task {task_id} is not leased by {worker_id}"
+                )
+            task.clear_lease()
             self._write(task)
             return task
 
@@ -399,7 +495,18 @@ class SqliteTaskQueue:
         handlers: dict[str, Handler],
         *,
         timeout_s: float | None = None,
+        on_event: TaskEventCallback | None = None,
+        worker_id: str | None = None,
+        lease_seconds: float = 60.0,
     ) -> list[Task]:
+        if worker_id is not None:
+            return self._run_all_leased(
+                handlers,
+                timeout_s=timeout_s,
+                on_event=on_event,
+                worker_id=worker_id,
+                lease_seconds=lease_seconds,
+            )
         with self._lock:
             pending = [
                 task
@@ -408,7 +515,84 @@ class SqliteTaskQueue:
             ]
             results: list[Task] = []
             for task in pending:
-                self._run_task(task, handlers, timeout_s)
+                self._run_task(task, handlers, timeout_s, on_event)
+                self._write(task)
+                results.append(task)
+                self.finished.append(task)
+            return results
+
+    def _claim_next_locked(
+        self,
+        worker_id: str,
+        lease_seconds: float,
+    ) -> Task | None:
+        now = time.time()
+        while True:
+            with self.conn:
+                row = self.conn.execute(
+                    """
+                    SELECT task_id FROM tasks
+                    WHERE status = ?
+                      AND (
+                        lease_owner IS NULL
+                        OR lease_expires_at IS NULL
+                        OR lease_expires_at <= ?
+                      )
+                    ORDER BY sequence, created_at, task_id
+                    LIMIT 1
+                    """,
+                    (TaskStatus.PENDING.value, now),
+                ).fetchone()
+                if row is None:
+                    return None
+                cursor = self.conn.execute(
+                    """
+                    UPDATE tasks
+                    SET lease_owner = ?, lease_expires_at = ?
+                    WHERE task_id = ?
+                      AND status = ?
+                      AND (
+                        lease_owner IS NULL
+                        OR lease_expires_at IS NULL
+                        OR lease_expires_at <= ?
+                      )
+                    """,
+                    (
+                        worker_id,
+                        now + lease_seconds,
+                        str(row["task_id"]),
+                        TaskStatus.PENDING.value,
+                        now,
+                    ),
+                )
+            if cursor.rowcount == 0:
+                continue
+            task = self._task_from_row(
+                self.conn.execute(
+                    "SELECT * FROM tasks WHERE task_id = ?",
+                    (str(row["task_id"]),),
+                ).fetchone()
+            )
+            task._audit("leased", owner=worker_id, lease_seconds=lease_seconds)
+            return task
+
+    def _run_all_leased(
+        self,
+        handlers: dict[str, Handler],
+        *,
+        timeout_s: float | None,
+        on_event: TaskEventCallback | None,
+        worker_id: str,
+        lease_seconds: float,
+    ) -> list[Task]:
+        with self._lock:
+            results: list[Task] = []
+            while True:
+                task = self._claim_next_locked(worker_id, lease_seconds)
+                if task is None:
+                    break
+                self._run_task(task, handlers, timeout_s, on_event)
+                task.clear_lease()
                 self._write(task)
                 results.append(task)
                 self.finished.append(task)
@@ -419,12 +603,19 @@ class SqliteTaskQueue:
         task: Task,
         handlers: dict[str, Handler],
         timeout_s: float | None,
+        on_event: TaskEventCallback | None = None,
     ) -> None:
-        _run_task_with_retry(task, handlers, timeout_s)
+        _run_task_with_retry(task, handlers, timeout_s, on_event)
 
 
-def build_task_queue(root: str | Path) -> FileTaskQueue | SqliteTaskQueue:
+def build_task_queue(
+    root: str | Path,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> FileTaskQueue | SqliteTaskQueue:
     """Select the queue backend from ``STONEBOT_TASK_STORE``."""
+    if conn is not None:
+        return SqliteTaskQueue(root, conn=conn)
     if os.environ.get("STONEBOT_TASK_STORE", "file").strip().lower() == "sqlite":
         return SqliteTaskQueue(root)
     return FileTaskQueue(root)
@@ -446,10 +637,13 @@ class FileTaskQueue:
         return self.tasks_dir / f"{safe_id}.json"
 
     def _write(self, task: Task) -> None:
-        self._path(task.task_id).write_text(
+        path = self._path(task.task_id)
+        tmp_path = path.with_name(path.name + ".tmp")
+        tmp_path.write_text(
             json.dumps(task.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        os.replace(tmp_path, path)
 
     def _load_all(self) -> list[Task]:
         tasks: list[Task] = []
@@ -513,6 +707,7 @@ class FileTaskQueue:
         handlers: dict[str, Handler],
         *,
         timeout_s: float | None = None,
+        on_event: TaskEventCallback | None = None,
     ) -> list[Task]:
         pending = [
             task
@@ -521,7 +716,7 @@ class FileTaskQueue:
         ]
         results: list[Task] = []
         for task in pending:
-            self._run_task(task, handlers, timeout_s)
+            self._run_task(task, handlers, timeout_s, on_event)
             self._write(task)
             results.append(task)
             self.finished.append(task)
@@ -532,5 +727,6 @@ class FileTaskQueue:
         task: Task,
         handlers: dict[str, Handler],
         timeout_s: float | None,
+        on_event: TaskEventCallback | None = None,
     ) -> None:
-        _run_task_with_retry(task, handlers, timeout_s)
+        _run_task_with_retry(task, handlers, timeout_s, on_event)

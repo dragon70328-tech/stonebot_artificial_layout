@@ -5,3 +5,6 @@ pydantic>=2.0.0
 pymupdf>=1.28.0
 fastapi>=0.110.0
 uvicorn>=0.29.0
+
+# Optional S3/MinIO/LocalStack object store backend
+# boto3>=1.28.0

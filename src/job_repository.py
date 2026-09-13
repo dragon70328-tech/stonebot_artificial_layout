@@ -64,7 +64,19 @@ class FileJobRepository:
 class SqliteJobRepository:
     """SQLite job repository for multi-instance SaaS deployments."""
 
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(
+        self,
+        db_path: str | Path | None = None,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        if conn is not None:
+            self.conn = conn
+            self.conn.row_factory = sqlite3.Row
+            self.db_path = Path(db_path) if db_path is not None else Path(":memory:")
+            return
+        if db_path is None:
+            raise ValueError("db_path or conn is required")
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
@@ -130,8 +142,14 @@ class SqliteJobRepository:
         return [str(row["job_id"]) for row in rows]
 
 
-def build_job_repository(root: str | Path) -> JobRepository:
+def build_job_repository(
+    root: str | Path,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> JobRepository:
     """Select job persistence from ``STONEBOT_JOB_STORE``."""
+    if conn is not None:
+        return SqliteJobRepository(conn=conn)
     manager_root = Path(root)
     if os.environ.get("STONEBOT_JOB_STORE", "file").strip().lower() == "sqlite":
         return SqliteJobRepository(manager_root / "jobs.sqlite3")

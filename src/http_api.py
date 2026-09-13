@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import threading
 import time
@@ -20,7 +21,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from src.agent_loop import AgentLoopResult
@@ -36,8 +37,10 @@ from src.session_store import (
     WorkflowSessionStore,
     build_session_store,
 )
-from src.task_queue import Task, build_task_queue
-from src.tenant_store import TenantError, TenantStore
+from src.state_db import StateDatabase
+from src.task_queue import SqliteTaskQueue, Task, build_task_queue
+from src.task_events import TaskEventBroker, format_sse
+from src.tenant_store import TenantError, build_tenant_store
 from src.units import UnitSystem
 from src.workflow_session import WorkflowStage
 
@@ -194,14 +197,32 @@ class JobManager:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.object_store = build_object_store(self.root / "object_store")
-        self.tenant_store = TenantStore(self.root / "tenants")
-        self.job_repository = build_job_repository(self.root)
-        self.session_store = build_session_store(self.root / "sessions")
+        if os.environ.get("STONEBOT_STATE_DB", "").strip().lower() == "unified":
+            state_db = StateDatabase(self.root / "state.sqlite3")
+            conn = state_db.conn
+            self._state_db = state_db
+            self.tenant_store = build_tenant_store(
+                self.root / "tenants",
+                conn=conn,
+            )
+            self.job_repository = build_job_repository(self.root, conn=conn)
+            self.session_store = build_session_store(
+                self.root / "sessions",
+                conn=conn,
+            )
+            self.task_queue = build_task_queue(self.root / "queue", conn=conn)
+        else:
+            self._state_db = None
+            self.tenant_store = build_tenant_store(self.root / "tenants")
+            self.job_repository = build_job_repository(self.root)
+            self.session_store = build_session_store(self.root / "sessions")
+            self.task_queue = build_task_queue(self.root / "queue")
         self._sqlite_sessions = isinstance(
             self.session_store,
             SqliteWorkflowSessionStore,
         )
-        self.task_queue = build_task_queue(self.root / "queue")
+        self.task_events = TaskEventBroker()
+        self._worker_id = os.environ.get("STONEBOT_WORKER_ID")
         self._jobs: dict[str, AgentRuntime] = {}
         self._lock = threading.RLock()
         self._worker_thread: threading.Thread | None = None
@@ -351,14 +372,90 @@ class JobManager:
         }
 
     def _enqueue_action(self, task_type: str, payload: dict[str, Any]) -> None:
-        self.task_queue.enqueue(
+        task = self.task_queue.enqueue(
             Task(
                 task_type=task_type,
                 payload=payload,
                 timeout_s=3600.0,
             )
         )
+        self.task_events.publish(
+            {
+                "event": "task_enqueued",
+                "job_id": payload.get("job_id"),
+                "data": task.to_dict(),
+            }
+        )
         self._ensure_worker()
+
+    def _publish_task_event(self, event: str, task: Task) -> None:
+        self.task_events.publish(
+            {
+                "event": f"task_{event}",
+                "job_id": task.payload.get("job_id"),
+                "data": task.to_dict(),
+            }
+        )
+        if event in {"succeeded", "failed", "timed_out", "dead_letter"}:
+            self._publish_job_event(task.payload.get("job_id"))
+
+    def _publish_job_event(self, job_id: str | None) -> None:
+        if not job_id:
+            return
+        try:
+            status = self.get(job_id).status()
+        except JobStateError:
+            return
+        stage = status.get("stage")
+        if status.get("completed") or stage == WorkflowStage.COMPLETED.value:
+            event = "job_completed"
+        elif status.get("blocked") or stage == WorkflowStage.BLOCKED.value:
+            event = "job_blocked"
+        elif stage == WorkflowStage.CANCELLED.value:
+            event = "job_cancelled"
+        else:
+            return
+        self.task_events.publish(
+            {"event": event, "job_id": job_id, "data": status}
+        )
+
+    def iter_job_events(self, job_id: str):
+        """Yield task snapshots and live progress events for one job."""
+        subscriber = self.task_events.subscribe()
+        try:
+            yield {
+                "event": "subscribed",
+                "job_id": job_id,
+                "data": {},
+            }
+            for task in self.list_tasks(job_id):
+                yield {
+                    "event": "task_snapshot",
+                    "job_id": job_id,
+                    "data": {"task": task},
+                }
+            while True:
+                try:
+                    event = subscriber.get(timeout=5.0)
+                except queue.Empty:
+                    yield {
+                        "event": "keepalive",
+                        "job_id": job_id,
+                        "data": {},
+                    }
+                    continue
+                if event.get("job_id") != job_id:
+                    continue
+                yield event
+                if event.get("event") in {
+                    "stream_end",
+                    "job_completed",
+                    "job_cancelled",
+                    "job_blocked",
+                }:
+                    break
+        finally:
+            self.task_events.unsubscribe(subscriber)
 
     def _ensure_worker(self) -> None:
         if (
@@ -371,7 +468,17 @@ class JobManager:
             while not self._stop_event.wait(0.1):
                 if not self.task_queue.has_pending():
                     continue
-                self.task_queue.run_all(self._task_handlers())
+                if isinstance(self.task_queue, SqliteTaskQueue) and self._worker_id:
+                    self.task_queue.run_all(
+                        self._task_handlers(),
+                        on_event=self._publish_task_event,
+                        worker_id=self._worker_id,
+                    )
+                else:
+                    self.task_queue.run_all(
+                        self._task_handlers(),
+                        on_event=self._publish_task_event,
+                    )
 
         self._worker_thread = threading.Thread(
             target=worker_loop,
@@ -459,6 +566,8 @@ class JobManager:
         self._stop_event.set()
         if self._worker_thread is not None and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=2.0)
+        if self._state_db is not None:
+            self._state_db.close()
 
     def confirm(
         self,
@@ -621,6 +730,31 @@ def get_job(
         return manager.get(job_id).status()
     except JobStateError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/jobs/{job_id}/events")
+def stream_job_events(
+    job_id: str,
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
+) -> StreamingResponse:
+    _require_job_tenant(job_id, tenant)
+    try:
+        manager.get(job_id)
+    except JobStateError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    def event_stream():
+        for event in manager.iter_job_events(job_id):
+            yield format_sse(event)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/jobs/{job_id}/tasks")

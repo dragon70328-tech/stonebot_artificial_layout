@@ -1,6 +1,8 @@
+import asyncio
 import time
 
-from fastapi.testclient import TestClient
+import httpx
+from httpx import ASGITransport
 
 from src.http_api import (
     JobCreateRequest,
@@ -10,6 +12,33 @@ from src.http_api import (
 )
 from src.task_queue import Task, TaskStatus
 from src.workflow_session import WorkflowStage
+
+
+class SyncASGIClient:
+    def __init__(self, app):
+        self._transport = ASGITransport(app=app)
+        self._base_url = "http://testserver"
+
+    def _request(self, method, path, **kwargs):
+        async def run():
+            async with httpx.AsyncClient(
+                transport=self._transport,
+                base_url=self._base_url,
+            ) as client:
+                return await client.request(method, path, **kwargs)
+
+        return asyncio.run(run())
+
+    def get(self, path, **kwargs):
+        return self._request("GET", path, **kwargs)
+
+    def post(self, path, **kwargs):
+        return self._request("POST", path, **kwargs)
+
+
+def TestClient(app):
+    """Synchronous ASGI test client that avoids fastapi.testclient's warning."""
+    return SyncASGIClient(app)
 
 
 def _ok_handlers():
@@ -235,6 +264,49 @@ def test_job_manager_uses_sqlite_session_store(tmp_path, monkeypatch):
     assert second_manager.session_store.exists(job_id) is True
 
 
+def test_job_manager_uses_sqlite_tenant_store(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    monkeypatch.setenv("STONEBOT_TENANT_STORE", "sqlite")
+    root = tmp_path / "manager-root"
+    request = _tenant_request(tmp_path, "tenant-a")
+
+    first_manager = JobManager(root)
+    first_manager.create(request, run_in_background=False)
+
+    second_manager = JobManager(root)
+
+    assert second_manager.tenant_store.list_projects("tenant-a") == ["demo"]
+    assert (
+        second_manager.tenant_store.repository.list_audit("tenant-a")[0]["event"]
+        == "create_project"
+    )
+
+
+def test_job_manager_uses_unified_state_db(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    monkeypatch.setenv("STONEBOT_STATE_DB", "unified")
+    root = tmp_path / "manager-root"
+    request = _job_request(tmp_path)
+
+    first_manager = JobManager(root)
+    runtime = first_manager.create(request, run_in_background=False)
+    runtime.run_next()
+    job_id = runtime.session_id
+
+    second_manager = JobManager(root)
+    recovered = second_manager.get(job_id)
+
+    assert recovered.session.current_stage == "audited"
+    assert second_manager.tenant_store.list_projects("default") == ["demo"]
+    assert [path.name for path in root.rglob("*.sqlite3")] == ["state.sqlite3"]
+
+
 def test_download_artifact(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "src.agent_runtime.build_tool_handlers",
@@ -325,7 +397,34 @@ def test_background_job_is_driven_by_file_queue(tmp_path, monkeypatch):
         time.sleep(0.05)
 
     assert manager.get(runtime.session_id).session.current_stage == "audited"
+    pending_deadline = time.time() + 5
+    while manager.task_queue.has_pending() and time.time() < pending_deadline:
+        time.sleep(0.05)
     assert manager.task_queue.has_pending() is False
+    manager._stop_event.set()
+
+
+def test_background_job_leases_sqlite_queue_when_worker_id_set(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    monkeypatch.setenv("STONEBOT_TASK_STORE", "sqlite")
+    monkeypatch.setenv("STONEBOT_WORKER_ID", "worker-a")
+    manager = JobManager(tmp_path)
+
+    runtime = manager.create(_job_request(tmp_path), run_in_background=True)
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if manager.get(runtime.session_id).session.current_stage == "audited":
+            break
+        time.sleep(0.05)
+
+    tasks = manager.list_tasks(runtime.session_id)
+    assert tasks[0]["status"] == "succeeded"
+    assert tasks[0]["lease_owner"] is None
+    assert any(event["event"] == "leased" for event in tasks[0]["audit_log"])
+    assert any(event["event"] == "released" for event in tasks[0]["audit_log"])
     manager._stop_event.set()
 
 
@@ -353,6 +452,32 @@ def test_list_job_tasks_endpoint(tmp_path, monkeypatch):
     assert tasks[0]["task_type"] == "run_job"
     assert tasks[0]["status"] == "succeeded"
     manager._stop_event.set()
+
+
+def test_job_event_stream_generates_subscribed_and_terminal(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent_runtime.build_tool_handlers",
+        lambda context: _ok_handlers(),
+    )
+    manager = SyncJobManager(tmp_path)
+    monkeypatch.setattr("src.http_api.manager", manager)
+    client = TestClient(app)
+
+    runtime = manager.create(_job_request(tmp_path), run_in_background=False)
+
+    events = manager.iter_job_events(runtime.session_id)
+    assert next(events)["event"] == "subscribed"
+    manager.task_events.publish(
+        {
+            "event": "stream_end",
+            "job_id": runtime.session_id,
+            "data": {"ok": True},
+        }
+    )
+    terminal = next(events)
+    assert terminal["event"] == "stream_end"
+    assert terminal["data"] == {"ok": True}
+    events.close()
 
 
 def test_retry_dead_letter_task_endpoint(tmp_path, monkeypatch):
@@ -532,8 +657,11 @@ def test_fastapi_lifespan_shuts_down_worker(tmp_path, monkeypatch):
             break
         time.sleep(0.05)
 
-    with TestClient(app):
-        pass
+    async def run_lifespan():
+        async with app.router.lifespan_context(app):
+            pass
+
+    asyncio.run(run_lifespan())
 
     assert manager._worker_thread is not None
     assert manager._worker_thread.is_alive() is False

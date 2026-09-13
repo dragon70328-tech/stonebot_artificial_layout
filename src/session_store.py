@@ -65,7 +65,19 @@ class WorkflowSessionStore:
 class SqliteWorkflowSessionStore:
     """SQLite-backed WorkflowSession persistence for the DB boundary."""
 
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(
+        self,
+        db_path: str | Path | None = None,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        if conn is not None:
+            self.conn = conn
+            self.conn.row_factory = sqlite3.Row
+            self.db_path = Path(db_path) if db_path is not None else Path(":memory:")
+            return
+        if db_path is None:
+            raise ValueError("db_path or conn is required")
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
@@ -138,8 +150,14 @@ class SqliteWorkflowSessionStore:
         return [str(row["session_id"]) for row in rows]
 
 
-def build_session_store(root: str | Path) -> WorkflowSessionStore | SqliteWorkflowSessionStore:
+def build_session_store(
+    root: str | Path,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> WorkflowSessionStore | SqliteWorkflowSessionStore:
     """Select session persistence from ``STONEBOT_SESSION_STORE``."""
+    if conn is not None:
+        return SqliteWorkflowSessionStore(conn=conn)
     if os.environ.get("STONEBOT_SESSION_STORE", "file").strip().lower() == "sqlite":
         return SqliteWorkflowSessionStore(Path(root) / "sessions.sqlite3")
     return WorkflowSessionStore(root)

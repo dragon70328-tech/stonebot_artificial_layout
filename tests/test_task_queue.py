@@ -23,6 +23,20 @@ def test_task_queue_runs_fifo_and_marks_succeeded():
     assert len(finished[0].audit_log) == 3
 
 
+def test_task_queue_emits_progress_events():
+    queue = InMemoryTaskQueue()
+    queue.enqueue(Task(task_type="double", payload={"value": 2}))
+    events = []
+
+    finished = queue.run_all(
+        {"double": lambda payload: payload["value"] * 2},
+        on_event=lambda event, task: events.append((event, task.status.value)),
+    )
+
+    assert finished[0].result == 4
+    assert events == [("started", "running"), ("succeeded", "succeeded")]
+
+
 def test_task_queue_marks_missing_handler_failed():
     queue = InMemoryTaskQueue()
     queue.enqueue(Task(task_type="unknown", payload={}))
@@ -216,6 +230,46 @@ def test_sqlite_task_queue_retries_dead_letter_task(tmp_path):
     assert retried.attempts == 0
     assert retried.error is None
     assert any(event["event"] == "requeued" for event in retried.audit_log)
+
+
+def test_sqlite_task_queue_lease_prevents_double_claim(tmp_path):
+    first = SqliteTaskQueue(tmp_path)
+    first.enqueue(Task(task_type="double", payload={"value": 2}))
+    first.enqueue(Task(task_type="double", payload={"value": 3}))
+    second = SqliteTaskQueue(tmp_path)
+
+    claimed_by_a = first.claim_next("worker-a")
+    claimed_by_b = second.claim_next("worker-b")
+
+    assert claimed_by_a is not None
+    assert claimed_by_b is not None
+    assert claimed_by_a.task_id != claimed_by_b.task_id
+    assert second.claim_next("worker-c") is None
+
+
+def test_sqlite_task_queue_expired_lease_is_reclaimable(tmp_path):
+    queue = SqliteTaskQueue(tmp_path)
+    task = queue.enqueue(Task(task_type="double", payload={"value": 2}))
+
+    claimed = queue.claim_next("worker-a", lease_seconds=0)
+    time.sleep(0.01)
+    reclaimed = queue.claim_next("worker-b")
+
+    assert claimed is not None
+    assert reclaimed is not None
+    assert claimed.task_id == reclaimed.task_id == task.task_id
+
+
+def test_sqlite_task_queue_release_lease_reopens_task(tmp_path):
+    queue = SqliteTaskQueue(tmp_path)
+    task = queue.enqueue(Task(task_type="double", payload={"value": 2}))
+
+    claimed = queue.claim_next("worker-a")
+    released = queue.release_lease(claimed.task_id, "worker-a")
+
+    assert released.status == TaskStatus.PENDING
+    assert released.lease_owner is None
+    assert queue.claim_next("worker-b").task_id == task.task_id
 
 
 def test_build_task_queue_selects_sqlite(tmp_path, monkeypatch):
