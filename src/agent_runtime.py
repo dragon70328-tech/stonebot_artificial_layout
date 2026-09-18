@@ -21,6 +21,7 @@ from src.agent_loop import AgentLoop, AgentLoopResult
 from src.ai_planning import ToolCall
 from src.artifact_store import ArtifactStore
 from src.correction_contracts import CorrectionPlan
+from src.drawing_corrections import build_correction_context
 from src.job_context import JobContext
 from src.nesting_contracts import ProcessPolicy, SheetSpec
 from src.object_store import ObjectStore
@@ -352,6 +353,7 @@ class AgentRuntime:
             ),
             "artifacts": snapshot["artifacts"],
             "session_artifacts": self.session.artifacts,
+            "correction_context": build_correction_context(self.context),
             "error": self.last_error,
             "session": self.session.to_dict(),
             "last_result": (

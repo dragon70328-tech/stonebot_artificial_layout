@@ -265,6 +265,9 @@ def test_nesting_frontend_has_action_contract(tmp_path, monkeypatch):
     for element_id in (
         "job-panel",
         "workflow-steps",
+        "correction-targets",
+        "correction-target-select",
+        "correction-target-summary",
         "parameter-panel",
         "param-process",
         "param-width",

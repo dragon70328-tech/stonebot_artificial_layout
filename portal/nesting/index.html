@@ -126,6 +126,26 @@
       color: var(--accent);
     }
 
+    .correction-targets {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px dashed var(--border);
+    }
+    .correction-targets select {
+      width: 100%;
+      min-height: 92px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 8px;
+      font: inherit;
+      color: var(--text);
+      background: var(--panel);
+    }
+    .correction-target-summary {
+      margin-top: 5px;
+      font-size: 12px;
+      color: var(--muted);
+    }
     .job-panel {
       margin-bottom: 12px;
       border: 1px solid var(--border);
@@ -398,6 +418,11 @@
       </div>
       <ol id="workflow-steps" class="steps"></ol>
       <div id="job-metrics" class="metrics"></div>
+      <div id="correction-targets" class="correction-targets" hidden>
+        <div class="parameter-label">纠错目标（可多选）</div>
+        <select id="correction-target-select" multiple size="5"></select>
+        <div id="correction-target-summary" class="correction-target-summary">未选择目标</div>
+      </div>
       <div id="next-action" class="next-action"></div>
       <div id="job-error" class="error-box" hidden></div>
     </section>
@@ -496,6 +521,7 @@
       busy: false,
       currentJobId: null,
       latestStatus: null,
+      selectedCorrectionTargets: [],
       pollTimers: [],
     };
 
@@ -514,6 +540,9 @@
     const metricsEl = document.getElementById("job-metrics");
     const nextActionEl = document.getElementById("next-action");
     const jobErrorEl = document.getElementById("job-error");
+    const correctionTargetsEl = document.getElementById("correction-targets");
+    const correctionTargetSelectEl = document.getElementById("correction-target-select");
+    const correctionTargetSummaryEl = document.getElementById("correction-target-summary");
     const parameterEls = {
       process: document.getElementById("param-process"),
       width: document.getElementById("param-width"),
@@ -741,6 +770,58 @@
       `).join("");
     }
 
+    function targetLabel(item, hole = null) {
+      const number = item.number || item.part_id || "未编号";
+      if (hole) {
+        const handle = hole.entity_handle || hole.hole_id || "孔洞";
+        return `孔洞 | ${number} | ${handle} | ${Number(hole.area || 0).toFixed(1)} mm²`;
+      }
+      return `面板 | ${number} | ${item.hole_count || 0} 孔 | ${Number(item.area || 0).toFixed(1)} mm²`;
+    }
+
+    function renderCorrectionTargets(status) {
+      const parts = (status && status.correction_context && status.correction_context.parts) || [];
+      if (!parts.length) {
+        correctionTargetsEl.hidden = true;
+        correctionTargetSelectEl.innerHTML = "";
+        state.selectedCorrectionTargets = [];
+        correctionTargetSummaryEl.textContent = "未选择目标";
+        return;
+      }
+
+      const options = [];
+      for (const part of parts) {
+        const panelTarget = part.number || part.part_id;
+        options.push({
+          value: panelTarget,
+          label: targetLabel(part),
+        });
+        for (const hole of (part.holes || [])) {
+          const holeTarget = hole.hole_id || hole.entity_handle;
+          if (!holeTarget) continue;
+          options.push({
+            value: holeTarget,
+            label: targetLabel(part, hole),
+          });
+        }
+      }
+
+      correctionTargetsEl.hidden = false;
+      correctionTargetSelectEl.innerHTML = options.map((option) => (
+        `<option value="${ui.escapeHtml(option.value)}">${ui.escapeHtml(option.label)}</option>`
+      )).join("");
+      const available = new Set(options.map((option) => option.value));
+      state.selectedCorrectionTargets = state.selectedCorrectionTargets.filter(
+        (value) => available.has(value),
+      );
+      for (const option of correctionTargetSelectEl.options) {
+        option.selected = state.selectedCorrectionTargets.includes(option.value);
+      }
+      correctionTargetSummaryEl.textContent = state.selectedCorrectionTargets.length
+        ? `已选择：${state.selectedCorrectionTargets.join("、")}`
+        : "未选择目标";
+    }
+
     function renderJobPanel(status) {
       if (!status) {
         jobPanelEl.hidden = true;
@@ -758,6 +839,7 @@
 
       stepsEl.innerHTML = renderSteps(status);
       metricsEl.innerHTML = renderMetrics(status);
+      renderCorrectionTargets(status);
 
       const next = ui.nextAction(status);
       nextActionEl.innerHTML = `
@@ -1035,9 +1117,14 @@
       setBusy(true);
       try {
         const attachments = state.lastUpload ? [state.lastUpload] : [];
-        const parameters = creatingJob ? buildNestingParameters() : null;
+        const parameters = creatingJob
+          ? buildNestingParameters()
+          : (state.selectedCorrectionTargets.length
+            ? { target_ids: [...state.selectedCorrectionTargets] }
+            : null);
         await sendChat(content, attachments, parameters);
         state.lastUpload = null;
+        state.selectedCorrectionTargets = [];
         inputEl.value = "";
         setStatus("指令已发送");
       } catch (error) {
@@ -1067,6 +1154,7 @@
       state.messages = [];
       state.currentJobId = null;
       state.latestStatus = null;
+      state.selectedCorrectionTargets = [];
       localStorage.removeItem(CONVERSATION_KEY);
       fileEl.value = "";
       renderFileChip(null);
@@ -1121,6 +1209,14 @@
       setStatus("已清除上传文件");
     });
     document.getElementById("btn-new").addEventListener("click", newConversation);
+    correctionTargetSelectEl.addEventListener("change", () => {
+      state.selectedCorrectionTargets = Array.from(correctionTargetSelectEl.options)
+        .filter((option) => option.selected)
+        .map((option) => option.value);
+      correctionTargetSummaryEl.textContent = state.selectedCorrectionTargets.length
+        ? `已选择：${state.selectedCorrectionTargets.join("、")}`
+        : "未选择目标";
+    });
     inputEl.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();

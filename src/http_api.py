@@ -1060,6 +1060,14 @@ def respond_to_conversation(
                 if key in JOB_PARAMETER_KEYS
             }
         )
+    if (
+        intent.get("action") == "correct_drawing"
+        and latest_parameters.get("target_ids") is not None
+    ):
+        intent["target_ids"] = [
+            str(item)
+            for item in latest_parameters.get("target_ids", [])
+        ]
 
     action = intent["action"]
     try:

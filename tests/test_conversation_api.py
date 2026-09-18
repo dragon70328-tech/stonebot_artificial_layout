@@ -300,7 +300,6 @@ def test_respond_correct_drawing_regenerates_numbered_dxf(tmp_path, monkeypatch)
             "action": "correct_drawing",
             "job_id": "job-1",
             "instruction": "把 P-1 改成 P-1A",
-            "target_ids": ["P-1"],
         },
     )
     correction_planner = FakeCorrectionPlanner()
@@ -315,7 +314,11 @@ def test_respond_correct_drawing_regenerates_numbered_dxf(tmp_path, monkeypatch)
     conversation_id = created.json()["id"]
     client.post(
         f"/conversations/{conversation_id}/messages",
-        json={"role": "user", "content": "把 P-1 改成 P-1A"},
+        json={
+            "role": "user",
+            "content": "把 P-1 改成 P-1A",
+            "parameters": {"target_ids": ["P-1"]},
+        },
     )
 
     response = client.post(f"/conversations/{conversation_id}/respond")
