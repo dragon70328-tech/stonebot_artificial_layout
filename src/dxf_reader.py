@@ -1,4 +1,4 @@
-﻿"""DXF 文件解析：提取封闭图形，构建规格板（含挖孔）"""
+"""DXF 文件解析：提取封闭图形，构建规格板（含挖孔）"""
 
 import ezdxf
 import math
@@ -378,12 +378,13 @@ def _linetype_name(entity, doc):
     return lt_upper
 
 
-def extract_closed_polygons(doc,
-                             panel_layers = None,
-                             exclude_layers = None,
-                             exclude_linetypes = None,
-                             closed_tolerance: float = 0.01,
-                             exclude_handles = None):
+def extract_closed_entity_candidates(doc,
+                                     panel_layers = None,
+                                     exclude_layers = None,
+                                     exclude_linetypes = None,
+                                     closed_tolerance: float = 0.01,
+                                     exclude_handles = None):
+    """提取封闭实体候选，同时保留 handle、图层和线型信息。"""
     if exclude_linetypes is None:
         exclude_linetypes = DEFAULT_EXCLUDE_LINETYPES
     results = []
@@ -391,7 +392,8 @@ def extract_closed_polygons(doc,
 
     for entity in msp:
         layer = getattr(entity.dxf, "layer", "0") or "0"
-        if exclude_handles is not None and entity.dxf.handle in exclude_handles:
+        handle = getattr(entity.dxf, "handle", None)
+        if exclude_handles is not None and handle in exclude_handles:
             continue
 
         if panel_layers is not None and layer not in panel_layers:
@@ -399,19 +401,44 @@ def extract_closed_polygons(doc,
         if exclude_layers is not None and layer in exclude_layers:
             continue
 
-        lt = _linetype_name(entity, doc)
-        if lt in exclude_linetypes:
+        linetype = _linetype_name(entity, doc)
+        if linetype in exclude_linetypes:
             continue
 
         if not _is_closed(entity, closed_tolerance):
             continue
         poly = _entity_to_polygon(entity, closed_tolerance=closed_tolerance)
         if poly is not None and not poly.is_empty and poly.area > 0.01:
-            handle = entity.dxf.handle
-            results.append((poly, handle))
+            results.append(
+                {
+                    "handle": handle,
+                    "layer": layer,
+                    "linetype": linetype,
+                    "polygon": poly,
+                    "entity_type": entity.dxftype(),
+                }
+            )
 
     return results
 
+
+def extract_closed_polygons(doc,
+                             panel_layers = None,
+                             exclude_layers = None,
+                             exclude_linetypes = None,
+                             closed_tolerance: float = 0.01,
+                             exclude_handles = None):
+    return [
+        (item["polygon"], item["handle"])
+        for item in extract_closed_entity_candidates(
+            doc,
+            panel_layers=panel_layers,
+            exclude_layers=exclude_layers,
+            exclude_linetypes=exclude_linetypes,
+            closed_tolerance=closed_tolerance,
+            exclude_handles=exclude_handles,
+        )
+    ]
 
 HIERARCHY_CONTAINMENT_RATIO = 0.90
 

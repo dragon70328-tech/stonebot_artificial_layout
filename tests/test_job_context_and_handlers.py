@@ -104,6 +104,7 @@ def test_real_handlers_numbering_confirmation_chain(tmp_path):
 
     assert analyzed["entity_counts"]["LWPOLYLINE"] == 2
     assert read["parts"] == 2
+    assert len(context.closed_entities) == 2
     assert isinstance(audit["issues"], int)
     assert assigned["parts"] == 2
     assert numbered["parts"] == 2

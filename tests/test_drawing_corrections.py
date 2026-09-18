@@ -221,6 +221,37 @@ def test_parse_correction_plan_validates_hole_reclassification_operations():
         )
 
 
+def test_parse_correction_plan_validates_add_entity_operations():
+    plan = parse_correction_plan(
+        {
+            "operations": [
+                {
+                    "operation": "add_panel_from_entity",
+                    "target": "handle:H9",
+                    "value": "P-20",
+                },
+                {
+                    "operation": "add_hole_from_entity",
+                    "target": "handle:H10",
+                    "target_b": "P-1",
+                },
+            ]
+        },
+        instruction="补充漏识别实体",
+    )
+    assert len(plan.operations) == 2
+
+    with pytest.raises(ValidationError):
+        parse_correction_plan(
+            {
+                "operations": [
+                    {"operation": "add_hole_from_entity", "target": "handle:H10"}
+                ]
+            },
+            instruction="缺少父面板",
+        )
+
+
 def test_correction_planner_builds_context_prompt():
     client = FakeCorrectionClient(
         json.dumps(
@@ -368,6 +399,85 @@ def test_panel_to_hole_assigns_misclassified_contour(tmp_path):
     assert len(context.parts) == 1
     assert len(context.parts[0].holes) == 1
     assert context.parts[0].area == 37500
+
+
+def test_add_panel_from_unrecognized_entity(tmp_path):
+    context = _context(tmp_path)
+    polygon = Polygon([(300, 0), (420, 0), (420, 120), (300, 120)])
+    context.closed_entities = [
+        {
+            "handle": "H9",
+            "layer": "PANEL",
+            "linetype": "CONTINUOUS",
+            "polygon": polygon,
+            "entity_type": "LWPOLYLINE",
+        }
+    ]
+    plan = CorrectionPlan(
+        instruction="补充漏识别规格板",
+        operations=[
+            {
+                "operation": "add_panel_from_entity",
+                "target": "handle:H9",
+                "value": "P-3",
+            }
+        ],
+    )
+
+    result = apply_correction_plan(context, plan)
+
+    assert result.part_numbers == ["P-1", "P-2", "P-3"]
+    assert len(context.parts) == 3
+    assert context.parts[2].outer_handle == "H9"
+    assert context.parts[2].area == 14400
+
+
+def test_add_hole_from_unrecognized_entity(tmp_path):
+    context = _context(tmp_path)
+    hole = Polygon([(20, 20), (60, 20), (60, 60), (20, 60)])
+    context.closed_entities = [
+        {
+            "handle": "H9",
+            "layer": "HOLE",
+            "linetype": "CONTINUOUS",
+            "polygon": hole,
+            "entity_type": "LWPOLYLINE",
+        }
+    ]
+    plan = CorrectionPlan(
+        instruction="补充漏识别孔洞",
+        operations=[
+            {
+                "operation": "add_hole_from_entity",
+                "target": "handle:H9",
+                "target_b": "P-1",
+            }
+        ],
+    )
+
+    result = apply_correction_plan(context, plan)
+
+    assert result.revision == 1
+    assert len(context.parts[0].holes) == 1
+    assert context.parts[0].area == 8400
+    assert context.parts[0].hole_handles == ["H9"]
+
+
+def test_build_correction_context_lists_unrecognized_entities(tmp_path):
+    context = _context(tmp_path)
+    context.closed_entities = [
+        {
+            "handle": "H9",
+            "layer": "PANEL",
+            "linetype": "CONTINUOUS",
+            "polygon": Polygon([(300, 0), (400, 0), (400, 100), (300, 100)]),
+            "entity_type": "LWPOLYLINE",
+        }
+    ]
+
+    payload = build_correction_context(context)
+
+    assert payload["unrecognized_entities"][0]["target_id"] == "handle:H9"
 
 
 def test_agent_runtime_correct_returns_to_numbering_gate(tmp_path):

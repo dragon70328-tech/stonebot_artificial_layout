@@ -16,7 +16,7 @@ from src.constraints import PROFILE_MIN_SHEETS
 from src.correction_contracts import CorrectionPlan
 from src.drawing_corrections import apply_correction_plan
 from src.drawing_profile import analyze_drawing, audit_drawing, read_dxf_with_profile
-from src.dxf_reader import read_dxf
+from src.dxf_reader import extract_closed_entity_candidates, read_dxf
 from src.dxf_writer import write_nested_dxf, write_numbered_parts_dxf
 from src.job_context import JobContext
 from src.numbering import assign_numbers
@@ -83,6 +83,7 @@ def _read_dxf(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
             exclude_layers=exclude_layers,
         )
     ctx.parts_data = parts_data
+    ctx.closed_entities = extract_closed_entity_candidates(_doc)
     ctx.recognized_drawing = parts_data_to_recognized_drawing(
         parts_data,
         path,

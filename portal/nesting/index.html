@@ -780,8 +780,10 @@
     }
 
     function renderCorrectionTargets(status) {
-      const parts = (status && status.correction_context && status.correction_context.parts) || [];
-      if (!parts.length) {
+      const correctionContext = (status && status.correction_context) || {};
+      const parts = correctionContext.parts || [];
+      const unrecognized = correctionContext.unrecognized_entities || [];
+      if (!parts.length && !unrecognized.length) {
         correctionTargetsEl.hidden = true;
         correctionTargetSelectEl.innerHTML = "";
         state.selectedCorrectionTargets = [];
@@ -804,6 +806,14 @@
             label: targetLabel(part, hole),
           });
         }
+      }
+      for (const entity of unrecognized) {
+        const entityTarget = entity.target_id || `handle:` + entity.entity_handle;
+        const entityArea = Number(entity.area || 0).toFixed(1);
+        options.push({
+          value: entityTarget,
+          label: `未识别 | ` + entity.entity_handle + ` | ` + (entity.layer || `未知图层`) + ` | ` + entityArea + ` mm²`,
+        });
       }
 
       correctionTargetsEl.hidden = false;

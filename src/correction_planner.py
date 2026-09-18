@@ -23,6 +23,8 @@ Allowed operations:
 6. {"operation": "fill_hole", "target": "hole-id-or-handle", "reason": "该轮廓不是孔洞"}
 7. {"operation": "panel_to_hole", "target": "P-0002", "target_b": "P-0001", "reason": "误识别为独立面板"}
 8. {"operation": "hole_to_panel", "target": "hole-id-or-handle", "value": "P-0010", "reason": "该孔洞实际是规格板"}
+9. {"operation": "add_panel_from_entity", "target": "handle:H9", "value": "P-0020", "reason": "漏识别规格板"}
+10. {"operation": "add_hole_from_entity", "target": "handle:H9", "target_b": "P-0001", "reason": "漏识别孔洞"}
 
 Rules:
 - Use only target identifiers present in the supplied drawing context.
@@ -30,6 +32,9 @@ Rules:
   return {"operations": []} rather than guessing.
 - Do not rename to an existing number. Use swap_numbers for an exchange.
 - Preserve all other panels unchanged.
+- When an unrecognized entity should be a panel, use add_panel_from_entity.
+- When an unrecognized entity should be a hole, use add_hole_from_entity and
+  supply the containing panel in target_b.
 """
 
 

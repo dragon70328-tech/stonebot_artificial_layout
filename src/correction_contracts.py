@@ -22,6 +22,8 @@ class CorrectionOperationType(str, Enum):
     HOLE_TO_PANEL = "hole_to_panel"
     PANEL_TO_HOLE = "panel_to_hole"
     FILL_HOLE = "fill_hole"
+    ADD_PANEL_FROM_ENTITY = "add_panel_from_entity"
+    ADD_HOLE_FROM_ENTITY = "add_hole_from_entity"
 
 
 class CorrectionOperation(Contract):
@@ -39,13 +41,17 @@ class CorrectionOperation(Contract):
             CorrectionOperationType.RENAME_NUMBER,
             CorrectionOperationType.SET_MATERIAL,
             CorrectionOperationType.HOLE_TO_PANEL,
+            CorrectionOperationType.ADD_PANEL_FROM_ENTITY,
         }
         if self.operation in needs_value and not self.value:
             raise ValueError(f"{self.operation} requires value")
         if self.operation == CorrectionOperationType.SWAP_NUMBERS and not self.target_b:
             raise ValueError("swap_numbers requires target_b")
-        if self.operation == CorrectionOperationType.PANEL_TO_HOLE and not self.target_b:
-            raise ValueError("panel_to_hole requires target_b")
+        if self.operation in {
+            CorrectionOperationType.PANEL_TO_HOLE,
+            CorrectionOperationType.ADD_HOLE_FROM_ENTITY,
+        } and not self.target_b:
+            raise ValueError(f"{self.operation} requires target_b")
         return self
 
 

@@ -66,8 +66,35 @@ def build_correction_context(ctx: JobContext) -> dict[str, Any]:
                 "area": round(float(part.area), 3),
             }
         )
+    known_handles = {
+        handle
+        for part in parts
+        for handle in [part.outer_handle, *part.hole_handles]
+        if handle
+    }
+    unrecognized = []
+    for candidate in getattr(ctx, "closed_entities", []):
+        handle = candidate.get("handle")
+        if not handle or handle in known_handles:
+            continue
+        polygon = candidate.get("polygon")
+        if polygon is None or polygon.is_empty:
+            continue
+        unrecognized.append(
+            {
+                "target_id": f"handle:{handle}",
+                "entity_handle": handle,
+                "entity_type": candidate.get("entity_type"),
+                "layer": candidate.get("layer"),
+                "linetype": candidate.get("linetype"),
+                "area": round(float(polygon.area), 3),
+                "bounds": [round(float(value), 3) for value in polygon.bounds],
+            }
+        )
+
     return {
         "parts": items,
+        "unrecognized_entities": unrecognized,
         "part_count": len(items),
         "correction_revision": ctx.correction_revision,
     }
@@ -133,6 +160,22 @@ def _resolve_hole(parts: list[Any], target: str) -> tuple[Any, int]:
     raise ValueError(f"unknown correction target: {target!r}")
 
 
+def _resolve_candidate(
+    closed_entities: list[dict[str, Any]],
+    target: str,
+) -> dict[str, Any]:
+    normalized = _target_key(target)
+    for candidate in closed_entities:
+        handle = candidate.get("handle")
+        candidates = {
+            _target_key(handle),
+            _target_key(f"handle:{handle}" if handle else None),
+        }
+        if normalized in candidates:
+            return candidate
+    raise ValueError(f"unknown correction target: {target!r}")
+
+
 def _part_data(parts_data: list[dict[str, Any]], part: Any) -> dict[str, Any] | None:
     for data in parts_data:
         if int(data.get("index", -1)) == int(part.id):
@@ -191,6 +234,10 @@ def _describe_operation(operation: CorrectionOperation) -> str:
         return f"panel {operation.target} -> hole of {operation.target_b}"
     if operation.operation == CorrectionOperationType.FILL_HOLE:
         return f"fill hole {operation.target}"
+    if operation.operation == CorrectionOperationType.ADD_PANEL_FROM_ENTITY:
+        return f"entity {operation.target} -> panel {operation.value}"
+    if operation.operation == CorrectionOperationType.ADD_HOLE_FROM_ENTITY:
+        return f"entity {operation.target} -> hole of {operation.target_b}"
     return f"ignore {operation.target}"
 
 
@@ -200,6 +247,7 @@ def _apply_operation(
     parts_data: list[dict[str, Any]],
     panel_ids: dict[str, int],
     removed_part_ids: list[int],
+    closed_entities: list[dict[str, Any]],
 ) -> None:
     if operation.operation == CorrectionOperationType.RENAME_NUMBER:
         part = _resolve_part(parts, operation.target, panel_ids)
@@ -298,6 +346,55 @@ def _apply_operation(
         _refresh_part_geometry(parent, parts_data)
         return
 
+    if operation.operation == CorrectionOperationType.ADD_PANEL_FROM_ENTITY:
+        candidate = _resolve_candidate(closed_entities, operation.target)
+        value = str(operation.value or "").strip()
+        if not value:
+            raise ValueError("add_panel_from_entity requires a non-empty number")
+        polygon = deepcopy(candidate["polygon"])
+        new_id = max(int(item.id) for item in parts) + 1
+        handle = candidate.get("handle")
+        new_part = Part(
+            id=new_id,
+            number=value,
+            polygon=polygon,
+            outer_polygon=polygon,
+            holes=[],
+            original_number=value,
+            area=float(polygon.area),
+            label_position=tuple(polygon.centroid.coords[0]),
+            outer_handle=handle,
+        )
+        parts.append(new_part)
+        parts_data.append(
+            {
+                "index": new_id,
+                "polygon": polygon,
+                "outer_polygon": polygon,
+                "holes": [],
+                "hole_handles": [],
+                "original_number": value,
+                "material_group": None,
+                "area": float(polygon.area),
+                "centroid": tuple(polygon.centroid.coords[0]),
+                "outer_handle": handle,
+            }
+        )
+        return
+
+    if operation.operation == CorrectionOperationType.ADD_HOLE_FROM_ENTITY:
+        candidate = _resolve_candidate(closed_entities, operation.target)
+        parent = _resolve_part(parts, str(operation.target_b), panel_ids)
+        hole = deepcopy(candidate["polygon"])
+        if not parent.outer_polygon.covers(hole):
+            raise ValueError("candidate is not fully contained by target parent")
+        if any(hole.intersection(existing).area > 1e-6 for existing in parent.holes):
+            raise ValueError("candidate overlaps an existing hole")
+        parent.holes.append(hole)
+        parent.hole_handles.append(candidate.get("handle"))
+        _refresh_part_geometry(parent, parts_data)
+        return
+
     if operation.operation == CorrectionOperationType.FILL_HOLE:
         source, hole_index = _resolve_hole(parts, operation.target)
         source.holes.pop(hole_index)
@@ -357,6 +454,7 @@ def apply_correction_plan(
             working_data,
             panel_ids,
             removed_part_ids,
+            ctx.closed_entities,
         )
         applied.append(_describe_operation(operation))
 

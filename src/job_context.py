@@ -34,6 +34,7 @@ class JobContext:
     drawing_profile: Any | None = None
     parts_data: list[dict[str, Any]] | None = None
     parts: list[Any] | None = None
+    closed_entities: list[dict[str, Any]] = field(default_factory=list)
     recognized_drawing: Any | None = None
     audit_issues: list[Any] = field(default_factory=list)
 
