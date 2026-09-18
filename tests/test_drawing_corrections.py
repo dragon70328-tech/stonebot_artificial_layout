@@ -77,6 +77,93 @@ def _context(tmp_path: Path) -> JobContext:
     )
 
 
+def _context_with_hole(tmp_path: Path) -> JobContext:
+    source = tmp_path / "drawing.dxf"
+    source.write_bytes(b"0\nEOF\n")
+    outer = _geometry(200)
+    hole = Polygon([(40, 40), (80, 40), (80, 80), (40, 80)])
+    part = Part(
+        id=1,
+        number="P-1",
+        polygon=outer.difference(hole),
+        outer_polygon=outer,
+        holes=[hole],
+        original_number="P-1",
+        material_group="01B",
+        area=float(outer.difference(hole).area),
+        outer_handle="H1",
+        hole_handles=["H0"],
+    )
+    data = {
+        "index": 1,
+        "polygon": part.polygon,
+        "outer_polygon": outer,
+        "holes": [hole],
+        "hole_handles": ["H0"],
+        "original_number": "P-1",
+        "material_group": "01B",
+        "area": part.area,
+        "centroid": (100, 100),
+        "outer_handle": "H1",
+    }
+    return JobContext(
+        dxf_path=str(source),
+        project_id="drawing",
+        unit=UnitSystem.METRIC,
+        parts=[part],
+        parts_data=[data],
+        output_dir=tmp_path,
+    )
+
+
+def _context_nested(tmp_path: Path) -> JobContext:
+    source = tmp_path / "drawing.dxf"
+    source.write_bytes(b"0\nEOF\n")
+    parent = Polygon([(0, 0), (200, 0), (200, 200), (0, 200)])
+    child = Polygon([(20, 20), (70, 20), (70, 70), (20, 70)])
+    parts = [
+        Part(
+            id=1,
+            number="P-1",
+            polygon=parent,
+            outer_polygon=parent,
+            original_number="P-1",
+            outer_handle="H1",
+        ),
+        Part(
+            id=2,
+            number="P-2",
+            polygon=child,
+            outer_polygon=child,
+            original_number="P-2",
+            outer_handle="H2",
+        ),
+    ]
+    parts_data = [
+        {
+            "index": part.id,
+            "polygon": part.polygon,
+            "outer_polygon": part.outer_polygon,
+            "holes": [],
+            "hole_handles": [],
+            "original_number": part.original_number,
+            "material_group": "01B",
+            "area": part.area,
+            "centroid": tuple(part.polygon.centroid.coords[0]),
+            "outer_handle": part.outer_handle,
+        }
+        for part in parts
+    ]
+    return JobContext(
+        dxf_path=str(source),
+        project_id="drawing",
+        unit=UnitSystem.METRIC,
+        parts=parts,
+        parts_data=parts_data,
+        output_dir=tmp_path,
+    )
+
+
 def test_parse_correction_plan_validates_operations():
     plan = parse_correction_plan(
         {
@@ -101,6 +188,36 @@ def test_parse_correction_plan_validates_operations():
                 ]
             },
             instruction="错误计划",
+        )
+
+
+def test_parse_correction_plan_validates_hole_reclassification_operations():
+    plan = parse_correction_plan(
+        {
+            "operations": [
+                {
+                    "operation": "panel_to_hole",
+                    "target": "P-2",
+                    "target_b": "P-1",
+                },
+                {
+                    "operation": "fill_hole",
+                    "target": "handle:H9",
+                },
+            ]
+        },
+        instruction="纠正孔洞分类",
+    )
+    assert len(plan.operations) == 2
+
+    with pytest.raises(ValidationError):
+        parse_correction_plan(
+            {
+                "operations": [
+                    {"operation": "panel_to_hole", "target": "P-2"}
+                ]
+            },
+            instruction="缺少父面板",
         )
 
 
@@ -195,6 +312,62 @@ def test_apply_correction_handler_removes_panel(tmp_path):
     assert result["removed_part_ids"] == [2]
     assert len(context.parts) == 1
     assert context.parts[0].number == "P-1"
+
+
+def test_fill_hole_restores_panel_material(tmp_path):
+    context = _context_with_hole(tmp_path)
+    plan = CorrectionPlan(
+        instruction="该轮廓不是孔洞",
+        operations=[{"operation": "fill_hole", "target": "handle:H0"}],
+    )
+
+    result = apply_correction_plan(context, plan)
+
+    assert result.revision == 1
+    assert context.parts[0].holes == []
+    assert context.parts[0].area == 40000
+
+
+def test_hole_to_panel_creates_new_specification_panel(tmp_path):
+    context = _context_with_hole(tmp_path)
+    plan = CorrectionPlan(
+        instruction="该孔洞实际是规格板",
+        operations=[
+            {
+                "operation": "hole_to_panel",
+                "target": "handle:H0",
+                "value": "P-10",
+            }
+        ],
+    )
+
+    result = apply_correction_plan(context, plan)
+
+    assert result.part_numbers == ["P-1", "P-10"]
+    assert context.parts[0].holes == []
+    assert context.parts[1].number == "P-10"
+    assert context.parts[1].polygon.area == 1600
+
+
+def test_panel_to_hole_assigns_misclassified_contour(tmp_path):
+    context = _context_nested(tmp_path)
+    plan = CorrectionPlan(
+        instruction="P-2 实际是 P-1 的孔洞",
+        operations=[
+            {
+                "operation": "panel_to_hole",
+                "target": "P-2",
+                "target_b": "P-1",
+            }
+        ],
+    )
+
+    result = apply_correction_plan(context, plan)
+
+    assert result.removed_part_ids == [2]
+    assert len(context.parts) == 1
+    assert len(context.parts[0].holes) == 1
+    assert context.parts[0].area == 37500
 
 
 def test_agent_runtime_correct_returns_to_numbering_gate(tmp_path):

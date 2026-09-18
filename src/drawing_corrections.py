@@ -1,4 +1,4 @@
-﻿"""Deterministic correction engine for numbered in-place DXF revisions."""
+"""Deterministic correction engine for numbered in-place DXF revisions."""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from shapely.ops import unary_union
+
 from src.correction_contracts import (
     CorrectionOperation,
     CorrectionOperationType,
@@ -17,6 +19,7 @@ from src.correction_contracts import (
 )
 from src.dxf_writer import write_numbered_parts_dxf
 from src.job_context import JobContext
+from src.models import Part
 from src.recognized_contract import parts_data_to_recognized_drawing
 
 
@@ -35,6 +38,21 @@ def build_correction_context(ctx: JobContext) -> dict[str, Any]:
             if index < len(recognized_panels)
             else None
         )
+        holes = []
+        for hole_index, hole in enumerate(part.holes):
+            handle = (
+                part.hole_handles[hole_index]
+                if hole_index < len(part.hole_handles)
+                else None
+            )
+            holes.append(
+                {
+                    "hole_id": _hole_id(part, hole_index),
+                    "entity_handle": handle,
+                    "area": round(float(hole.area), 3),
+                    "bounds": [round(float(value), 3) for value in hole.bounds],
+                }
+            )
         items.append(
             {
                 "panel_id": panel_id,
@@ -44,6 +62,7 @@ def build_correction_context(ctx: JobContext) -> dict[str, Any]:
                 "outer_handle": part.outer_handle,
                 "material_group": part.material_group,
                 "hole_count": len(part.holes),
+                "holes": holes,
                 "area": round(float(part.area), 3),
             }
         )
@@ -90,11 +109,54 @@ def _resolve_part(
     raise ValueError(f"unknown correction target: {target!r}")
 
 
+def _hole_id(part: Any, hole_index: int) -> str:
+    if hole_index < len(part.hole_handles) and part.hole_handles[hole_index]:
+        return f"handle:{part.hole_handles[hole_index]}"
+    return f"p{part.id}:h{hole_index}"
+
+
+def _resolve_hole(parts: list[Any], target: str) -> tuple[Any, int]:
+    normalized = _target_key(target)
+    for part in parts:
+        for index, _hole in enumerate(part.holes):
+            handle = (
+                part.hole_handles[index]
+                if index < len(part.hole_handles)
+                else None
+            )
+            candidates = {
+                _target_key(_hole_id(part, index)),
+                _target_key(handle),
+            }
+            if normalized in candidates:
+                return part, index
+    raise ValueError(f"unknown correction target: {target!r}")
+
+
 def _part_data(parts_data: list[dict[str, Any]], part: Any) -> dict[str, Any] | None:
     for data in parts_data:
         if int(data.get("index", -1)) == int(part.id):
             return data
     return None
+
+
+def _refresh_part_geometry(part: Any, parts_data: list[dict[str, Any]]) -> None:
+    part.holes = [hole for hole in part.holes if not hole.is_empty]
+    part.polygon = (
+        part.outer_polygon.difference(unary_union(part.holes))
+        if part.holes
+        else part.outer_polygon
+    )
+    if not part.polygon.is_valid:
+        part.polygon = part.polygon.buffer(0)
+    part.area = float(part.polygon.area)
+    data = _part_data(parts_data, part)
+    if data is not None:
+        data["polygon"] = part.polygon
+        data["outer_polygon"] = part.outer_polygon
+        data["holes"] = list(part.holes)
+        data["hole_handles"] = list(part.hole_handles)
+        data["area"] = part.area
 
 
 def _parts_digest(parts: list[Any]) -> str:
@@ -123,6 +185,12 @@ def _describe_operation(operation: CorrectionOperation) -> str:
         return f"{operation.target} material -> {operation.value}"
     if operation.operation == CorrectionOperationType.REMOVE_PANEL:
         return f"remove {operation.target}"
+    if operation.operation == CorrectionOperationType.HOLE_TO_PANEL:
+        return f"hole {operation.target} -> panel {operation.value}"
+    if operation.operation == CorrectionOperationType.PANEL_TO_HOLE:
+        return f"panel {operation.target} -> hole of {operation.target_b}"
+    if operation.operation == CorrectionOperationType.FILL_HOLE:
+        return f"fill hole {operation.target}"
     return f"ignore {operation.target}"
 
 
@@ -133,9 +201,8 @@ def _apply_operation(
     panel_ids: dict[str, int],
     removed_part_ids: list[int],
 ) -> None:
-    part = _resolve_part(parts, operation.target, panel_ids)
-
     if operation.operation == CorrectionOperationType.RENAME_NUMBER:
+        part = _resolve_part(parts, operation.target, panel_ids)
         value = str(operation.value or "").strip()
         if not value:
             raise ValueError("rename_number requires a non-empty number")
@@ -147,6 +214,7 @@ def _apply_operation(
         return
 
     if operation.operation == CorrectionOperationType.SWAP_NUMBERS:
+        part = _resolve_part(parts, operation.target, panel_ids)
         other = _resolve_part(parts, str(operation.target_b), panel_ids)
         part.number, other.number = other.number, part.number
         for item in (part, other):
@@ -156,6 +224,7 @@ def _apply_operation(
         return
 
     if operation.operation == CorrectionOperationType.SET_MATERIAL:
+        part = _resolve_part(parts, operation.target, panel_ids)
         value = str(operation.value or "").strip()
         if not value:
             raise ValueError("set_material requires a non-empty material")
@@ -165,10 +234,83 @@ def _apply_operation(
             data["material_group"] = value
         return
 
+    if operation.operation == CorrectionOperationType.HOLE_TO_PANEL:
+        source, hole_index = _resolve_hole(parts, operation.target)
+        value = str(operation.value or "").strip()
+        if not value:
+            raise ValueError("hole_to_panel requires a non-empty number")
+        hole = source.holes.pop(hole_index)
+        handle = (
+            source.hole_handles.pop(hole_index)
+            if hole_index < len(source.hole_handles)
+            else None
+        )
+        _refresh_part_geometry(source, parts_data)
+        new_id = max(int(item.id) for item in parts) + 1
+        new_part = Part(
+            id=new_id,
+            number=value,
+            polygon=hole,
+            outer_polygon=hole,
+            holes=[],
+            original_number=value,
+            material_group=source.material_group,
+            area=float(hole.area),
+            label_position=tuple(hole.centroid.coords[0]),
+            outer_handle=handle,
+        )
+        parts.append(new_part)
+        parts_data.append(
+            {
+                "index": new_id,
+                "polygon": hole,
+                "outer_polygon": hole,
+                "holes": [],
+                "hole_handles": [],
+                "original_number": value,
+                "material_group": source.material_group,
+                "area": float(hole.area),
+                "centroid": tuple(hole.centroid.coords[0]),
+                "outer_handle": handle,
+            }
+        )
+        return
+
+    if operation.operation == CorrectionOperationType.PANEL_TO_HOLE:
+        part = _resolve_part(parts, operation.target, panel_ids)
+        parent = _resolve_part(parts, str(operation.target_b), panel_ids)
+        if part is parent:
+            raise ValueError("panel_to_hole target and parent must be different")
+        if part.holes:
+            raise ValueError("panel_to_hole does not support panels with holes")
+        hole = part.outer_polygon
+        if not parent.outer_polygon.covers(hole):
+            raise ValueError("panel is not fully contained by target parent")
+        if any(hole.intersection(existing).area > 1e-6 for existing in parent.holes):
+            raise ValueError("new hole overlaps an existing hole")
+        parent.holes.append(hole)
+        parent.hole_handles.append(part.outer_handle)
+        removed_part_ids.append(int(part.id))
+        parts.remove(part)
+        data = _part_data(parts_data, part)
+        if data is not None:
+            parts_data.remove(data)
+        _refresh_part_geometry(parent, parts_data)
+        return
+
+    if operation.operation == CorrectionOperationType.FILL_HOLE:
+        source, hole_index = _resolve_hole(parts, operation.target)
+        source.holes.pop(hole_index)
+        if hole_index < len(source.hole_handles):
+            source.hole_handles.pop(hole_index)
+        _refresh_part_geometry(source, parts_data)
+        return
+
     if operation.operation in {
         CorrectionOperationType.REMOVE_PANEL,
         CorrectionOperationType.IGNORE_ENTITY,
     }:
+        part = _resolve_part(parts, operation.target, panel_ids)
         removed_part_ids.append(int(part.id))
         parts.remove(part)
         data = _part_data(parts_data, part)

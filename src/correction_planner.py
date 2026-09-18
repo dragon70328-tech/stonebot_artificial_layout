@@ -1,4 +1,4 @@
-﻿"""LLM planner for correcting an already recognized numbered drawing."""
+"""LLM planner for correcting an already recognized numbered drawing."""
 
 from __future__ import annotations
 
@@ -20,6 +20,9 @@ Allowed operations:
 3. {"operation": "set_material", "target": "P-0001", "value": "01B", "reason": "..."}
 4. {"operation": "remove_panel", "target": "P-0001", "reason": "误识别"}
 5. {"operation": "ignore_entity", "target": "handle-or-number", "reason": "..."}
+6. {"operation": "fill_hole", "target": "hole-id-or-handle", "reason": "该轮廓不是孔洞"}
+7. {"operation": "panel_to_hole", "target": "P-0002", "target_b": "P-0001", "reason": "误识别为独立面板"}
+8. {"operation": "hole_to_panel", "target": "hole-id-or-handle", "value": "P-0010", "reason": "该孔洞实际是规格板"}
 
 Rules:
 - Use only target identifiers present in the supplied drawing context.

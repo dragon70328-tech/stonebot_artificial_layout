@@ -1,4 +1,4 @@
-﻿"""原位 DXF 对话纠错的结构化契约。
+"""原位 DXF 对话纠错的结构化契约。
 
 LLM 只能生成这里定义的纠正操作，具体修改由确定性工具执行。
 """
@@ -19,6 +19,9 @@ class CorrectionOperationType(str, Enum):
     SET_MATERIAL = "set_material"
     REMOVE_PANEL = "remove_panel"
     IGNORE_ENTITY = "ignore_entity"
+    HOLE_TO_PANEL = "hole_to_panel"
+    PANEL_TO_HOLE = "panel_to_hole"
+    FILL_HOLE = "fill_hole"
 
 
 class CorrectionOperation(Contract):
@@ -35,11 +38,14 @@ class CorrectionOperation(Contract):
         needs_value = {
             CorrectionOperationType.RENAME_NUMBER,
             CorrectionOperationType.SET_MATERIAL,
+            CorrectionOperationType.HOLE_TO_PANEL,
         }
         if self.operation in needs_value and not self.value:
             raise ValueError(f"{self.operation} requires value")
         if self.operation == CorrectionOperationType.SWAP_NUMBERS and not self.target_b:
             raise ValueError("swap_numbers requires target_b")
+        if self.operation == CorrectionOperationType.PANEL_TO_HOLE and not self.target_b:
+            raise ValueError("panel_to_hole requires target_b")
         return self
 
 
