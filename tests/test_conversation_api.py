@@ -47,10 +47,15 @@ def test_conversation_crud(tmp_path, monkeypatch):
 
     message = client.post(
         f"/conversations/{conversation_id}/messages",
-        json={"role": "user", "content": "3200x1800 排板"},
+        json={
+            "role": "user",
+            "content": "3200x1800 排板",
+            "parameters": {"process": "bridge", "kerf_mm": 5},
+        },
     )
     assert message.status_code == 201
     assert message.json()["content"] == "3200x1800 排板"
+    assert message.json()["parameters"]["kerf_mm"] == 5
 
     loaded = client.get(f"/conversations/{conversation_id}")
     assert loaded.status_code == 200
@@ -149,6 +154,16 @@ def test_respond_uses_latest_attachment_for_create_job(tmp_path, monkeypatch):
             "role": "user",
             "content": "3200x1800 排板",
             "attachments": [{"dxf_path": "C:/uploads/water.dxf"}],
+            "parameters": {
+                "process": "bridge",
+                "kerf_mm": 5,
+                "usable_width_mm": 3180,
+                "usable_height_mm": 1780,
+                "oversize_enabled": True,
+                "oversize_mode": "total",
+                "oversize_width_mm": 20,
+                "oversize_height_mm": 20,
+            },
         },
     )
 
@@ -160,7 +175,50 @@ def test_respond_uses_latest_attachment_for_create_job(tmp_path, monkeypatch):
     assert manager.created[0].dxf_path == "C:/uploads/water.dxf"
     assert manager.created[0].width_mm == 3200
     assert manager.created[0].height_mm == 1800
+    assert manager.created[0].process == "bridge"
+    assert manager.created[0].kerf_mm == 5
+    assert manager.created[0].usable_width_mm == 3180
+    assert manager.created[0].usable_height_mm == 1780
+    assert manager.created[0].oversize_enabled is True
     assert planner.calls[0][1] == [{"dxf_path": "C:/uploads/water.dxf"}]
+
+
+def test_structured_parameters_create_job_without_llm(tmp_path, monkeypatch):
+    client, planner, manager = _conversation_client(
+        tmp_path,
+        monkeypatch,
+        {"action": "create_job", "width_mm": 1, "height_mm": 1},
+    )
+    created = client.post(
+        "/conversations",
+        json={"tenant_id": "default"},
+    )
+    conversation_id = created.json()["id"]
+    client.post(
+        f"/conversations/{conversation_id}/messages",
+        json={
+            "role": "user",
+            "content": "开始排板",
+            "attachments": [{"dxf_path": "C:/uploads/structured.dxf"}],
+            "parameters": {
+                "width_mm": 3200,
+                "height_mm": 1800,
+                "thickness_mm": 20,
+                "usable_width_mm": 3200,
+                "usable_height_mm": 1800,
+                "process": "bridge",
+                "kerf_mm": 5,
+            },
+        },
+    )
+
+    response = client.post(f"/conversations/{conversation_id}/respond")
+
+    assert response.status_code == 202
+    assert planner.calls == []
+    assert manager.created[0].dxf_path == "C:/uploads/structured.dxf"
+    assert manager.created[0].process == "bridge"
+    assert manager.created[0].kerf_mm == 5
 
 
 def test_respond_create_job_prefers_intent_dxf_path(tmp_path, monkeypatch):

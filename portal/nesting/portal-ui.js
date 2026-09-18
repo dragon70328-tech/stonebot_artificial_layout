@@ -211,6 +211,47 @@
     return ARTIFACT_LABELS[key] || key;
   }
 
+  function effectiveSheetDimensions(input) {
+    const value = input || {};
+    const usableWidth = Number(value.usableWidth) || 0;
+    const usableHeight = Number(value.usableHeight) || 0;
+    const oversizeWidth = Number(value.oversizeWidth) || 0;
+    const oversizeHeight = Number(value.oversizeHeight) || 0;
+    const enabled = Boolean(value.oversizeEnabled);
+    const multiplier = enabled && value.oversizeMode === "per_side" ? 2 : 1;
+    const addedWidth = enabled ? oversizeWidth * multiplier : 0;
+    const addedHeight = enabled ? oversizeHeight * multiplier : 0;
+    return {
+      addedWidth,
+      addedHeight,
+      effectiveWidth: usableWidth + addedWidth,
+      effectiveHeight: usableHeight + addedHeight,
+    };
+  }
+
+  function validateNestingParameters(input) {
+    const value = input || {};
+    const errors = [];
+    if (!(Number(value.width) > 0) || !(Number(value.height) > 0)) {
+      errors.push("大板标称尺寸必须大于 0");
+    }
+    if (!(Number(value.thickness) > 0)) {
+      errors.push("大板厚度必须大于 0");
+    }
+    if (!(Number(value.usableWidth) > 0) || !(Number(value.usableHeight) > 0)) {
+      errors.push("大板可利用尺寸必须大于 0");
+    }
+    if (value.oversizeEnabled) {
+      if (Number(value.oversizeWidth) < 0 || Number(value.oversizeHeight) < 0) {
+        errors.push("让尺不能小于 0");
+      }
+    }
+    if (value.process === "bridge" && !(Number(value.kerf) > 0)) {
+      errors.push("桥切必须输入大于 0 的刀厚或有效刀缝");
+    }
+    return errors;
+  }
+
   function isDxfFile(name) {
     return typeof name === "string" && name.toLowerCase().endsWith(".dxf");
   }
@@ -259,6 +300,8 @@
     jobMetrics,
     jobArtifacts,
     artifactLabel,
+    effectiveSheetDimensions,
+    validateNestingParameters,
     isDxfFile,
     formatAttachmentPath,
     parseApiError,

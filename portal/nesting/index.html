@@ -278,6 +278,59 @@
       font-size: 12px;
     }
 
+    .parameter-panel {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 10px;
+      background: #fcfcfd;
+    }
+    .parameter-panel summary {
+      cursor: pointer;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .parameter-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(120px, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .field input,
+    .field select {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 7px 8px;
+      font: inherit;
+      color: var(--text);
+      background: var(--panel);
+    }
+    .field input:disabled,
+    .field select:disabled {
+      background: #f3f4f6;
+      color: #9ca3af;
+    }
+    .checkbox-field {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text);
+      padding-top: 18px;
+    }
+    .derived-size {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--accent);
+    }
     .prompt-label { font-size: 12px; color: var(--muted); }
     .prompt-chips { display: flex; flex-wrap: wrap; gap: 6px; }
     .prompt-chips button {
@@ -315,6 +368,7 @@
     @media (max-width: 640px) {
       main { padding: 12px; }
       .message { max-width: 92%; }
+      .parameter-grid { grid-template-columns: repeat(2, minmax(110px, 1fr)); }
       header { flex-direction: column; align-items: flex-start; }
     }
   </style>
@@ -323,7 +377,7 @@
   <header>
     <div>
       <h1>识图排板对话</h1>
-      <p class="subtitle">上传 DXF → 审图确认 → 排板确认 → 后处理确认</p>
+      <p class="subtitle">上传 DXF → 参数确认 → 审图确认 → 排板确认</p>
     </div>
     <nav>
       <a href="../">返回总界面</a>
@@ -361,7 +415,54 @@
             <button id="file-clear" type="button">清除</button>
           </div>
         </div>
-        <textarea id="input" placeholder="上传 DXF 后，输入大板尺寸开始，例如：3200x1800 排板"></textarea>
+        <details id="parameter-panel" class="parameter-panel" open>
+          <summary>排板参数</summary>
+          <div class="parameter-grid">
+            <label class="field">加工方法
+              <select id="param-process">
+                <option value="bridge">桥切圆盘锯</option>
+                <option value="waterjet">水刀</option>
+                <option value="laser">激光</option>
+              </select>
+            </label>
+            <label class="field">大板标称长 (mm)
+              <input id="param-width" type="number" min="1" step="1" value="3200">
+            </label>
+            <label class="field">大板标称宽 (mm)
+              <input id="param-height" type="number" min="1" step="1" value="1800">
+            </label>
+            <label class="field">大板厚度 (mm)
+              <input id="param-thickness" type="number" min="1" step="1" value="20">
+            </label>
+            <label class="field">可利用长 (mm)
+              <input id="param-usable-width" type="number" min="1" step="1" value="3200">
+            </label>
+            <label class="field">可利用宽 (mm)
+              <input id="param-usable-height" type="number" min="1" step="1" value="1800">
+            </label>
+            <label class="field">让尺长度 (mm)
+              <input id="param-oversize-width" type="number" min="0" step="1" value="0" disabled>
+            </label>
+            <label class="field">让尺宽度 (mm)
+              <input id="param-oversize-height" type="number" min="0" step="1" value="0" disabled>
+            </label>
+            <label class="field">让尺口径
+              <select id="param-oversize-mode" disabled>
+                <option value="total">总加量</option>
+                <option value="per_side">每边加量</option>
+              </select>
+            </label>
+            <label class="field">刀厚 / 有效刀缝 (mm)
+              <input id="param-kerf" type="number" min="0" step="0.1" value="5">
+            </label>
+            <label class="checkbox-field">
+              <input id="param-oversize-enabled" type="checkbox">
+              利用让尺
+            </label>
+          </div>
+          <div id="derived-size" class="derived-size">实际可用尺寸：3200 × 1800 mm</div>
+        </details>
+        <textarea id="input" placeholder="上传 DXF 后确认参数，可补充说明或直接点击发送"></textarea>
         <div class="prompt-label">常用指令（点击填入）</div>
         <div class="prompt-chips">
           <button type="button" data-fill="3200x1800 排板">3200x1800 排板</button>
@@ -412,6 +513,91 @@
     const metricsEl = document.getElementById("job-metrics");
     const nextActionEl = document.getElementById("next-action");
     const jobErrorEl = document.getElementById("job-error");
+    const parameterEls = {
+      process: document.getElementById("param-process"),
+      width: document.getElementById("param-width"),
+      height: document.getElementById("param-height"),
+      thickness: document.getElementById("param-thickness"),
+      usableWidth: document.getElementById("param-usable-width"),
+      usableHeight: document.getElementById("param-usable-height"),
+      oversizeEnabled: document.getElementById("param-oversize-enabled"),
+      oversizeMode: document.getElementById("param-oversize-mode"),
+      oversizeWidth: document.getElementById("param-oversize-width"),
+      oversizeHeight: document.getElementById("param-oversize-height"),
+      kerf: document.getElementById("param-kerf"),
+      derivedSize: document.getElementById("derived-size"),
+    };
+
+    function parameterNumber(element, fallback = 0) {
+      const value = Number(element.value);
+      return Number.isFinite(value) ? value : fallback;
+    }
+
+    function syncParameterControls() {
+      const oversizeEnabled = parameterEls.oversizeEnabled.checked;
+      parameterEls.oversizeMode.disabled = !oversizeEnabled;
+      parameterEls.oversizeWidth.disabled = !oversizeEnabled;
+      parameterEls.oversizeHeight.disabled = !oversizeEnabled;
+
+      const dimensions = ui.effectiveSheetDimensions({
+        usableWidth: parameterNumber(parameterEls.usableWidth),
+        usableHeight: parameterNumber(parameterEls.usableHeight),
+        oversizeEnabled,
+        oversizeMode: parameterEls.oversizeMode.value,
+        oversizeWidth: parameterNumber(parameterEls.oversizeWidth),
+        oversizeHeight: parameterNumber(parameterEls.oversizeHeight),
+      });
+      parameterEls.derivedSize.textContent = (
+        `实际可用尺寸：${dimensions.effectiveWidth.toFixed(1)} × `
+        + `${dimensions.effectiveHeight.toFixed(1)} mm`
+      );
+    }
+
+    function buildNestingParameters() {
+      const process = parameterEls.process.value;
+      const width = parameterNumber(parameterEls.width);
+      const height = parameterNumber(parameterEls.height);
+      const thickness = parameterNumber(parameterEls.thickness);
+      const usableWidth = parameterNumber(parameterEls.usableWidth);
+      const usableHeight = parameterNumber(parameterEls.usableHeight);
+      const oversizeEnabled = parameterEls.oversizeEnabled.checked;
+      const oversizeWidth = parameterNumber(parameterEls.oversizeWidth);
+      const oversizeHeight = parameterNumber(parameterEls.oversizeHeight);
+      const kerf = parameterNumber(parameterEls.kerf);
+
+      const validationErrors = ui.validateNestingParameters({
+        process,
+        width,
+        height,
+        thickness,
+        usableWidth,
+        usableHeight,
+        oversizeEnabled,
+        oversizeWidth,
+        oversizeHeight,
+        kerf,
+      });
+      if (validationErrors.length) throw new Error(validationErrors[0]);
+
+      return {
+        width_mm: width,
+        height_mm: height,
+        thickness_mm: thickness,
+        usable_width_mm: usableWidth,
+        usable_height_mm: usableHeight,
+        oversize_enabled: oversizeEnabled,
+        oversize_mode: parameterEls.oversizeMode.value,
+        oversize_width_mm: oversizeEnabled ? oversizeWidth : 0,
+        oversize_height_mm: oversizeEnabled ? oversizeHeight : 0,
+        kerf_mm: kerf,
+        process,
+        profile: process === "waterjet" ? "waterjet" : process === "laser" ? "laser" : "min_sheets",
+        rotation_degrees: process === "bridge" ? [0, 90, 180, 270] : null,
+        allow_shared_edge: true,
+        pairing: process !== "bridge",
+        skip_unnumbered: true,
+      };
+    }
 
     function setStatus(text, kind = "info") {
       statusEl.textContent = text;
@@ -449,7 +635,7 @@
           <h2>如何开始</h2>
           <ol>
             <li>点击 <strong>选择 DXF 文件</strong>，上传图纸。</li>
-            <li>在输入框填写大板尺寸，例如 <code>3200x1800 排板</code>。</li>
+            <li>确认加工方法、大板尺寸、让尺和桥切刀缝。</li>
             <li>任务到达审图、排板、后处理阶段时，点击 <strong>确认下一步</strong>。</li>
           </ol>
         </div>
@@ -701,7 +887,7 @@
       state.pollTimers.push(timer);
     }
 
-    async function sendChat(content, attachments = []) {
+    async function sendChat(content, attachments = [], parameters = null) {
       await ensureConversation();
       const message = await api(
         `/conversations/${state.conversationId}/messages`,
@@ -711,6 +897,7 @@
             role: "user",
             content,
             attachments,
+            parameters: parameters || {},
           }),
         },
       );
@@ -837,7 +1024,8 @@
     }
 
     async function handleSend() {
-      const content = inputEl.value.trim();
+      const creatingJob = !currentJobId() && Boolean(state.lastUpload);
+      const content = inputEl.value.trim() || (creatingJob ? "开始排板" : "");
       if (!content) {
         setStatus("请输入排板指令", "error");
         return;
@@ -846,7 +1034,8 @@
       setBusy(true);
       try {
         const attachments = state.lastUpload ? [state.lastUpload] : [];
-        await sendChat(content, attachments);
+        const parameters = creatingJob ? buildNestingParameters() : null;
+        await sendChat(content, attachments, parameters);
         state.lastUpload = null;
         inputEl.value = "";
         setStatus("指令已发送");
@@ -863,7 +1052,7 @@
       try {
         state.lastUpload = await uploadFile(file);
         renderFileChip(file.name);
-        setStatus(`已上传 ${file.name}，请在下方输入大板尺寸`, "success");
+        setStatus(`已上传 ${file.name}，请确认下方排板参数`, "success");
       } catch (error) {
         renderFileChip(null);
         setStatus(error.message, "error");
@@ -946,6 +1135,11 @@
         inputEl.focus();
       });
     });
+    document.querySelectorAll("#parameter-panel input, #parameter-panel select").forEach((element) => {
+      element.addEventListener("input", syncParameterControls);
+      element.addEventListener("change", syncParameterControls);
+    });
+    syncParameterControls();
 
     renderMessages();
     renderJobPanel(null);

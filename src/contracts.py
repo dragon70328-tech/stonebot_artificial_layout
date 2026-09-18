@@ -198,17 +198,25 @@ class CorrectionEvent(Contract):
 
 
 class ConfirmedDrawing(Contract):
-    """用户确认后的图纸快照，是排板阶段的唯一输入。"""
+    """用户确认后的图纸快照，是排板阶段的唯一输入。
+
+    确认对象不仅要记录确认动作，还应携带用户已经核对过的规格板、
+    孔洞、文字关系和单位，后续排板不得重新猜测原始 DXF 的语义。
+    """
 
     confirmed_id: str
     drawing_id: str
     revision_id: str
+    unit: str = "mm"
+    tolerance_mm: float = Field(default=0.01, gt=0)
+    panels: list[RecognizedPanel] = Field(default_factory=list)
+    texts: list[RecognizedText] = Field(default_factory=list)
     confirmed_by: ActorKind = ActorKind.USER
     confirmed_at: datetime = Field(default_factory=datetime.utcnow)
     confirmed_digest: str | None = None
+    source_digest: str | None = None
     artifact_path: str | None = None
     notes: str = ""
-
 
 class ReviewState(Contract):
     """一次审图的持久化状态，用于修正重传后的复检对比。"""

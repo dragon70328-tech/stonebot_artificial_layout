@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from src.constraints import NestingProfile
+from src.nesting_contracts import ProcessPolicy, SheetSpec
 from src.models import NestingResult
 from src.units import UnitSystem
 
@@ -22,6 +23,8 @@ class JobContext:
     project_id: str = ""
     unit: UnitSystem = UnitSystem.METRIC
     nesting_profile: NestingProfile | None = None
+    sheet_spec: SheetSpec | None = None
+    process_policy: ProcessPolicy | None = None
 
     width_mm: float = 0.0
     height_mm: float = 0.0
@@ -57,6 +60,18 @@ class JobContext:
         """Return a JSON-safe view of the current job state."""
         result = self.result
         outcome = self.nesting_outcome
+        sheet_payload = {
+            "width_mm": self.width_mm,
+            "height_mm": self.height_mm,
+            "thickness_mm": self.thickness_mm,
+        }
+        if self.sheet_spec is not None:
+            sheet_payload.update(self.sheet_spec.dimensions())
+        process_payload = (
+            self.process_policy.model_dump(mode="json")
+            if self.process_policy is not None
+            else None
+        )
         return {
             "dxf_path": self.dxf_path,
             "project_id": self.project_id,
@@ -76,11 +91,8 @@ class JobContext:
                 if self.nesting_profile is not None
                 else None
             ),
-            "sheet": {
-                "width_mm": self.width_mm,
-                "height_mm": self.height_mm,
-                "thickness_mm": self.thickness_mm,
-            },
+            "sheet": sheet_payload,
+            "process_policy": process_payload,
             "counts": {
                 "parts_data": (
                     len(self.parts_data) if self.parts_data is not None else 0

@@ -21,6 +21,7 @@ from src.agent_loop import AgentLoop, AgentLoopResult
 from src.ai_planning import ToolCall
 from src.artifact_store import ArtifactStore
 from src.job_context import JobContext
+from src.nesting_contracts import ProcessPolicy, SheetSpec
 from src.object_store import ObjectStore
 from src.session_store import SqliteWorkflowSessionStore, WorkflowSessionStore
 from src.tool_handlers import build_tool_handlers
@@ -43,6 +44,8 @@ class AgentRuntime:
         profile,
         *,
         provider_name: str = "queue",
+        sheet_spec: SheetSpec | None = None,
+        process_policy: ProcessPolicy | None = None,
         trials: int,
         seed: int,
         budget: float,
@@ -71,6 +74,8 @@ class AgentRuntime:
             dxf_path=str(self.dxf_path),
             unit=unit,
             nesting_profile=profile,
+            sheet_spec=sheet_spec,
+            process_policy=process_policy,
             width_mm=width_mm,
             height_mm=height_mm,
             thickness_mm=thickness_mm,

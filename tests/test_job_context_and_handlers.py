@@ -8,6 +8,7 @@ from src.constraints import PROFILE_QUICK
 from src.drawing_profile import DrawingProfile
 from src.job_context import JobContext
 from src.models import Part
+from src.nesting_contracts import ProcessPolicy, SheetSpec
 from src.tool_handlers import build_tool_handlers
 from src.units import UnitSystem
 
@@ -57,6 +58,29 @@ def test_job_context_snapshot_is_json_safe():
 
     assert "a.dxf" in payload
     assert '"parts": 0' in payload
+
+
+def test_job_context_snapshot_includes_effective_sheet_and_process():
+    context = JobContext(
+        sheet_spec=SheetSpec(
+            nominal_width_mm=3200,
+            nominal_height_mm=1800,
+            usable_width_mm=3200,
+            usable_height_mm=1800,
+            oversize_enabled=True,
+            oversize_mode="per_side",
+            oversize_width_mm=30,
+            oversize_height_mm=20,
+        ),
+        process_policy=ProcessPolicy.bridge(kerf_mm=5),
+    )
+
+    snapshot = context.snapshot()
+
+    assert snapshot["sheet"]["effective_width_mm"] == 3260
+    assert snapshot["sheet"]["effective_height_mm"] == 1840
+    assert snapshot["process_policy"]["kerf_mm"] == 5
+    json.dumps(snapshot, ensure_ascii=False)
 
 
 def test_real_handlers_numbering_confirmation_chain(tmp_path):

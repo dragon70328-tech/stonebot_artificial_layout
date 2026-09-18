@@ -24,7 +24,7 @@ from typing import Any, Literal
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from src.agent_loop import AgentLoopResult
 from src.agent_runtime import AgentRuntime
@@ -36,8 +36,13 @@ from src.dxf_writer import write_nested_dxf
 from src.input_guard import DXFInputLimits, check_dxf_file
 from src.job_repository import build_job_repository
 from src.llm_client import LLMError
-from src.object_store import build_object_store
+from src.nesting_contracts import (
+    OversizeMode,
+    ProcessPolicy,
+    SheetSpec,
+)
 from src.nesting_reviewer import find_reductions, load_nested_dxf
+from src.object_store import build_object_store
 from src.session_store import (
     SqliteWorkflowSessionStore,
     WorkflowSessionStore,
@@ -54,6 +59,25 @@ from src.workflow_session import WorkflowStage
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PORTAL_NESTING_DIR = PROJECT_ROOT / "portal" / "nesting"
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_-]+")
+JOB_PARAMETER_KEYS = {
+    "width_mm",
+    "height_mm",
+    "thickness_mm",
+    "usable_width_mm",
+    "usable_height_mm",
+    "oversize_enabled",
+    "oversize_mode",
+    "oversize_width_mm",
+    "oversize_height_mm",
+    "kerf_mm",
+    "rotation_degrees",
+    "allow_shared_edge",
+    "process",
+    "profile",
+    "pairing",
+    "skip_unnumbered",
+}
+
 logger = logging.getLogger("stonebot.api")
 if not logging.getLogger().handlers:
     logging.basicConfig(
@@ -65,9 +89,23 @@ if not logging.getLogger().handlers:
 class JobCreateRequest(BaseModel):
     dxf_path: str
     tenant_id: str = "default"
-    width_mm: float
-    height_mm: float
-    thickness_mm: float = 20.0
+
+    # 兼容旧接口：width/height 表示标称大板尺寸。
+    width_mm: float = Field(gt=0)
+    height_mm: float = Field(gt=0)
+    thickness_mm: float = Field(default=20.0, gt=0)
+
+    # 新排板契约字段；未提供时可利用尺寸默认等于标称尺寸。
+    usable_width_mm: float | None = Field(default=None, gt=0)
+    usable_height_mm: float | None = Field(default=None, gt=0)
+    oversize_enabled: bool = False
+    oversize_mode: OversizeMode = OversizeMode.TOTAL
+    oversize_width_mm: float = Field(default=0.0, ge=0)
+    oversize_height_mm: float = Field(default=0.0, ge=0)
+    kerf_mm: float = Field(default=0.0, ge=0)
+    rotation_degrees: list[float] | None = None
+    allow_shared_edge: bool = True
+
     unit: Literal["metric", "imperial"] = "metric"
     profile: str | None = None
     process: Literal["bridge", "waterjet", "laser"] | None = None
@@ -79,6 +117,12 @@ class JobCreateRequest(BaseModel):
     pairing: bool = False
     skip_unnumbered: bool = True
     project_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_process_parameters(self) -> "JobCreateRequest":
+        if self.process == "bridge" and self.kerf_mm <= 0:
+            raise ValueError("bridge process requires kerf_mm > 0")
+        return self
 
 
 class ConfirmationRequest(BaseModel):
@@ -97,6 +141,7 @@ class ConversationMessageRequest(BaseModel):
     role: Literal["user", "assistant"] = "user"
     content: str
     attachments: list[dict[str, Any]] | None = None
+    parameters: dict[str, Any] | None = None
 
 
 class JobStateError(RuntimeError):
@@ -113,6 +158,43 @@ def _build_profile(request: JobCreateRequest):
         "laser": "waterjet_laser",
     }[request.process]
     return profile.with_overrides(processing_class=processing_class)
+
+
+def _build_sheet_spec(request: JobCreateRequest) -> SheetSpec:
+    return SheetSpec(
+        nominal_width_mm=request.width_mm,
+        nominal_height_mm=request.height_mm,
+        usable_width_mm=request.usable_width_mm or request.width_mm,
+        usable_height_mm=request.usable_height_mm or request.height_mm,
+        thickness_mm=request.thickness_mm,
+        oversize_enabled=request.oversize_enabled,
+        oversize_mode=request.oversize_mode,
+        oversize_width_mm=request.oversize_width_mm,
+        oversize_height_mm=request.oversize_height_mm,
+    )
+
+
+def _build_process_policy(request: JobCreateRequest, profile) -> ProcessPolicy | None:
+    if request.process is None:
+        return None
+    if request.process == "bridge":
+        return ProcessPolicy.bridge(
+            kerf_mm=request.kerf_mm,
+            min_gap_mm=profile.min_gap,
+            rotation_degrees=request.rotation_degrees,
+            allow_shared_edge=request.allow_shared_edge,
+        )
+    if request.process == "waterjet":
+        return ProcessPolicy.waterjet(
+            min_gap_mm=profile.min_gap,
+            kerf_mm=request.kerf_mm,
+            allow_shared_edge=request.allow_shared_edge,
+        )
+    return ProcessPolicy.laser(
+        min_gap_mm=profile.min_gap,
+        kerf_mm=request.kerf_mm,
+        allow_shared_edge=request.allow_shared_edge,
+    )
 
 
 def _safe_project(value: str) -> str:
@@ -297,14 +379,17 @@ class JobManager:
         restore_session=None,
     ) -> AgentRuntime:
         unit = UnitSystem.IMPERIAL if request.unit == "imperial" else UnitSystem.METRIC
+        profile = _build_profile(request)
         return AgentRuntime(
             request.dxf_path,
             request.width_mm,
             request.height_mm,
             request.thickness_mm,
             unit,
-            _build_profile(request),
+            profile,
             provider_name=request.provider,
+            sheet_spec=_build_sheet_spec(request),
+            process_policy=_build_process_policy(request, profile),
             trials=request.trials,
             seed=request.seed,
             budget=request.budget,
@@ -897,6 +982,7 @@ def add_conversation_message(
         role=request.role,
         content=request.content,
         attachments=request.attachments,
+        parameters=request.parameters,
     )
     if message is None:
         raise HTTPException(status_code=404, detail="conversation not found")
@@ -917,6 +1003,7 @@ def respond_to_conversation(
             "role": message.role,
             "content": message.content,
             "attachments": message.attachments,
+            "parameters": message.parameters,
         }
         for message in conversation.messages
     ]
@@ -925,15 +1012,41 @@ def respond_to_conversation(
         for message in conversation.messages
         for attachment in message.attachments
     ]
-    try:
-        intent = ConversationPlanner().plan(
-            messages,
-            attachments=attachments,
+    latest_parameters: dict[str, Any] = {}
+    for message in reversed(conversation.messages):
+        if message.role == "user" and message.parameters:
+            latest_parameters = dict(message.parameters)
+            break
+
+    structured_create_ready = (
+        not conversation.job_id
+        and latest_parameters.get("width_mm") is not None
+        and latest_parameters.get("height_mm") is not None
+    )
+    if structured_create_ready:
+        intent = {
+            "action": "create_job",
+            **latest_parameters,
+        }
+    else:
+        try:
+            intent = ConversationPlanner().plan(
+                messages,
+                attachments=attachments,
+            )
+        except LLMError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if intent.get("action") == "create_job":
+        intent.update(
+            {
+                key: value
+                for key, value in latest_parameters.items()
+                if key in JOB_PARAMETER_KEYS
+            }
         )
-    except LLMError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     action = intent["action"]
     try:
@@ -949,6 +1062,23 @@ def respond_to_conversation(
                 width_mm=float(intent["width_mm"]),
                 height_mm=float(intent["height_mm"]),
                 thickness_mm=float(intent.get("thickness_mm", 20.0)),
+                usable_width_mm=(
+                    float(intent["usable_width_mm"])
+                    if intent.get("usable_width_mm") is not None
+                    else None
+                ),
+                usable_height_mm=(
+                    float(intent["usable_height_mm"])
+                    if intent.get("usable_height_mm") is not None
+                    else None
+                ),
+                oversize_enabled=bool(intent.get("oversize_enabled", False)),
+                oversize_mode=intent.get("oversize_mode", "total"),
+                oversize_width_mm=float(intent.get("oversize_width_mm", 0.0)),
+                oversize_height_mm=float(intent.get("oversize_height_mm", 0.0)),
+                kerf_mm=float(intent.get("kerf_mm", 0.0)),
+                rotation_degrees=intent.get("rotation_degrees"),
+                allow_shared_edge=bool(intent.get("allow_shared_edge", True)),
                 unit=intent.get("unit", "metric"),
                 profile=intent.get("profile", "min_sheets"),
                 process=intent.get("process"),

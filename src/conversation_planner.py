@@ -13,7 +13,7 @@ You are the planning layer of a stone fabrication SaaS.
 Given a user conversation, return only a JSON object.
 
 Allowed actions:
-1. {"action": "create_job", "dxf_path": "<local dxf path>", "width_mm": 3200, "height_mm": 1800, "thickness_mm": 20, "profile": "min_sheets", "process": "bridge", "provider": "queue", "budget": 0, "quick": true, "trials": 1, "seed": 0, "pairing": false, "skip_unnumbered": true}
+1. {"action": "create_job", "dxf_path": "<local dxf path>", "width_mm": 3200, "height_mm": 1800, "thickness_mm": 20, "usable_width_mm": 3200, "usable_height_mm": 1800, "oversize_enabled": false, "oversize_mode": "total", "oversize_width_mm": 0, "oversize_height_mm": 0, "kerf_mm": 5, "profile": "min_sheets", "process": "bridge", "allow_shared_edge": true, "provider": "queue", "budget": 0, "quick": true, "trials": 1, "seed": 0, "pairing": false, "skip_unnumbered": true}
 2. {"action": "review_job", "job_id": "<job id, optional if current job is known>", "max_reductions": 1}
 3. {"action": "get_job", "job_id": "<job id, optional>"}
 4. {"action": "confirm_job", "job_id": "<job id, optional>", "decision": "confirm"}
@@ -22,6 +22,7 @@ Allowed actions:
 
 Do not execute code. Do not invent a dxf_path if the user did not upload one.
 Use the current conversation job when no job_id is supplied.
+For bridge cutting, kerf_mm is mandatory and must be greater than zero.
 """
 
 

@@ -21,6 +21,7 @@ class ConversationMessage:
     content: str
     created_at: str = field(default_factory=_utc_now)
     attachments: list[dict[str, Any]] = field(default_factory=list)
+    parameters: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -96,6 +97,7 @@ class ConversationStore:
         role: str,
         content: str,
         attachments: list[dict[str, Any]] | None = None,
+        parameters: dict[str, Any] | None = None,
     ) -> ConversationMessage | None:
         with self._lock:
             conversation = self.get(tenant_id, conversation_id)
@@ -105,6 +107,7 @@ class ConversationStore:
                 role=role,
                 content=content,
                 attachments=attachments or [],
+                parameters=parameters or {},
             )
             conversation.messages.append(message)
             self._save(conversation)

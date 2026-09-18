@@ -127,6 +127,52 @@ test("jobArtifacts merges session artifacts and current artifacts", () => {
   assert.equal(artifacts.nested_dxf, "nested.dxf");
 });
 
+test("effectiveSheetDimensions handles total and per-side oversize", () => {
+  const total = ui.effectiveSheetDimensions({
+    usableWidth: 3200,
+    usableHeight: 1800,
+    oversizeEnabled: true,
+    oversizeMode: "total",
+    oversizeWidth: 30,
+    oversizeHeight: 20,
+  });
+  assert.equal(total.effectiveWidth, 3230);
+  assert.equal(total.effectiveHeight, 1820);
+
+  const perSide = ui.effectiveSheetDimensions({
+    usableWidth: 3200,
+    usableHeight: 1800,
+    oversizeEnabled: true,
+    oversizeMode: "per_side",
+    oversizeWidth: 30,
+    oversizeHeight: 20,
+  });
+  assert.equal(perSide.effectiveWidth, 3260);
+  assert.equal(perSide.effectiveHeight, 1840);
+});
+
+test("validateNestingParameters requires bridge kerf and positive sheets", () => {
+  const valid = {
+    process: "bridge",
+    kerf: 5,
+    width: 3200,
+    height: 1800,
+    thickness: 20,
+    usableWidth: 3200,
+    usableHeight: 1800,
+    oversizeEnabled: false,
+  };
+  assert.deepEqual(ui.validateNestingParameters(valid), []);
+  assert.match(
+    ui.validateNestingParameters({ ...valid, kerf: 0 })[0],
+    /刀厚/,
+  );
+  assert.match(
+    ui.validateNestingParameters({ ...valid, usableWidth: 0 })[0],
+    /可利用尺寸/,
+  );
+});
+
 test("parseApiError prefers FastAPI detail and handles text payloads", () => {
   assert.equal(ui.parseApiError({ detail: "file too large" }, 400), "file too large");
   assert.equal(ui.parseApiError("bad request", 400), "bad request");
