@@ -1,3 +1,4 @@
+import ezdxf
 import json
 from pathlib import Path
 
@@ -308,6 +309,13 @@ def test_apply_correction_plan_regenerates_numbered_dxf(tmp_path):
     assert context.parts[0].number == "P-1A"
     assert context.parts[1].material_group == "02B"
     assert context.correction_history[0]["plan_id"] == plan.plan_id
+    assert result.diff_artifact_path is not None
+    diff_path = Path(result.diff_artifact_path)
+    assert diff_path.exists()
+    diff_doc = ezdxf.readfile(diff_path)
+    assert "CORRECTION_DIFF_CHANGED_BEFORE" in diff_doc.layers
+    assert "CORRECTION_DIFF_CHANGED_AFTER" in diff_doc.layers
+    assert context.correction_history[0]["diff_counts"]["changed"] == 2
 
 
 def test_apply_correction_plan_rejects_duplicate_numbers_atomically(tmp_path):

@@ -17,6 +17,7 @@ from src.correction_contracts import (
     CorrectionPlan,
     CorrectionResult,
 )
+from src.correction_diff import write_correction_diff_dxf
 from src.dxf_writer import write_numbered_parts_dxf
 from src.job_context import JobContext
 from src.models import Part
@@ -440,6 +441,7 @@ def apply_correction_plan(
     if not ctx.parts:
         raise ValueError("drawing corrections require an existing numbered drawing")
 
+    before_parts = deepcopy(ctx.parts)
     working_parts = deepcopy(ctx.parts)
     working_data = deepcopy(ctx.parts_data or [])
     before_digest = _parts_digest(working_parts)
@@ -481,6 +483,14 @@ def apply_correction_plan(
         str(output_path),
         unit_system=ctx.unit.value,
     )
+    diff_path = output_path.with_name(f"{output_path.stem}_diff.dxf")
+    diff_counts = write_correction_diff_dxf(
+        before_parts,
+        working_parts,
+        diff_path,
+        revision=revision,
+        instruction=plan.instruction,
+    )
 
     ctx.parts = working_parts
     ctx.parts_data = working_data
@@ -514,6 +524,8 @@ def apply_correction_plan(
             for operation in plan.operations
         ],
         "artifact_path": str(output_path),
+        "diff_artifact_path": str(diff_path),
+        "diff_counts": diff_counts,
         "before_digest": before_digest,
         "after_digest": after_digest,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -526,6 +538,7 @@ def apply_correction_plan(
         before_digest=before_digest,
         after_digest=after_digest,
         artifact_path=str(output_path),
+        diff_artifact_path=str(diff_path),
         operations_applied=applied,
         removed_part_ids=removed_part_ids,
         part_numbers=numbers,

@@ -82,6 +82,7 @@ class CorrectionResult(Contract):
     before_digest: str
     after_digest: str
     artifact_path: str
+    diff_artifact_path: str | None = None
     operations_applied: list[str] = Field(default_factory=list)
     removed_part_ids: list[int] = Field(default_factory=list)
     part_numbers: list[str] = Field(default_factory=list)

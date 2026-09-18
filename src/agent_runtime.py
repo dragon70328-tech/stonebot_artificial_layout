@@ -315,6 +315,9 @@ class AgentRuntime:
             artifact_path = correction.get("artifact_path")
             if revision is not None and artifact_path:
                 candidates[f"numbered_dxf_r{revision}"] = Path(artifact_path)
+            diff_path = correction.get("diff_artifact_path")
+            if revision is not None and diff_path:
+                candidates[f"correction_diff_r{revision}"] = Path(diff_path)
         project_id = self.context.project_id or self.dxf_path.stem
         for key, path in candidates.items():
             if path is None or not Path(path).exists():

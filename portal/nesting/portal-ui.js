@@ -210,6 +210,8 @@
   function artifactLabel(key) {
     const revisionMatch = String(key || "").match(/^numbered_dxf_r(\d+)$/);
     if (revisionMatch) return `原位DXF v${revisionMatch[1]}`;
+    const diffMatch = String(key || "").match(/^correction_diff_r(\d+)$/);
+    if (diffMatch) return `纠正差异 v${diffMatch[1]}`;
     return ARTIFACT_LABELS[key] || key;
   }
 
