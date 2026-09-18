@@ -7,6 +7,7 @@ and an HTTP service can drive the same state machine. It never blocks on
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -96,7 +97,13 @@ class AgentRuntime:
         self.store = session_store or WorkflowSessionStore(self.output_dir)
         self.artifact_store = ArtifactStore(self.output_dir / "artifacts")
         self.provider = build_agent_plan_provider(provider_name)
-        self.worker = Worker(build_tool_handlers(self.context))
+        tool_timeout_s = float(
+            os.environ.get("STONEBOT_TOOL_TIMEOUT_S", "1800")
+        )
+        self.worker = Worker(
+            build_tool_handlers(self.context),
+            default_timeout_s=tool_timeout_s,
+        )
         self.loop = AgentLoop(
             self.session,
             self.worker,
@@ -137,6 +144,22 @@ class AgentRuntime:
         self._record_artifacts()
         self.store.save(self.session)
         return self.last_result
+
+    def start(self) -> AgentLoopResult:
+        """Start a newly created job without duplicating a queued plan."""
+        if self.provider_name == "queue" and not getattr(
+            self.provider,
+            "has_pending_plans",
+            False,
+        ):
+            self.provider.enqueue(
+                build_initial_plan(
+                    str(self.dxf_path),
+                    self.numbered_path,
+                    skip_unnumbered=self.context.skip_unnumbered,
+                )
+            )
+        return self.run_next()
 
     def confirm(self, decision: str) -> AgentLoopResult:
         if self.last_result is None or not self.last_result.confirmation_required:

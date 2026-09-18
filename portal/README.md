@@ -33,3 +33,9 @@ python -m http.server 8080
 ```
 
 新增模块时只需增加一个对象，不需要修改首页 HTML 和 JS。
+
+
+## 前端测试
+
+- 纯 UI 状态逻辑：`node tests/frontend_ui.test.cjs`
+- 静态资源与操作按钮契约：`python -X utf8 -m pytest -q tests/test_http_api.py::test_root_serves_portal_ui_module tests/test_http_api.py::test_nesting_frontend_has_action_contract`

@@ -11,10 +11,16 @@
       --text: #1f2937;
       --muted: #6b7280;
       --accent: #2563eb;
+      --accent-soft: #eff6ff;
       --border: #e5e7eb;
       --user: #e8f1ff;
       --assistant: #f9fafb;
       --danger: #dc2626;
+      --danger-soft: #fef2f2;
+      --success: #16a34a;
+      --success-soft: #f0fdf4;
+      --warning: #d97706;
+      --warning-soft: #fffbeb;
     }
 
     * { box-sizing: border-box; }
@@ -26,9 +32,12 @@
     }
 
     header {
+      position: sticky;
+      top: 0;
+      z-index: 5;
       background: var(--panel);
       border-bottom: 1px solid var(--border);
-      padding: 14px 20px;
+      padding: 12px 20px;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -36,10 +45,12 @@
     }
 
     header h1 { margin: 0; font-size: 18px; }
-    header a { color: var(--accent); text-decoration: none; }
+    header .subtitle { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+    header nav { display: flex; align-items: center; gap: 10px; }
+    header a { color: var(--accent); text-decoration: none; font-size: 13px; }
 
     main {
-      max-width: 880px;
+      max-width: 960px;
       margin: 0 auto;
       padding: 20px;
       display: flex;
@@ -56,7 +67,7 @@
     }
 
     .message {
-      max-width: 78%;
+      max-width: 82%;
       padding: 10px 12px;
       border: 1px solid var(--border);
       border-radius: 12px;
@@ -65,21 +76,14 @@
       line-height: 1.55;
     }
 
-    .message.user {
-      align-self: flex-end;
-      background: var(--user);
-    }
-
-    .message.assistant {
-      align-self: flex-start;
-      background: var(--assistant);
-    }
-
+    .message.user { align-self: flex-end; background: var(--user); }
+    .message.assistant { align-self: flex-start; background: var(--assistant); }
     .message pre {
       margin: 8px 0 0;
       font-size: 12px;
       color: var(--muted);
       overflow-x: auto;
+      white-space: pre-wrap;
     }
 
     .attachment {
@@ -93,13 +97,7 @@
       padding: 4px 8px;
     }
 
-    .downloads {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 8px;
-    }
-
+    .downloads { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
     .downloads a {
       font-size: 12px;
       color: var(--accent);
@@ -110,13 +108,123 @@
       background: var(--panel);
     }
 
+    .empty-state {
+      border: 1px dashed var(--border);
+      border-radius: 14px;
+      background: var(--panel);
+      padding: 20px;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+    .empty-state h2 { margin: 0 0 8px; font-size: 16px; color: var(--text); }
+    .empty-state ol { margin: 8px 0; padding-left: 20px; }
+    .empty-state code {
+      font-size: 12px;
+      background: var(--accent-soft);
+      border-radius: 6px;
+      padding: 1px 6px;
+      color: var(--accent);
+    }
+
+    .job-panel {
+      margin-bottom: 12px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--panel);
+      padding: 14px;
+    }
+    .job-panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .panel-kicker { font-size: 12px; color: var(--muted); }
+    .job-id { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .pill {
+      border-radius: 999px;
+      padding: 5px 10px;
+      font-size: 12px;
+      white-space: nowrap;
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+    .pill-wait { background: var(--warning-soft); color: var(--warning); }
+    .pill-success { background: var(--success-soft); color: var(--success); }
+    .pill-danger { background: var(--danger-soft); color: var(--danger); }
+
+    .steps {
+      display: flex;
+      gap: 6px;
+      list-style: none;
+      margin: 0 0 12px;
+      padding: 0 0 12px;
+      overflow-x: auto;
+      border-bottom: 1px solid var(--border);
+    }
+    .step {
+      min-width: 74px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .step-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--border);
+      flex: 0 0 auto;
+    }
+    .step.done .step-dot { background: var(--success); }
+    .step.current .step-dot {
+      background: var(--accent);
+      box-shadow: 0 0 0 4px var(--accent-soft);
+    }
+    .step.done, .step.current { color: var(--text); }
+    .step small { display: block; color: var(--muted); font-size: 11px; }
+
+    .metrics { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+    .metric {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .metric strong { color: var(--text); margin-right: 4px; }
+
+    .next-action {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      background: var(--accent-soft);
+      border-radius: 10px;
+      padding: 9px 10px;
+      font-size: 13px;
+    }
+    .next-action span { color: var(--muted); }
+
+    .error-box {
+      margin-top: 10px;
+      border-radius: 10px;
+      background: var(--danger-soft);
+      color: var(--danger);
+      padding: 8px 10px;
+      font-size: 13px;
+    }
+
+    details { margin-top: 10px; font-size: 12px; color: var(--muted); }
+    details summary { cursor: pointer; }
+
     .composer {
       position: sticky;
       bottom: 0;
       background: var(--bg);
       padding-top: 8px;
     }
-
     .composer-box {
       background: var(--panel);
       border: 1px solid var(--border);
@@ -129,13 +237,58 @@
 
     textarea {
       width: 100%;
-      min-height: 52px;
+      min-height: 56px;
       resize: vertical;
       border: 0;
       outline: none;
       font: inherit;
       color: inherit;
     }
+
+    .file-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .file-picker {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px dashed var(--border);
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-size: 13px;
+      color: var(--accent);
+      cursor: pointer;
+      background: var(--accent-soft);
+    }
+    .file-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 6px 8px;
+      font-size: 12px;
+      background: var(--panel);
+      color: var(--muted);
+    }
+    .file-chip button {
+      border: 0;
+      background: transparent;
+      color: var(--accent);
+      padding: 0;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .prompt-label { font-size: 12px; color: var(--muted); }
+    .prompt-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .prompt-chips button {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 5px 9px;
+      font-size: 12px;
+    }
+    .prompt-chips button:hover { color: var(--accent); border-color: var(--accent); }
 
     .composer-actions {
       display: flex;
@@ -152,57 +305,95 @@
       font: inherit;
       cursor: pointer;
     }
-
-    button.primary {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: white;
-    }
-
+    button.primary { background: var(--accent); border-color: var(--accent); color: white; }
     button:disabled { opacity: .55; cursor: not-allowed; }
 
-    .status-line {
-      font-size: 12px;
-      color: var(--muted);
-    }
+    .status-line { font-size: 12px; color: var(--muted); min-height: 16px; }
+    .status-line.error { color: var(--danger); }
+    .status-line.success { color: var(--success); }
 
-    .error {
-      color: var(--danger);
+    @media (max-width: 640px) {
+      main { padding: 12px; }
+      .message { max-width: 92%; }
+      header { flex-direction: column; align-items: flex-start; }
     }
   </style>
 </head>
 <body>
   <header>
-    <h1>识图排板对话</h1>
-    <a href="../">返回总界面</a>
+    <div>
+      <h1>识图排板对话</h1>
+      <p class="subtitle">上传 DXF → 审图确认 → 排板确认 → 后处理确认</p>
+    </div>
+    <nav>
+      <a href="../">返回总界面</a>
+      <button id="btn-new" type="button">新会话</button>
+    </nav>
   </header>
 
   <main>
     <div id="messages"></div>
+
+    <section id="job-panel" class="job-panel" hidden>
+      <div class="job-panel-head">
+        <div>
+          <span class="panel-kicker">当前任务</span>
+          <code id="job-id" class="job-id"></code>
+        </div>
+        <span id="job-pill" class="pill"></span>
+      </div>
+      <ol id="workflow-steps" class="steps"></ol>
+      <div id="job-metrics" class="metrics"></div>
+      <div id="next-action" class="next-action"></div>
+      <div id="job-error" class="error-box" hidden></div>
+    </section>
+
     <div class="composer">
       <div class="composer-box">
-        <textarea id="input" placeholder="例如：3200x1800 排板；板数不合适回看能不能少一张"></textarea>
-        <div class="composer-actions">
-          <input id="file" type="file" accept=".dxf">
-          <button id="send" class="primary">发送</button>
-          <button data-text="查看当前任务状态">查看状态</button>
-          <button data-text="确认，继续下一步">确认</button>
-          <button data-text="继续运行任务">继续运行</button>
-          <button data-text="取消当前任务">取消任务</button>
-          <button data-text="板数不合适，回看能不能少一张">回看减板</button>
+        <div class="file-row">
+          <label class="file-picker" for="file">
+            <span aria-hidden="true">📎</span>
+            <span id="file-picker-label">选择 DXF 文件</span>
+            <input id="file" type="file" accept=".dxf" hidden>
+          </label>
+          <div id="file-chip" class="file-chip" hidden>
+            <span id="file-name"></span>
+            <button id="file-clear" type="button">清除</button>
+          </div>
         </div>
-        <div id="status" class="status-line"></div>
+        <textarea id="input" placeholder="上传 DXF 后，输入大板尺寸开始，例如：3200x1800 排板"></textarea>
+        <div class="prompt-label">常用指令（点击填入）</div>
+        <div class="prompt-chips">
+          <button type="button" data-fill="3200x1800 排板">3200x1800 排板</button>
+          <button type="button" data-fill="2500x1400 排板">2500x1400 排板</button>
+          <button type="button" data-fill="板数不合适，回看能不能少一张">回看减板</button>
+        </div>
+        <div class="composer-actions">
+          <button id="send" class="primary">发送指令</button>
+          <button id="btn-status" type="button" data-action="status">查看状态</button>
+          <button id="btn-confirm" type="button" data-action="confirm">确认下一步</button>
+          <button id="btn-run" type="button" data-action="run">继续运行</button>
+          <button id="btn-review" type="button" data-action="review">回看减板</button>
+          <button id="btn-cancel" type="button" data-action="cancel">取消任务</button>
+        </div>
+        <div id="status" class="status-line" aria-live="polite"></div>
       </div>
     </div>
   </main>
 
+  <script src="./portal-ui.js"></script>
   <script>
+    const ui = window.StonebotUI;
     const API_BASE = ".";
+    const CONVERSATION_KEY = "stonebot.nesting.conversationId";
+
     const state = {
       conversationId: null,
       lastUpload: null,
       messages: [],
       busy: false,
+      currentJobId: null,
+      latestStatus: null,
       pollTimers: [],
     };
 
@@ -210,62 +401,197 @@
     const inputEl = document.getElementById("input");
     const sendEl = document.getElementById("send");
     const fileEl = document.getElementById("file");
+    const fileChipEl = document.getElementById("file-chip");
+    const fileNameEl = document.getElementById("file-name");
+    const filePickerLabelEl = document.getElementById("file-picker-label");
     const statusEl = document.getElementById("status");
+    const jobPanelEl = document.getElementById("job-panel");
+    const jobIdEl = document.getElementById("job-id");
+    const jobPillEl = document.getElementById("job-pill");
+    const stepsEl = document.getElementById("workflow-steps");
+    const metricsEl = document.getElementById("job-metrics");
+    const nextActionEl = document.getElementById("next-action");
+    const jobErrorEl = document.getElementById("job-error");
 
-    function setStatus(text, isError = false) {
+    function setStatus(text, kind = "info") {
       statusEl.textContent = text;
-      statusEl.className = isError ? "status-line error" : "status-line";
+      statusEl.className = `status-line${kind === "error" ? " error" : kind === "success" ? " success" : ""}`;
+    }
+
+    function currentStatus() {
+      return ui.latestJobStatus(state.messages) || state.latestStatus || null;
+    }
+
+    function currentJobId() {
+      return ui.latestJobId(state.messages) || state.currentJobId || null;
+    }
+
+    function setBusy(value) {
+      state.busy = value;
+      sendEl.disabled = value;
+      updateActionButtons();
+    }
+
+    function stopPolling() {
+      state.pollTimers.forEach((timer) => clearInterval(timer));
+      state.pollTimers = [];
+    }
+
+    function updateLatestStatus(status) {
+      if (!status || !status.job_id) return;
+      state.latestStatus = status;
+      state.currentJobId = status.job_id;
+    }
+
+    function renderWelcome() {
+      messagesEl.innerHTML = `
+        <div class="empty-state">
+          <h2>如何开始</h2>
+          <ol>
+            <li>点击 <strong>选择 DXF 文件</strong>，上传图纸。</li>
+            <li>在输入框填写大板尺寸，例如 <code>3200x1800 排板</code>。</li>
+            <li>任务到达审图、排板、后处理阶段时，点击 <strong>确认下一步</strong>。</li>
+          </ol>
+        </div>
+      `;
+    }
+
+    function renderMetrics(status) {
+      const metrics = ui.jobMetrics(status);
+      const items = [];
+      if (metrics.parts !== undefined) {
+        items.push(`<div class="metric"><strong>${metrics.parts}</strong>个面板</div>`);
+      }
+      if (metrics.total_sheets !== undefined) {
+        items.push(`<div class="metric"><strong>${metrics.total_sheets}</strong>张板</div>`);
+      }
+      if (metrics.yield_rate !== undefined) {
+        items.push(`<div class="metric"><strong>${Number(metrics.yield_rate).toFixed(2)}%</strong>出材率</div>`);
+      }
+      if (metrics.audit_issues !== undefined) {
+        items.push(`<div class="metric"><strong>${metrics.audit_issues}</strong>个审图问题</div>`);
+      }
+      if (metrics.geometry_errors !== undefined) {
+        items.push(`<div class="metric"><strong>${metrics.geometry_errors}</strong>个几何错误</div>`);
+      }
+      if (metrics.template) {
+        items.push(`<div class="metric"><strong>${ui.escapeHtml(metrics.template)}</strong>模板命中</div>`);
+      }
+      return items.length
+        ? items.join("")
+        : '<div class="metric">后台处理中，完成后显示板数、出材率等信息</div>';
+    }
+
+    function renderDownloads(status) {
+      if (!status || !status.job_id) return "";
+      const jobId = encodeURIComponent(status.job_id);
+      const artifacts = ui.jobArtifacts(status);
+      const links = Object.entries(artifacts)
+        .filter(([key, path]) => path)
+        .map(([key]) => (
+          `<a href="${API_BASE}/jobs/${jobId}/artifacts/${encodeURIComponent(key)}">${ui.escapeHtml(ui.artifactLabel(key))}</a>`
+        ));
+      return links.length ? `<div class="downloads">${links.join("")}</div>` : "";
+    }
+
+    function renderJobCard(status) {
+      const metrics = renderMetrics(status);
+      const downloads = renderDownloads(status);
+      const error = status.error
+        ? `<div class="error-box">${ui.escapeHtml(status.error)}</div>`
+        : "";
+      return `
+        <div class="job-card">
+          <div class="metrics">${metrics}</div>
+          ${downloads}
+          ${error}
+          <details>
+            <summary>查看原始数据</summary>
+            <pre>${ui.escapeHtml(JSON.stringify(status, null, 2))}</pre>
+          </details>
+        </div>
+      `;
     }
 
     function renderMessages() {
+      if (!state.messages.length) {
+        renderWelcome();
+        updateActionButtons();
+        return;
+      }
       messagesEl.innerHTML = state.messages.map((message) => {
         const attachments = (message.attachments || []).map((item) => {
           const path = item.dxf_path || item.path || item.local_path || "";
-          return `<span class="attachment">附件：${escapeHtml(path)}</span>`;
+          return `<span class="attachment">附件：${ui.escapeHtml(ui.formatAttachmentPath(path))}</span>`;
         }).join("");
-        const result = message.result
-          ? `<pre>${escapeHtml(JSON.stringify(message.result, null, 2))}</pre>`
+        const isJobStatus = message.result && message.result.job_id;
+        const resultHtml = message.result
+          ? (isJobStatus
+            ? renderJobCard(message.result)
+            : `<pre>${ui.escapeHtml(JSON.stringify(message.result, null, 2))}</pre>`)
           : "";
-        const downloads = renderDownloads(message.result);
         return `
           <div class="message ${message.role}">
-            <div>${escapeHtml(message.content)}</div>
+            <div>${ui.escapeHtml(message.content || "")}</div>
             ${attachments}
-            ${downloads}
-            ${result}
+            ${resultHtml}
           </div>
         `;
       }).join("");
       messagesEl.scrollTop = messagesEl.scrollHeight;
+      updateActionButtons();
     }
 
-    function renderDownloads(result) {
-      if (!result || !result.job_id) return "";
-      const jobId = encodeURIComponent(result.job_id);
-      const artifactKeys = {
-        "numbered_dxf": "编号原位DXF",
-        "nested_dxf": "排板DXF",
-        "report": "排板报告",
-        "check": "编号检查",
-      };
-      const links = [];
-      const artifacts = result.artifacts || {};
-      for (const [key, path] of Object.entries(artifacts)) {
-        if (!path || !artifactKeys[key]) continue;
-        links.push(
-          `<a href="${API_BASE}/jobs/${jobId}/artifacts/${key}">${artifactKeys[key]}</a>`
-        );
+    function renderSteps(status) {
+      return ui.stageProgress(status).map((step) => `
+        <li class="step ${step.state}">
+          <span class="step-dot"></span>
+          <div>
+            <span>${ui.escapeHtml(step.label)}</span>
+            <small>${ui.escapeHtml(step.description)}</small>
+          </div>
+        </li>
+      `).join("");
+    }
+
+    function renderJobPanel(status) {
+      if (!status) {
+        jobPanelEl.hidden = true;
+        updateActionButtons();
+        return;
       }
-      return links.length ? `<div class="downloads">${links.join("")}</div>` : "";
+      jobPanelEl.hidden = false;
+      jobIdEl.textContent = status.job_id || "";
+      const statusText = ui.jobStatusText(status);
+      jobPillEl.textContent = statusText;
+      jobPillEl.className = "pill";
+      if (status.blocked) jobPillEl.classList.add("pill-danger");
+      else if (status.completed) jobPillEl.classList.add("pill-success");
+      else if (status.confirmation_required) jobPillEl.classList.add("pill-wait");
+
+      stepsEl.innerHTML = renderSteps(status);
+      metricsEl.innerHTML = renderMetrics(status);
+
+      const next = ui.nextAction(status);
+      nextActionEl.innerHTML = `
+        <strong>${ui.escapeHtml(next.text)}</strong>
+        <span>${ui.escapeHtml(next.hint)}</span>
+      `;
+
+      jobErrorEl.hidden = !(status.error || status.blocked);
+      jobErrorEl.textContent = status.error || "任务已阻塞，可点击“继续运行”尝试恢复";
+      updateActionButtons();
     }
 
-    function escapeHtml(value) {
-      return String(value)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#039;");
+    function updateActionButtons() {
+      const status = currentStatus();
+      const availability = ui.actionAvailability(status, state.busy);
+      document.querySelectorAll("button[data-action]").forEach((button) => {
+        const stateForButton = availability[button.dataset.action];
+        if (!stateForButton) return;
+        button.disabled = stateForButton.disabled;
+        button.title = stateForButton.reason;
+      });
     }
 
     async function api(path, options = {}) {
@@ -278,8 +604,7 @@
         ? await response.json()
         : await response.text();
       if (!response.ok) {
-        const detail = payload && payload.detail ? payload.detail : payload;
-        throw new Error(detail || `HTTP ${response.status}`);
+        throw new Error(ui.parseApiError(payload, response.status));
       }
       return payload;
     }
@@ -291,14 +616,16 @@
         body: JSON.stringify({ tenant_id: "default" }),
       });
       state.conversationId = conversation.id;
+      localStorage.setItem(CONVERSATION_KEY, conversation.id);
       setStatus(`会话 ${conversation.id} 已创建`);
     }
 
     async function uploadFile(file) {
       if (!file) return null;
-      if (!file.name.toLowerCase().endsWith(".dxf")) {
+      if (!ui.isDxfFile(file.name)) {
         throw new Error("仅支持 DXF 文件");
       }
+      await ensureConversation();
       const path = `/inputs/${encodeURIComponent(file.name)}`;
       const response = await fetch(`${API_BASE}${path}`, {
         method: "POST",
@@ -307,12 +634,74 @@
       });
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload.detail || `HTTP ${response.status}`);
+        throw new Error(ui.parseApiError(payload, response.status));
       }
       return payload;
     }
 
-    async function sendMessage(content, attachments = []) {
+    function renderFileChip(name) {
+      if (!name) {
+        fileChipEl.hidden = true;
+        fileNameEl.textContent = "";
+        filePickerLabelEl.textContent = "选择 DXF 文件";
+        return;
+      }
+      fileChipEl.hidden = false;
+      fileNameEl.textContent = name;
+      filePickerLabelEl.textContent = "重新选择 DXF";
+    }
+
+    function intentDescription(intent, result) {
+      if (!intent) return "已处理";
+      if (intent.action === "create_job") {
+        return `已创建排板任务，当前阶段：${ui.stageLabel(result && result.stage)}`;
+      }
+      if (intent.action === "get_job") {
+        return `当前任务阶段：${ui.stageLabel(result && result.stage)}`;
+      }
+      if (intent.action === "confirm_job") {
+        return `已提交确认，当前阶段：${ui.stageLabel(result && result.stage)}`;
+      }
+      if (intent.action === "run_job") {
+        return `已提交继续运行，当前阶段：${ui.stageLabel(result && result.stage)}`;
+      }
+      if (intent.action === "cancel_job") {
+        return `已提交取消任务，当前阶段：${ui.stageLabel(result && result.stage)}`;
+      }
+      if (intent.action === "review_job") {
+        return `回看已提交：${result && result.original_total_sheets} -> ${result && result.reduced_total_sheets} 张板`;
+      }
+      return `已处理：${intent.action}`;
+    }
+
+    function pollJob(jobId, messageIndex) {
+      stopPolling();
+      const timer = setInterval(async () => {
+        try {
+          const status = await api(`/jobs/${encodeURIComponent(jobId)}`);
+          updateLatestStatus(status);
+          if (state.messages[messageIndex]) {
+            state.messages[messageIndex].result = status;
+          }
+          renderMessages();
+          renderJobPanel(status);
+          if (
+            status.completed
+            || status.blocked
+            || status.confirmation_required
+            || status.stage === "cancelled"
+          ) {
+            clearInterval(timer);
+          }
+        } catch (error) {
+          clearInterval(timer);
+          setStatus(error.message, "error");
+        }
+      }, 2000);
+      state.pollTimers.push(timer);
+    }
+
+    async function sendChat(content, attachments = []) {
       await ensureConversation();
       const message = await api(
         `/conversations/${state.conversationId}/messages`,
@@ -332,99 +721,235 @@
         `/conversations/${state.conversationId}/respond`,
         { method: "POST" },
       );
+      let result = response.result || null;
+      if (result && !result.job_id && state.currentJobId) {
+        result = { ...result, job_id: state.currentJobId };
+      }
+      const previousStatus = currentStatus();
+      const displayResult = (
+        result
+        && result.job_id
+        && !result.stage
+        && previousStatus
+      )
+        ? { ...previousStatus, ...result }
+        : result;
       state.messages.push({
         role: "assistant",
-        content: response.result
-          ? `已处理：${response.intent.action}`
-          : "已处理",
-        result: response.result,
+        content: intentDescription(response.intent, displayResult),
+        result: displayResult,
       });
+      updateLatestStatus(displayResult);
       renderMessages();
-      if (response.result && response.result.job_id) {
-        pollJob(response.result.job_id, state.messages.length - 1);
+      renderJobPanel(displayResult);
+      if (displayResult && displayResult.job_id) {
+        pollJob(displayResult.job_id, state.messages.length - 1);
       }
       return response;
     }
 
-    function pollJob(jobId, messageIndex) {
-      const timer = setInterval(async () => {
-        try {
-          const status = await api(`/jobs/${encodeURIComponent(jobId)}`);
-          state.messages[messageIndex].result = status;
-          renderMessages();
-          if (
-            status.completed ||
-            status.blocked ||
-            status.confirmation_required ||
-            status.stage === "cancelled"
-          ) {
-            clearInterval(timer);
-          }
-        } catch (error) {
-          clearInterval(timer);
+    function directActionDescription(action, result) {
+      if (action === "status") return "已刷新任务状态";
+      if (action === "confirm") return `已提交确认，当前阶段：${ui.stageLabel(result && result.stage)}`;
+      if (action === "run") return `已提交继续运行，当前阶段：${ui.stageLabel(result && result.stage)}`;
+      if (action === "cancel") return `已取消任务，当前阶段：${ui.stageLabel(result && result.stage)}`;
+      if (action === "review") {
+        return result && result.status === "review_queued"
+          ? "回看减板已排队，正在后台处理"
+          : `回看完成：${result && result.original_total_sheets} -> ${result && result.reduced_total_sheets} 张板`;
+      }
+      return "已处理";
+    }
+
+    async function runDirectAction(action) {
+      const jobId = currentJobId();
+      if (!jobId) {
+        setStatus("还没有可操作的任务", "error");
+        return;
+      }
+      setBusy(true);
+      try {
+        let result;
+        if (action === "status") {
+          result = await api(`/jobs/${encodeURIComponent(jobId)}`);
+        } else if (action === "confirm") {
+          result = await api(`/jobs/${encodeURIComponent(jobId)}/confirm`, {
+            method: "POST",
+            body: JSON.stringify({ decision: "confirm" }),
+          });
+        } else if (action === "run") {
+          result = await api(`/jobs/${encodeURIComponent(jobId)}/run`, {
+            method: "POST",
+          });
+        } else if (action === "review") {
+          result = await api(`/jobs/${encodeURIComponent(jobId)}/review`, {
+            method: "POST",
+            body: JSON.stringify({ max_reductions: 1 }),
+          });
+        } else if (action === "cancel") {
+          result = await api(`/jobs/${encodeURIComponent(jobId)}/cancel`, {
+            method: "POST",
+          });
+        } else {
+          throw new Error(`未知操作：${action}`);
         }
-      }, 2000);
-      state.pollTimers.push(timer);
+
+        if (action === "status") {
+          updateLatestStatus(result);
+          renderJobPanel(result);
+          setStatus(`${ui.jobStatusText(result)}`, "success");
+        } else if (action === "review") {
+          const previousStatus = currentStatus();
+          const messageStatus = previousStatus
+            ? { ...previousStatus, review_status: result && result.status }
+            : result;
+          updateLatestStatus(previousStatus || result);
+          state.messages.push({
+            role: "assistant",
+            content: directActionDescription(action, result),
+            result: messageStatus,
+          });
+          renderMessages();
+          renderJobPanel(previousStatus);
+          setStatus(directActionDescription(action, result), "success");
+          if (result && result.job_id) {
+            pollJob(result.job_id, state.messages.length - 1);
+          }
+        } else {
+          updateLatestStatus(result);
+          state.messages.push({
+            role: "assistant",
+            content: directActionDescription(action, result),
+            result,
+          });
+          renderMessages();
+          renderJobPanel(result);
+          setStatus(directActionDescription(action, result), "success");
+          if (result && result.job_id) {
+            pollJob(result.job_id, state.messages.length - 1);
+          }
+        }
+      } catch (error) {
+        setStatus(error.message, "error");
+      } finally {
+        setBusy(false);
+      }
     }
 
     async function handleSend() {
       const content = inputEl.value.trim();
-      if (!content) return;
+      if (!content) {
+        setStatus("请输入排板指令", "error");
+        return;
+      }
       if (state.busy) return;
-      state.busy = true;
-      sendEl.disabled = true;
+      setBusy(true);
       try {
         const attachments = state.lastUpload ? [state.lastUpload] : [];
-        await sendMessage(content, attachments);
+        await sendChat(content, attachments);
         state.lastUpload = null;
         inputEl.value = "";
-        setStatus("已完成");
+        setStatus("指令已发送");
       } catch (error) {
-        setStatus(error.message, true);
+        setStatus(error.message, "error");
       } finally {
-        state.busy = false;
-        sendEl.disabled = false;
+        setBusy(false);
       }
     }
 
-    async function handleQuickAction(event) {
-      const button = event.target.closest("button[data-text]");
-      if (!button || state.busy) return;
-      state.busy = true;
-      sendEl.disabled = true;
-      try {
-        await sendMessage(button.dataset.text);
-      } catch (error) {
-        setStatus(error.message, true);
-      } finally {
-        state.busy = false;
-        sendEl.disabled = false;
-      }
-    }
-
-    fileEl.addEventListener("change", async () => {
+    async function handleFileChange() {
       const file = fileEl.files[0];
       if (!file) return;
       try {
-        await ensureConversation();
         state.lastUpload = await uploadFile(file);
-        setStatus(`已上传 ${file.name}，请继续输入大板尺寸或排板要求`);
+        renderFileChip(file.name);
+        setStatus(`已上传 ${file.name}，请在下方输入大板尺寸`, "success");
       } catch (error) {
-        setStatus(error.message, true);
+        renderFileChip(null);
+        setStatus(error.message, "error");
       }
-    });
+    }
+
+    function newConversation() {
+      stopPolling();
+      state.conversationId = null;
+      state.lastUpload = null;
+      state.messages = [];
+      state.currentJobId = null;
+      state.latestStatus = null;
+      localStorage.removeItem(CONVERSATION_KEY);
+      fileEl.value = "";
+      renderFileChip(null);
+      inputEl.value = "";
+      renderMessages();
+      renderJobPanel(null);
+      setStatus("已新建会话");
+    }
+
+    async function restoreConversation() {
+      const conversationId = localStorage.getItem(CONVERSATION_KEY);
+      if (!conversationId) {
+        renderMessages();
+        renderJobPanel(null);
+        return;
+      }
+      try {
+        const conversation = await api(`/conversations/${encodeURIComponent(conversationId)}`);
+        state.conversationId = conversation.id;
+        state.messages = conversation.messages || [];
+        renderMessages();
+        if (conversation.job_id) {
+          const status = await api(`/jobs/${encodeURIComponent(conversation.job_id)}`);
+          updateLatestStatus(status);
+          state.messages.push({
+            role: "assistant",
+            content: "已恢复上次任务状态",
+            result: status,
+          });
+          renderMessages();
+          renderJobPanel(status);
+          pollJob(status.job_id, state.messages.length - 1);
+        } else {
+          renderJobPanel(null);
+        }
+      } catch (error) {
+        localStorage.removeItem(CONVERSATION_KEY);
+        state.conversationId = null;
+        state.messages = [];
+        renderMessages();
+        renderJobPanel(null);
+        setStatus("未能恢复上次会话，已创建新会话", "error");
+      }
+    }
 
     sendEl.addEventListener("click", handleSend);
+    fileEl.addEventListener("change", handleFileChange);
+    document.getElementById("file-clear").addEventListener("click", () => {
+      fileEl.value = "";
+      state.lastUpload = null;
+      renderFileChip(null);
+      setStatus("已清除上传文件");
+    });
+    document.getElementById("btn-new").addEventListener("click", newConversation);
     inputEl.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
         handleSend();
       }
     });
-    document.querySelectorAll("button[data-text]").forEach((button) => {
-      button.addEventListener("click", handleQuickAction);
+    document.querySelectorAll("button[data-action]").forEach((button) => {
+      button.addEventListener("click", () => runDirectAction(button.dataset.action));
+    });
+    document.querySelectorAll("button[data-fill]").forEach((button) => {
+      button.addEventListener("click", () => {
+        inputEl.value = button.dataset.fill;
+        inputEl.focus();
+      });
     });
 
     renderMessages();
+    renderJobPanel(null);
+    restoreConversation();
   </script>
 </body>
 </html>

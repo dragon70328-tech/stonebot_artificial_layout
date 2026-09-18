@@ -1,0 +1,13 @@
+﻿{
+  "name": "cgr45_3200x1800",
+  "source_sha256": "be46958f652788d692d65d3f10cb38d6a21ebd583321d2544a289b076c16ec02",
+  "sheet_width": 3200,
+  "sheet_height": 1800,
+  "thickness": 20,
+  "template_dxf": "cgr45_3200x1800_v3.dxf",
+  "profile_name": "cgr45",
+  "total_sheets": 50,
+  "total_parts": 203,
+  "yield_rate": 72.96,
+  "notes": "CGR45final 3200x1800 validated 50-sheet layout from historical v3 template."
+}

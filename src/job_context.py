@@ -36,6 +36,7 @@ class JobContext:
 
     nesting_outcome: Any | None = None
     result: NestingResult | None = None
+    template_result: bool = False
     manufacturing_metrics: dict[str, Any] = field(default_factory=dict)
     validation_errors: list[str] = field(default_factory=list)
 
@@ -95,6 +96,7 @@ class JobContext:
                     "elapsed_seconds": round(
                         outcome.elapsed_seconds, 1
                     ),
+                    "template": self.template_result,
                 }
                 if result is not None and outcome is not None
                 else None

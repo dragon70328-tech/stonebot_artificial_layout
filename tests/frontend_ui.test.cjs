@@ -1,0 +1,138 @@
+"use strict";
+
+const { test } = require("node:test");
+const assert = require("node:assert/strict");
+
+const ui = require("../portal/nesting/portal-ui.js");
+
+test("stageLabel returns Chinese labels for workflow and special stages", () => {
+  assert.equal(ui.stageLabel("uploaded"), "已上传");
+  assert.equal(ui.stageLabel("audited"), "审图确认");
+  assert.equal(ui.stageLabel("nested_reported"), "排板报告");
+  assert.equal(ui.stageLabel("postprocess_confirmed"), "后处理确认");
+  assert.equal(ui.stageLabel("completed"), "完成");
+  assert.equal(ui.stageLabel("blocked"), "已阻塞");
+  assert.equal(ui.stageLabel("cancelled"), "已取消");
+  assert.equal(ui.stageLabel("unknown"), "unknown");
+});
+
+test("latestJobStatus and latestJobId find the newest message with a job id", () => {
+  const messages = [
+    { role: "user", content: "开始" },
+    { role: "assistant", content: "任务1", result: { job_id: "job-1", stage: "audited" } },
+    { role: "assistant", content: "任务2", result: { job_id: "job-2", stage: "nested_reported" } },
+  ];
+
+  assert.equal(ui.latestJobStatus(messages).job_id, "job-2");
+  assert.equal(ui.latestJobId(messages), "job-2");
+  assert.equal(ui.latestJobStatus([]), null);
+  assert.equal(ui.latestJobId([]), null);
+});
+
+test("actionAvailability disables actions without a job", () => {
+  const availability = ui.actionAvailability(null, false);
+  assert.equal(availability.status.disabled, true);
+  assert.equal(availability.confirm.disabled, true);
+  assert.equal(availability.run.disabled, true);
+  assert.equal(availability.review.disabled, true);
+  assert.equal(availability.cancel.disabled, true);
+});
+
+test("actionAvailability disables everything while busy", () => {
+  const status = { job_id: "job-1", stage: "audited", confirmation_required: true };
+  const availability = ui.actionAvailability(status, true);
+  for (const action of Object.values(availability)) {
+    assert.equal(action.disabled, true);
+  }
+});
+
+test("actionAvailability enables confirm at gate stages and review after nesting", () => {
+  const audited = { job_id: "job-1", stage: "audited", confirmation_required: true };
+  assert.equal(ui.actionAvailability(audited).confirm.disabled, false);
+  assert.equal(ui.actionAvailability(audited).review.disabled, true);
+
+  const nested = { job_id: "job-1", stage: "nested_reported", confirmation_required: true };
+  assert.equal(ui.actionAvailability(nested).confirm.disabled, false);
+  assert.equal(ui.actionAvailability(nested).review.disabled, false);
+
+  const completed = { job_id: "job-1", stage: "completed", completed: true };
+  assert.equal(ui.actionAvailability(completed).cancel.disabled, true);
+  assert.equal(ui.actionAvailability(completed).run.disabled, true);
+  assert.equal(ui.actionAvailability(completed).review.disabled, false);
+});
+
+test("nextAction explains the next user step for each state", () => {
+  assert.equal(ui.nextAction(null).type, "create");
+
+  const audited = { job_id: "job-1", stage: "audited", confirmation_required: true };
+  assert.equal(ui.nextAction(audited).type, "confirm");
+
+  const nested = { job_id: "job-1", stage: "nested_reported", confirmation_required: true };
+  assert.equal(ui.nextAction(nested).type, "confirm");
+
+  const blocked = { job_id: "job-1", stage: "blocked", blocked: true };
+  assert.equal(ui.nextAction(blocked).type, "run");
+
+  const completed = { job_id: "job-1", stage: "completed", completed: true };
+  assert.equal(ui.nextAction(completed).type, "complete");
+
+  const cancelled = { job_id: "job-1", stage: "cancelled" };
+  assert.equal(ui.nextAction(cancelled).type, "cancelled");
+});
+
+test("stageProgress marks completed, current and pending steps", () => {
+  const status = { job_id: "job-1", stage: "nested_reported", confirmation_required: true };
+  const steps = ui.stageProgress(status);
+  const nestedIndex = ui.FLOW_STAGES.findIndex((step) => step.id === "nested_reported");
+
+  assert.equal(steps[nestedIndex].state, "current");
+  assert.equal(steps[0].state, "done");
+  assert.equal(steps[steps.length - 1].state, "pending");
+
+  const completed = ui.stageProgress({ job_id: "job-1", stage: "completed", completed: true });
+  assert.equal(completed[completed.length - 1].state, "done");
+});
+
+test("jobMetrics extracts key values from tool results", () => {
+  const status = {
+    job_id: "job-1",
+    last_result: {
+      tool_results: [
+        { tool: "read_dxf", ok: true, output: { parts: 203 } },
+        { tool: "audit_drawing", ok: true, output: { issues: 4 } },
+        { tool: "nest_parts", ok: true, output: { total_sheets: 50, total_parts: 203, yield_rate: 72.95 } },
+        { tool: "postprocess", ok: true, output: { geometry_errors: 0 } },
+      ],
+    },
+  };
+
+  const metrics = ui.jobMetrics(status);
+  assert.equal(metrics.parts, 203);
+  assert.equal(metrics.audit_issues, 4);
+  assert.equal(metrics.total_sheets, 50);
+  assert.equal(metrics.total_parts, 203);
+  assert.equal(metrics.yield_rate, 72.95);
+  assert.equal(metrics.geometry_errors, 0);
+});
+
+test("jobArtifacts merges session artifacts and current artifacts", () => {
+  const status = {
+    job_id: "job-1",
+    artifacts: { nested_dxf: "nested.dxf" },
+    session_artifacts: { numbered_dxf: "numbered.dxf" },
+  };
+
+  const artifacts = ui.jobArtifacts(status);
+  assert.equal(artifacts.numbered_dxf, "numbered.dxf");
+  assert.equal(artifacts.nested_dxf, "nested.dxf");
+});
+
+test("parseApiError prefers FastAPI detail and handles text payloads", () => {
+  assert.equal(ui.parseApiError({ detail: "file too large" }, 400), "file too large");
+  assert.equal(ui.parseApiError("bad request", 400), "bad request");
+  assert.equal(ui.parseApiError(null, 500), "请求失败：HTTP 500");
+});
+
+test("escapeHtml neutralizes markup", () => {
+  assert.equal(ui.escapeHtml('<script>alert("x")</script>'), "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;");
+});

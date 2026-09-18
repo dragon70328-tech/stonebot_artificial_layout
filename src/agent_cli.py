@@ -26,6 +26,10 @@ class QueuePlanProvider:
     def __init__(self) -> None:
         self.queue: list[list[ToolCall]] = []
 
+    @property
+    def has_pending_plans(self) -> bool:
+        return bool(self.queue)
+
     def enqueue(self, plan: list[ToolCall]) -> None:
         self.queue.append(plan)
 

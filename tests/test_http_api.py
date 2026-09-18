@@ -181,6 +181,35 @@ def test_root_serves_nesting_chat_frontend(tmp_path, monkeypatch):
     assert "识图排板对话" in response.text
 
 
+def test_root_serves_portal_ui_module(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.http_api.manager", SyncJobManager(tmp_path))
+    client = TestClient(app)
+
+    response = client.get("/portal-ui.js")
+
+    assert response.status_code == 200
+    assert "StonebotUI" in response.text
+    assert "stageLabel" in response.text
+
+
+def test_nesting_frontend_has_action_contract(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.http_api.manager", SyncJobManager(tmp_path))
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    for element_id in (
+        "job-panel",
+        "workflow-steps",
+        "btn-status",
+        "btn-confirm",
+        "btn-run",
+        "btn-review",
+        "btn-cancel",
+    ):
+        assert f'id="{element_id}"' in response.text
+
 def test_upload_input_accepts_dxf_bytes(tmp_path, monkeypatch):
     manager = SyncJobManager(tmp_path)
     monkeypatch.setattr("src.http_api.manager", manager)
@@ -501,7 +530,7 @@ def test_list_job_tasks_endpoint(tmp_path, monkeypatch):
     assert response.status_code == 200
     tasks = response.json()["tasks"]
     assert len(tasks) == 1
-    assert tasks[0]["task_type"] == "run_job"
+    assert tasks[0]["task_type"] == "start_job"
     assert tasks[0]["status"] == "succeeded"
     manager._stop_event.set()
 

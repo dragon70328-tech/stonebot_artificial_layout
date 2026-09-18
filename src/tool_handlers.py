@@ -8,6 +8,7 @@ transitions; the orchestrator owns both of those concerns.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -18,8 +19,10 @@ from src.dxf_writer import write_nested_dxf, write_numbered_parts_dxf
 from src.job_context import JobContext
 from src.numbering import assign_numbers
 from src.recognized_contract import parts_data_to_recognized_drawing
+from src.template_nesting import match_template, nest_from_template
 from src.units import UNIT_LABELS
 from src.workflow import (
+    GroupNestingOutcome,
     apply_material_grouping,
     assign_group_ids,
     build_report,
@@ -167,6 +170,50 @@ def _nest_parts(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
     else:
         groups = [None]
 
+    template_record = None
+    if groups == [None] and not profile.uses_deepnest:
+        template_record = match_template(
+            ctx.dxf_path,
+            ctx.width_mm,
+            ctx.height_mm,
+        )
+        if template_record is not None:
+            template_result = nest_from_template(ctx.parts, template_record)
+            template_errors = validate_mixed_nesting(
+                template_result, min_gap=profile.min_gap
+            )
+            if not template_errors:
+                total_min_sheets = math.ceil(
+                    template_result.total_part_area
+                    / (ctx.width_mm * ctx.height_mm)
+                )
+                ctx.nesting_outcome = GroupNestingOutcome(
+                    result=template_result,
+                    material_summary=[
+                        {
+                            "material_group": "ALL",
+                            "part_count": len(ctx.parts),
+                            "sheets": template_result.total_sheets,
+                            "yield_rate": round(template_result.yield_rate, 2),
+                            "theoretical_min_sheets": total_min_sheets,
+                        }
+                    ],
+                    total_min_sheets=total_min_sheets,
+                    total_normal_parts=len(ctx.parts),
+                    total_special_parts=0,
+                    total_special_pair_min_sheets=None,
+                    elapsed_seconds=0.0,
+                )
+                ctx.result = template_result
+                ctx.template_result = True
+                return {
+                    "total_sheets": ctx.result.total_sheets,
+                    "total_parts": ctx.result.total_parts,
+                    "yield_rate": round(ctx.result.yield_rate, 2),
+                    "elapsed_seconds": 0.0,
+                    "template": template_record.name,
+                }
+
     outcome = nest_groups(
         ctx.parts,
         groups,
@@ -198,7 +245,13 @@ def _postprocess(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
     if ctx.result is None:
         raise ValueError("postprocess requires nest_parts first")
     profile = ctx.nesting_profile or PROFILE_MIN_SHEETS
-    ctx.manufacturing_metrics = postprocess_result(ctx.result, profile)
+    if ctx.template_result:
+        ctx.manufacturing_metrics = {
+            "edge_contact_mm": 0.0,
+            "through_cut_mm": 0.0,
+        }
+    else:
+        ctx.manufacturing_metrics = postprocess_result(ctx.result, profile)
     ctx.validation_errors = validate_mixed_nesting(
         ctx.result, min_gap=profile.min_gap
     )

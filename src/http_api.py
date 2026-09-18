@@ -410,6 +410,9 @@ class JobManager:
 
     def _task_handlers(self) -> dict[str, Any]:
         return {
+            "start_job": lambda payload: self.get(
+                payload["job_id"]
+            ).start().to_dict(),
             "run_job": lambda payload: self.get(
                 payload["job_id"]
             ).resume().to_dict(),
@@ -565,7 +568,7 @@ class JobManager:
             runtime.store.save(runtime.session)
         if run_in_background:
             self._enqueue_action(
-                "run_job",
+                "start_job",
                 {"job_id": runtime.session_id},
             )
         return runtime

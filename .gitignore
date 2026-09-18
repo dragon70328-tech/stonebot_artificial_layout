@@ -30,9 +30,13 @@ output/*.json
 !output/*_report_*.json
 
 .env
+scripts/dev_env.ps1
 
 output/*.bak
 
 # timestamped output subdirs
 output/*_*/
 output/.cache/
+
+# local runtime logs
+_analysis/*.log

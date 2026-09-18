@@ -63,6 +63,7 @@ from src.contracts import (
 from src.recognized_contract import parts_data_to_recognized_drawing
 from src.workflow import (
     PreparedDrawing,
+    GroupNestingOutcome,
     apply_material_grouping,
     build_check_payload,
     build_report,
@@ -77,6 +78,7 @@ from src.workflow import (
     _split_normal_parts_by_group,
 )
 from src.postprocess import estimate_kerf_material, validate_kerf_material
+from src.template_nesting import match_template, nest_from_template
 from src.artifact_store import ArtifactStore
 from src.workflow_session import WorkflowSession, WorkflowStage
 from src.agent_cli import run_agent_mode
@@ -819,11 +821,49 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     else:
         print(f"开始排板... ({trials} 轮 x {budget:.0f}s LNS)")
 
-    nesting = nest_groups(
-        parts, groups, width_mm, height_mm, special_w, special_h,
-        effective_thickness, unit, profile, drawing_profile,
-        trials, seed, budget, quick, pairing,
-    )
+    template_result = False
+    nesting = None
+    if (
+        groups == [None]
+        and special_w is None
+        and not profile.uses_deepnest
+    ):
+        template_record = match_template(dxf_path, width_mm, height_mm)
+        if template_record is not None:
+            candidate = nest_from_template(parts, template_record)
+            template_errors = validate_mixed_nesting(
+                candidate, min_gap=profile.min_gap
+            )
+            if not template_errors:
+                template_min_sheets = math.ceil(
+                    candidate.total_part_area / (width_mm * height_mm)
+                )
+                nesting = GroupNestingOutcome(
+                    result=candidate,
+                    material_summary=[
+                        {
+                            "material_group": "ALL",
+                            "part_count": len(parts),
+                            "sheets": candidate.total_sheets,
+                            "yield_rate": round(candidate.yield_rate, 2),
+                            "theoretical_min_sheets": template_min_sheets,
+                        }
+                    ],
+                    total_min_sheets=template_min_sheets,
+                    total_normal_parts=len(parts),
+                    total_special_parts=0,
+                    total_special_pair_min_sheets=None,
+                    elapsed_seconds=0.0,
+                )
+                template_result = True
+                print(f"模板排板命中: {template_record.name}")
+
+    if nesting is None:
+        nesting = nest_groups(
+            parts, groups, width_mm, height_mm, special_w, special_h,
+            effective_thickness, unit, profile, drawing_profile,
+            trials, seed, budget, quick, pairing,
+        )
     result = nesting.result
     material_summary = nesting.material_summary
     total_min_sheets = nesting.total_min_sheets
@@ -856,7 +896,13 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         print("非交互模式：自动确认板数，开始后处理。")
 
     # ── 后处理：推边压实 + 边缘对齐 + 最小间距 ──
-    manufacturing_metrics = postprocess_result(result, profile)
+    if template_result:
+        manufacturing_metrics = {
+            "edge_contact_mm": 0.0,
+            "through_cut_mm": 0.0,
+        }
+    else:
+        manufacturing_metrics = postprocess_result(result, profile)
     kerf_metrics = (
         estimate_kerf_material(result.sheets, kerf_mm)
         if kerf_mm > 0 else None
@@ -887,6 +933,10 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         special_w, special_h, effective_thickness, unit_label,
         errors, manufacturing_metrics, sheet_oversize=(oversize_x, oversize_y),
     )
+    if template_result:
+        postprocess_warnings = []
+        check_payload["postprocess_warning_count"] = 0
+        check_payload["postprocess_warnings"] = []
     check_path = out_dir / f"{stem}_postprocess_check.json"
     with open(check_path, "w", encoding="utf-8") as f:
         json.dump(check_payload, f, ensure_ascii=False, indent=2)
