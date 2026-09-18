@@ -25,6 +25,9 @@ Allowed operations:
 8. {"operation": "hole_to_panel", "target": "hole-id-or-handle", "value": "P-0010", "reason": "该孔洞实际是规格板"}
 9. {"operation": "add_panel_from_entity", "target": "handle:H9", "value": "P-0020", "reason": "漏识别规格板"}
 10. {"operation": "add_hole_from_entity", "target": "handle:H9", "target_b": "P-0001", "reason": "漏识别孔洞"}
+11. {"operation": "merge_panels", "target": "P-0001", "target_b": "P-0002", "reason": "两块应为同一规格板"}
+12. {"operation": "split_panel_vertical", "target": "P-0001", "position": 1200, "value": "P-0010", "reason": "按竖直线拆分"}
+13. {"operation": "split_panel_horizontal", "target": "P-0001", "position": 600, "value": "P-0011", "reason": "按水平线拆分"}
 
 Rules:
 - Use only target identifiers present in the supplied drawing context.

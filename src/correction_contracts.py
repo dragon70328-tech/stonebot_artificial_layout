@@ -24,6 +24,9 @@ class CorrectionOperationType(str, Enum):
     FILL_HOLE = "fill_hole"
     ADD_PANEL_FROM_ENTITY = "add_panel_from_entity"
     ADD_HOLE_FROM_ENTITY = "add_hole_from_entity"
+    MERGE_PANELS = "merge_panels"
+    SPLIT_PANEL_VERTICAL = "split_panel_vertical"
+    SPLIT_PANEL_HORIZONTAL = "split_panel_horizontal"
 
 
 class CorrectionOperation(Contract):
@@ -33,6 +36,7 @@ class CorrectionOperation(Contract):
     target: str = Field(min_length=1)
     target_b: str | None = None
     value: str | None = None
+    position: float | None = None
     reason: str = ""
 
     @model_validator(mode="after")
@@ -52,6 +56,16 @@ class CorrectionOperation(Contract):
             CorrectionOperationType.ADD_HOLE_FROM_ENTITY,
         } and not self.target_b:
             raise ValueError(f"{self.operation} requires target_b")
+        if self.operation == CorrectionOperationType.MERGE_PANELS and not self.target_b:
+            raise ValueError("merge_panels requires target_b")
+        if self.operation in {
+            CorrectionOperationType.SPLIT_PANEL_VERTICAL,
+            CorrectionOperationType.SPLIT_PANEL_HORIZONTAL,
+        }:
+            if self.position is None:
+                raise ValueError(f"{self.operation} requires position")
+            if not self.value:
+                raise ValueError(f"{self.operation} requires value")
         return self
 
 

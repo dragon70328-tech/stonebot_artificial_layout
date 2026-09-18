@@ -488,6 +488,78 @@ def test_build_correction_context_lists_unrecognized_entities(tmp_path):
     assert payload["unrecognized_entities"][0]["target_id"] == "handle:H9"
 
 
+def _context_adjacent(tmp_path: Path) -> JobContext:
+    source = tmp_path / "drawing.dxf"
+    source.write_bytes(b"0\nEOF\n")
+    left = Polygon([(0, 0), (100, 0), (100, 100), (0, 100)])
+    right = Polygon([(100, 0), (200, 0), (200, 100), (100, 100)])
+    parts = [
+        Part(id=1, number="P-1", polygon=left, outer_polygon=left, original_number="P-1", outer_handle="H1"),
+        Part(id=2, number="P-2", polygon=right, outer_polygon=right, original_number="P-2", outer_handle="H2"),
+    ]
+    parts_data = [
+        {
+            "index": part.id,
+            "polygon": part.polygon,
+            "outer_polygon": part.outer_polygon,
+            "holes": [],
+            "hole_handles": [],
+            "original_number": part.original_number,
+            "material_group": None,
+            "area": part.area,
+            "centroid": tuple(part.polygon.centroid.coords[0]),
+            "outer_handle": part.outer_handle,
+        }
+        for part in parts
+    ]
+    return JobContext(dxf_path=str(source), project_id="drawing", unit=UnitSystem.METRIC, parts=parts, parts_data=parts_data, output_dir=tmp_path)
+
+
+def test_parse_correction_plan_validates_merge_and_split_operations():
+    plan = parse_correction_plan(
+        {
+            "operations": [
+                {"operation": "merge_panels", "target": "P-1", "target_b": "P-2"},
+                {"operation": "split_panel_vertical", "target": "P-1", "position": 50, "value": "P-3"},
+                {"operation": "split_panel_horizontal", "target": "P-3", "position": 50, "value": "P-4"},
+            ]
+        },
+        instruction="合并再拆分",
+    )
+    assert len(plan.operations) == 3
+
+    with pytest.raises(ValidationError):
+        parse_correction_plan(
+            {"operations": [{"operation": "split_panel_vertical", "target": "P-1", "value": "P-3"}]},
+            instruction="缺少切割位置",
+        )
+
+
+def test_merge_adjacent_panels(tmp_path):
+    context = _context_adjacent(tmp_path)
+    plan = CorrectionPlan(instruction="两块应为同一规格板", operations=[{"operation": "merge_panels", "target": "P-1", "target_b": "P-2"}])
+    result = apply_correction_plan(context, plan)
+    assert result.removed_part_ids == [2]
+    assert len(context.parts) == 1
+    assert context.parts[0].number == "P-1"
+    assert context.parts[0].outer_polygon.area == 20000
+
+
+def test_split_panel_vertical_and_horizontal(tmp_path):
+    vertical_context = _context(tmp_path)
+    vertical_plan = CorrectionPlan(instruction="按竖直线拆分 P-1", operations=[{"operation": "split_panel_vertical", "target": "P-1", "position": 50, "value": "P-3"}])
+    split_result = apply_correction_plan(vertical_context, vertical_plan)
+    assert split_result.part_numbers == ["P-1", "P-2", "P-3"]
+    assert sorted([vertical_context.parts[0].outer_polygon.area, vertical_context.parts[2].outer_polygon.area]) == [5000, 5000]
+
+    horizontal_dir = tmp_path / "horizontal"
+    horizontal_dir.mkdir()
+    horizontal_context = _context_adjacent(horizontal_dir)
+    horizontal_plan = CorrectionPlan(instruction="按水平线拆分 P-1", operations=[{"operation": "split_panel_horizontal", "target": "P-1", "position": 50, "value": "P-4"}])
+    apply_correction_plan(horizontal_context, horizontal_plan)
+    assert any(part.number == "P-4" for part in horizontal_context.parts)
+
+
 def test_agent_runtime_correct_returns_to_numbering_gate(tmp_path):
     context = _context(tmp_path)
     runtime = AgentRuntime(

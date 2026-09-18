@@ -9,7 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from shapely.ops import unary_union
+from shapely.geometry import LineString
+from shapely.ops import split, unary_union
 
 from src.correction_contracts import (
     CorrectionOperation,
@@ -186,11 +187,7 @@ def _part_data(parts_data: list[dict[str, Any]], part: Any) -> dict[str, Any] | 
 
 def _refresh_part_geometry(part: Any, parts_data: list[dict[str, Any]]) -> None:
     part.holes = [hole for hole in part.holes if not hole.is_empty]
-    part.polygon = (
-        part.outer_polygon.difference(unary_union(part.holes))
-        if part.holes
-        else part.outer_polygon
-    )
+    part.polygon = _combined_polygon(part.outer_polygon, part.holes)
     if not part.polygon.is_valid:
         part.polygon = part.polygon.buffer(0)
     part.area = float(part.polygon.area)
@@ -201,6 +198,10 @@ def _refresh_part_geometry(part: Any, parts_data: list[dict[str, Any]]) -> None:
         data["holes"] = list(part.holes)
         data["hole_handles"] = list(part.hole_handles)
         data["area"] = part.area
+
+
+def _combined_polygon(outer: Any, holes: list[Any]) -> Any:
+    return outer.difference(unary_union(holes)) if holes else outer
 
 
 def _parts_digest(parts: list[Any]) -> str:
@@ -239,6 +240,12 @@ def _describe_operation(operation: CorrectionOperation) -> str:
         return f"entity {operation.target} -> panel {operation.value}"
     if operation.operation == CorrectionOperationType.ADD_HOLE_FROM_ENTITY:
         return f"entity {operation.target} -> hole of {operation.target_b}"
+    if operation.operation == CorrectionOperationType.MERGE_PANELS:
+        return f"merge {operation.target} + {operation.target_b}"
+    if operation.operation == CorrectionOperationType.SPLIT_PANEL_VERTICAL:
+        return f"split {operation.target} at x={operation.position} -> {operation.value}"
+    if operation.operation == CorrectionOperationType.SPLIT_PANEL_HORIZONTAL:
+        return f"split {operation.target} at y={operation.position} -> {operation.value}"
     return f"ignore {operation.target}"
 
 
@@ -347,6 +354,80 @@ def _apply_operation(
         _refresh_part_geometry(parent, parts_data)
         return
 
+    if operation.operation == CorrectionOperationType.MERGE_PANELS:
+        part = _resolve_part(parts, operation.target, panel_ids)
+        other = _resolve_part(parts, str(operation.target_b), panel_ids)
+        if part is other:
+            raise ValueError("merge_panels targets must be different")
+        if part.material_group != other.material_group:
+            raise ValueError("merge_panels requires matching materials")
+        merged = part.outer_polygon.union(other.outer_polygon)
+        if merged.is_empty or merged.geom_type != "Polygon":
+            raise ValueError("panels must touch or overlap to merge")
+        holes = [*part.holes, *other.holes]
+        if any(not merged.covers(hole) for hole in holes):
+            raise ValueError("merged panel does not contain all holes")
+        for left_index, left in enumerate(holes):
+            for right in holes[left_index + 1:]:
+                if left.intersection(right).area > 1e-6:
+                    raise ValueError("merged panel contains overlapping holes")
+        part.outer_polygon = merged
+        part.holes = holes
+        part.hole_handles = [*part.hole_handles, *other.hole_handles]
+        part.label_position = tuple(merged.representative_point().coords[0])
+        _refresh_part_geometry(part, parts_data)
+        removed_part_ids.append(int(other.id))
+        parts.remove(other)
+        other_data = _part_data(parts_data, other)
+        if other_data is not None:
+            parts_data.remove(other_data)
+        return
+
+    if operation.operation in {
+        CorrectionOperationType.SPLIT_PANEL_VERTICAL,
+        CorrectionOperationType.SPLIT_PANEL_HORIZONTAL,
+    }:
+        part = _resolve_part(parts, operation.target, panel_ids)
+        position = float(operation.position)
+        new_number = str(operation.value or "").strip()
+        min_x, min_y, max_x, max_y = part.outer_polygon.bounds
+        margin = max(max_x - min_x, max_y - min_y) + 10.0
+        if operation.operation == CorrectionOperationType.SPLIT_PANEL_VERTICAL:
+            cut_line = LineString([(position, min_y - margin), (position, max_y + margin)])
+        else:
+            cut_line = LineString([(min_x - margin, position), (max_x + margin, position)])
+        pieces = [geometry for geometry in split(part.outer_polygon, cut_line).geoms if geometry.geom_type == "Polygon" and geometry.area > 0.01]
+        if len(pieces) != 2:
+            raise ValueError("split line must divide the panel into two polygons")
+        pieces.sort(key=lambda polygon: polygon.centroid.coords[0])
+        hole_records = []
+        for index, hole in enumerate(part.holes):
+            if hole.intersects(cut_line):
+                raise ValueError("split line intersects a hole")
+            containing = [piece_index for piece_index, piece in enumerate(pieces) if piece.covers(hole)]
+            if len(containing) != 1:
+                raise ValueError("hole must belong entirely to one split piece")
+            handle = part.hole_handles[index] if index < len(part.hole_handles) else None
+            hole_records.append((containing[0], hole, handle))
+        source_point = part.outer_polygon.representative_point()
+        source_side = next((index for index, piece in enumerate(pieces) if piece.covers(source_point)), 0)
+        other_side = 1 - source_side
+        source_holes = [(hole, handle) for index, hole, handle in hole_records if index == source_side]
+        other_holes = [(hole, handle) for index, hole, handle in hole_records if index == other_side]
+        part.outer_polygon = pieces[source_side]
+        part.holes = [hole for hole, _handle in source_holes]
+        part.hole_handles = [handle for _hole, handle in source_holes]
+        part.label_position = tuple(pieces[source_side].representative_point().coords[0])
+        _refresh_part_geometry(part, parts_data)
+        new_id = max(int(item.id) for item in parts) + 1
+        new_outer = pieces[other_side]
+        new_holes = [hole for hole, _handle in other_holes]
+        new_handles = [handle for _hole, handle in other_holes]
+        new_polygon = _combined_polygon(new_outer, new_holes)
+        new_part = Part(id=new_id, number=new_number, polygon=new_polygon, outer_polygon=new_outer, holes=new_holes, original_number=new_number, material_group=part.material_group, area=float(new_polygon.area), label_position=tuple(new_outer.representative_point().coords[0]), hole_handles=new_handles)
+        parts.append(new_part)
+        parts_data.append({"index": new_id, "polygon": new_polygon, "outer_polygon": new_outer, "holes": new_holes, "hole_handles": new_handles, "original_number": new_number, "material_group": part.material_group, "area": float(new_polygon.area), "centroid": tuple(new_outer.centroid.coords[0]), "outer_handle": None})
+        return
     if operation.operation == CorrectionOperationType.ADD_PANEL_FROM_ENTITY:
         candidate = _resolve_candidate(closed_entities, operation.target)
         value = str(operation.value or "").strip()
