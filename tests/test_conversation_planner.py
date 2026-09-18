@@ -47,6 +47,16 @@ def test_parse_confirm_job_requires_decision():
         parse_conversation_intent({"action": "confirm_job"})
 
 
+def test_parse_correct_drawing_requires_instruction():
+    parsed = parse_conversation_intent(
+        {"action": "correct_drawing", "instruction": "P-1 改成 P-1A"}
+    )
+    assert parsed["instruction"] == "P-1 改成 P-1A"
+
+    with pytest.raises(ValueError, match="instruction"):
+        parse_conversation_intent({"action": "correct_drawing"})
+
+
 def test_parse_rejects_unknown_action():
     with pytest.raises(ValueError, match="unsupported"):
         parse_conversation_intent({"action": "delete_all"})

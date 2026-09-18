@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from src.constraints import PROFILE_MIN_SHEETS
+from src.correction_contracts import CorrectionPlan
+from src.drawing_corrections import apply_correction_plan
 from src.drawing_profile import analyze_drawing, audit_drawing, read_dxf_with_profile
 from src.dxf_reader import read_dxf
 from src.dxf_writer import write_nested_dxf, write_numbered_parts_dxf
@@ -146,6 +148,18 @@ def _write_numbered_dxf(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]
     write_numbered_parts_dxf(ctx.parts, path, unit_system=ctx.unit.value)
     ctx.numbered_dxf_path = Path(path)
     return {"path": path, "parts": len(ctx.parts)}
+
+
+def _apply_drawing_corrections(
+    ctx: JobContext,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    raw_plan = args.get("plan")
+    if not isinstance(raw_plan, dict):
+        raise ValueError("apply_drawing_corrections requires a plan object")
+    plan = CorrectionPlan.model_validate(raw_plan)
+    result = apply_correction_plan(ctx, plan)
+    return result.model_dump(mode="json")
 
 
 def _nest_parts(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -316,6 +330,7 @@ def build_tool_handlers(ctx: JobContext | None = None) -> dict[str, Any]:
         "assign_numbers": lambda args: _assign_numbers(context, args),
         "confirm_numbering": lambda args: _confirm_numbering(context, args),
         "write_numbered_dxf": lambda args: _write_numbered_dxf(context, args),
+        "apply_drawing_corrections": lambda args: _apply_drawing_corrections(context, args),
         "nest_parts": lambda args: _nest_parts(context, args),
         "postprocess": lambda args: _postprocess(context, args),
         "write_dxf": lambda args: _write_dxf(context, args),

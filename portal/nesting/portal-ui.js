@@ -128,7 +128,7 @@
     }
     if (status.confirmation_required) {
       const hints = {
-        audited: "请核对编号原位图，确认识别无误后继续排板",
+        audited: "请核对编号原位图；发现错误直接在对话中说明，系统会重新生成，正确后再确认",
         nested_reported: "请核对板数与排板结果，确认后进入后处理",
         postprocess_confirmed: "请核对后处理结果，确认后生成最终 DXF",
       };
@@ -208,6 +208,8 @@
   }
 
   function artifactLabel(key) {
+    const revisionMatch = String(key || "").match(/^numbered_dxf_r(\d+)$/);
+    if (revisionMatch) return `原位DXF v${revisionMatch[1]}`;
     return ARTIFACT_LABELS[key] || key;
   }
 

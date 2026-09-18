@@ -1,5 +1,6 @@
 import asyncio
 import time
+from types import SimpleNamespace
 
 import httpx
 from httpx import ASGITransport
@@ -169,6 +170,68 @@ def test_http_health(tmp_path, monkeypatch):
     assert payload["status"] == "ok"
     assert payload["service"] == "stonebot-nesting-api"
     assert payload["data_root"] == str(tmp_path)
+
+
+class FakeCorrectionRuntime:
+    def __init__(self):
+        self.context = SimpleNamespace(
+            parts=[],
+            recognized_drawing=None,
+            correction_revision=0,
+        )
+        self.session = SimpleNamespace(current_stage="audited")
+
+    def status(self):
+        return {
+            "job_id": "job-correction",
+            "stage": "audited",
+            "confirmation_required": True,
+        }
+
+
+class FakeCorrectionManager:
+    def __init__(self, root):
+        self.root = root
+        self.runtime = FakeCorrectionRuntime()
+
+    def tenant_for_job(self, job_id):
+        return "default"
+
+    def get(self, job_id):
+        return self.runtime
+
+    def correct(self, job_id, plan):
+        self.corrected = (job_id, plan)
+        return {
+            "revision": 1,
+            "plan_id": plan.plan_id,
+            "artifact_path": "corrected.dxf",
+        }
+
+
+def test_correction_endpoint_applies_structured_plan(tmp_path, monkeypatch):
+    manager = FakeCorrectionManager(tmp_path)
+    monkeypatch.setattr("src.http_api.manager", manager)
+    client = TestClient(app)
+
+    response = client.post(
+        "/jobs/job-correction/corrections",
+        json={
+            "instruction": "把 P-1 改成 P-1A",
+            "operations": [
+                {
+                    "operation": "rename_number",
+                    "target": "P-1",
+                    "value": "P-1A",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["correction"]["revision"] == 1
+    assert manager.corrected[0] == "job-correction"
+    assert manager.corrected[1].operations[0].value == "P-1A"
 
 
 def test_root_serves_nesting_chat_frontend(tmp_path, monkeypatch):

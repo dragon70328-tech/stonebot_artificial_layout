@@ -173,6 +173,11 @@ test("validateNestingParameters requires bridge kerf and positive sheets", () =>
   );
 });
 
+test("artifactLabel exposes numbered DXF correction revisions", () => {
+  assert.equal(ui.artifactLabel("numbered_dxf_r2"), "原位DXF v2");
+  assert.equal(ui.artifactLabel("numbered_dxf"), "编号原位DXF");
+});
+
 test("parseApiError prefers FastAPI detail and handles text payloads", () => {
   assert.equal(ui.parseApiError({ detail: "file too large" }, 400), "file too large");
   assert.equal(ui.parseApiError("bad request", 400), "bad request");

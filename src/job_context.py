@@ -42,6 +42,8 @@ class JobContext:
     template_result: bool = False
     manufacturing_metrics: dict[str, Any] = field(default_factory=dict)
     validation_errors: list[str] = field(default_factory=list)
+    correction_revision: int = 0
+    correction_history: list[dict[str, Any]] = field(default_factory=list)
 
     trials: int = 1
     seed: int = 0
@@ -100,6 +102,8 @@ class JobContext:
                 "parts": len(self.parts) if self.parts is not None else 0,
                 "audit_issues": len(self.audit_issues),
             },
+            "correction_revision": self.correction_revision,
+            "correction_history": self.correction_history,
             "nesting": (
                 {
                     "total_sheets": result.total_sheets,

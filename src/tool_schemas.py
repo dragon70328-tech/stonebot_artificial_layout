@@ -119,6 +119,18 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         required=("path",),
         production_write=False,
     ),
+    "apply_drawing_corrections": ToolSpec(
+        name="apply_drawing_corrections",
+        stage=WorkflowStage.AUDITED,
+        advances_to=None,
+        description=(
+            "Apply a structured correction plan and regenerate the numbered "
+            "in-place DXF."
+        ),
+        fields={"plan": "object"},
+        required=("plan",),
+        production_write=False,
+    ),
     "nest_parts": ToolSpec(
         name="nest_parts",
         stage=WorkflowStage.NUMBERING_CONFIRMED,

@@ -75,11 +75,25 @@ class FakeConversationPlanner:
         return self.intent
 
 
+class FakeCorrectionPlanner:
+    def __init__(self):
+        self.calls = []
+
+    def plan(self, instruction, *, context, target_ids=None):
+        self.calls.append((instruction, context, target_ids))
+        return SimpleNamespace(instruction=instruction)
+
+
 class FakeRuntime:
     def __init__(self, request=None, job_id="job-conversation", stage="queued"):
         self.request = request
         self.session_id = job_id
         self.session = SimpleNamespace(current_stage=stage)
+        self.context = SimpleNamespace(
+            parts=[],
+            recognized_drawing=None,
+            correction_revision=0,
+        )
 
     def status(self):
         return {
@@ -123,6 +137,10 @@ class FakeManager:
     def cancel(self, job_id):
         self.cancelled = job_id
         return FakeRuntime(job_id=job_id, stage="cancelled")
+
+    def correct(self, job_id, plan):
+        self.corrected = (job_id, plan)
+        return {"revision": 2, "plan_id": plan.instruction}
 
 
 def _conversation_client(tmp_path, monkeypatch, planner_intent):
@@ -272,6 +290,41 @@ def test_respond_create_job_without_dxf_returns_400(tmp_path, monkeypatch):
 
     assert response.status_code == 400
     assert manager.created == []
+
+
+def test_respond_correct_drawing_regenerates_numbered_dxf(tmp_path, monkeypatch):
+    client, _, manager = _conversation_client(
+        tmp_path,
+        monkeypatch,
+        {
+            "action": "correct_drawing",
+            "job_id": "job-1",
+            "instruction": "把 P-1 改成 P-1A",
+            "target_ids": ["P-1"],
+        },
+    )
+    correction_planner = FakeCorrectionPlanner()
+    monkeypatch.setattr(
+        "src.http_api.CorrectionPlanner",
+        lambda: correction_planner,
+    )
+    created = client.post(
+        "/conversations",
+        json={"tenant_id": "default"},
+    )
+    conversation_id = created.json()["id"]
+    client.post(
+        f"/conversations/{conversation_id}/messages",
+        json={"role": "user", "content": "把 P-1 改成 P-1A"},
+    )
+
+    response = client.post(f"/conversations/{conversation_id}/respond")
+
+    assert response.status_code == 202
+    assert response.json()["result"]["correction"]["revision"] == 2
+    assert manager.corrected[0] == "job-1"
+    assert correction_planner.calls[0][0] == "把 P-1 改成 P-1A"
+    assert correction_planner.calls[0][2] == ["P-1"]
 
 
 def test_respond_review_job_adds_assistant_summary(tmp_path, monkeypatch):

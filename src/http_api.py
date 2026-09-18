@@ -30,8 +30,11 @@ from src.agent_loop import AgentLoopResult
 from src.agent_runtime import AgentRuntime
 from src.artifact_store import content_digest
 from src.constraints import PROFILE_MIN_SHEETS, PROFILES
+from src.correction_contracts import CorrectionPlan
+from src.correction_planner import CorrectionPlanner
 from src.conversation_planner import ConversationPlanner
 from src.conversation_store import ConversationStore
+from src.drawing_corrections import build_correction_context
 from src.dxf_writer import write_nested_dxf
 from src.input_guard import DXFInputLimits, check_dxf_file
 from src.job_repository import build_job_repository
@@ -131,6 +134,12 @@ class ConfirmationRequest(BaseModel):
 
 class ReviewRequest(BaseModel):
     max_reductions: int = 1
+
+
+class CorrectionRequest(BaseModel):
+    instruction: str = Field(min_length=1)
+    target_ids: list[str] = Field(default_factory=list)
+    operations: list[dict[str, Any]] | None = None
 
 
 class ConversationCreateRequest(BaseModel):
@@ -769,6 +778,10 @@ class JobManager:
         runtime.cancel()
         return runtime
 
+    def correct(self, job_id: str, plan: CorrectionPlan) -> dict[str, Any]:
+        runtime = self.get(job_id)
+        return runtime.correct(plan)
+
     def review(
         self,
         job_id: str,
@@ -1134,6 +1147,24 @@ def respond_to_conversation(
                 f"已继续任务 {job_id}，当前阶段："
                 f"{result_payload.get('stage')}"
             )
+        elif action == "correct_drawing":
+            job_id = _resolve_conversation_job(conversation, intent)
+            runtime = manager.get(job_id)
+            plan = CorrectionPlanner().plan(
+                str(intent["instruction"]),
+                context=build_correction_context(runtime.context),
+                target_ids=[
+                    str(item)
+                    for item in intent.get("target_ids", [])
+                ],
+            )
+            correction = manager.correct(job_id, plan)
+            result_payload = runtime.status()
+            result_payload["correction"] = correction
+            assistant_content = (
+                f"已重新生成原位DXF第 {correction.get('revision')} 版，"
+                "请继续检查或确认。"
+            )
         elif action == "cancel_job":
             job_id = _resolve_conversation_job(conversation, intent)
             runtime = manager.cancel(job_id)
@@ -1141,7 +1172,7 @@ def respond_to_conversation(
             assistant_content = f"已取消任务 {job_id}"
         else:
             raise HTTPException(status_code=400, detail="unsupported action")
-    except (JobStateError, LLMError, TenantError, ValueError) as exc:
+    except (JobStateError, LLMError, TenantError, RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     conversation_store.add_message(
@@ -1319,6 +1350,37 @@ def download_artifact(
             "Content-Disposition": f'attachment; filename="{safe_filename}"',
         },
     )
+
+
+@app.post("/jobs/{job_id}/corrections")
+def correct_job(
+    job_id: str,
+    request: CorrectionRequest,
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
+) -> dict[str, Any]:
+    _require_role(tenant, "operator")
+    _require_job_tenant(job_id, tenant)
+    runtime = manager.get(job_id)
+    try:
+        if request.operations:
+            plan = CorrectionPlan(
+                instruction=request.instruction,
+                operations=request.operations,
+            )
+        else:
+            plan = CorrectionPlanner().plan(
+                request.instruction,
+                context=build_correction_context(runtime.context),
+                target_ids=request.target_ids,
+            )
+        correction = manager.correct(job_id, plan)
+    except LLMError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (JobStateError, RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    payload = runtime.status()
+    payload["correction"] = correction
+    return payload
 
 
 @app.post("/jobs/{job_id}/confirm")

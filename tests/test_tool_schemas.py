@@ -27,3 +27,17 @@ def test_tool_schema_registry_is_json_serializable():
     assert payload["confirm_numbering"]["advances_to"] == (
         WorkflowStage.NUMBERING_CONFIRMED.value
     )
+
+
+def test_correction_tool_is_available_at_numbering_gate():
+    spec = get_tool_spec("apply_drawing_corrections")
+
+    assert spec is not None
+    assert spec.stage == WorkflowStage.AUDITED
+    assert spec.advances_to is None
+    assert spec.validate_arguments(
+        ToolCall(
+            tool="apply_drawing_corrections",
+            arguments={"plan": {"operations": []}},
+        )
+    ) == []

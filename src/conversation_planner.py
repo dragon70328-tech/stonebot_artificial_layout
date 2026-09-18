@@ -19,6 +19,7 @@ Allowed actions:
 4. {"action": "confirm_job", "job_id": "<job id, optional>", "decision": "confirm"}
 5. {"action": "run_job", "job_id": "<job id, optional>"}
 6. {"action": "cancel_job", "job_id": "<job id, optional>"}
+7. {"action": "correct_drawing", "job_id": "<job id, optional>", "instruction": "<用户对原位DXF的纠正描述>", "target_ids": []}
 
 Do not execute code. Do not invent a dxf_path if the user did not upload one.
 Use the current conversation job when no job_id is supplied.
@@ -49,7 +50,16 @@ def parse_conversation_intent(raw: Any) -> dict[str, Any]:
             raise ValueError(
                 "create_job width_mm and height_mm must be numeric"
             ) from exc
-    elif action in {"review_job", "get_job", "confirm_job", "run_job", "cancel_job"}:
+    elif action in {
+        "review_job",
+        "get_job",
+        "confirm_job",
+        "run_job",
+        "cancel_job",
+        "correct_drawing",
+    }:
+        if action == "correct_drawing" and not raw.get("instruction"):
+            raise ValueError("correct_drawing intent is missing instruction")
         if action == "confirm_job" and not raw.get("decision"):
             raise ValueError("confirm_job intent is missing decision")
         if action == "review_job":

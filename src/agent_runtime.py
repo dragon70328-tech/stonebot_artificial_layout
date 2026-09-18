@@ -20,6 +20,7 @@ from src.agent_cli import (
 from src.agent_loop import AgentLoop, AgentLoopResult
 from src.ai_planning import ToolCall
 from src.artifact_store import ArtifactStore
+from src.correction_contracts import CorrectionPlan
 from src.job_context import JobContext
 from src.nesting_contracts import ProcessPolicy, SheetSpec
 from src.object_store import ObjectStore
@@ -206,6 +207,50 @@ class AgentRuntime:
             )
         return self.run_next()
 
+    def correct(self, plan: CorrectionPlan) -> dict[str, Any]:
+        """Apply a structured correction and return to the numbering gate."""
+        if not self.context.parts:
+            raise RuntimeError("no numbered drawing is available for correction")
+        current_stage = self.session.stage
+        allowed_stages = {
+            WorkflowStage.AUDITED,
+            WorkflowStage.NUMBERING_CONFIRMED,
+            WorkflowStage.NESTED_REPORTED,
+            WorkflowStage.POSTPROCESS_CONFIRMED,
+        }
+        if current_stage not in allowed_stages:
+            raise RuntimeError(
+                f"correction is not allowed in stage {current_stage.value}"
+            )
+        if current_stage != WorkflowStage.AUDITED:
+            self.session.backtrack(
+                WorkflowStage.AUDITED,
+                reason="用户纠正原位DXF",
+                artifact_id=plan.plan_id,
+            )
+
+        result = self.worker.execute(
+            ToolCall(
+                "apply_drawing_corrections",
+                {"plan": plan.model_dump(mode="json")},
+            ),
+            stage=self.session.stage,
+        )
+        if not result.ok:
+            raise RuntimeError(result.error or "drawing correction failed")
+        self._record_artifacts()
+        self.store.save(self.session)
+        self.last_result = AgentLoopResult(
+            session_id=self.session.session_id,
+            stage=self.session.current_stage,
+            completed=False,
+            blocked=False,
+            confirmation_required=True,
+            tool_results=[result],
+        )
+        self.last_error = None
+        return result.output
+
     def resume(self) -> AgentLoopResult:
         """Continue a recovered non-gate session from its current stage."""
         if self.provider_name == "queue":
@@ -264,6 +309,11 @@ class AgentRuntime:
             "report": self.context.report_path,
             "check": self.context.check_path,
         }
+        for correction in self.context.correction_history:
+            revision = correction.get("revision")
+            artifact_path = correction.get("artifact_path")
+            if revision is not None and artifact_path:
+                candidates[f"numbered_dxf_r{revision}"] = Path(artifact_path)
         project_id = self.context.project_id or self.dxf_path.stem
         for key, path in candidates.items():
             if path is None or not Path(path).exists():
