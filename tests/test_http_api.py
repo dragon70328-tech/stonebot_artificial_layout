@@ -885,3 +885,20 @@ def test_admin_recognition_model_page_and_status(tmp_path, monkeypatch):
     assert status.json()['feedback']['total']==0
     assert dry_run.status_code==200
     assert dry_run.json()['dry_run'] is True
+
+
+def test_admin_recognition_audit_endpoints(tmp_path, monkeypatch):
+    manager=SyncJobManager(tmp_path)
+    monkeypatch.setattr('src.http_api.manager',manager)
+    monkeypatch.setattr('src.http_api.load_tenant_api_keys',lambda:{'admin-tenant':'admin-secret'})
+    client=TestClient(app)
+    headers={'X-API-Key':'admin-secret','X-Tenant-ID':'admin-tenant'}
+    dry_run=client.post('/admin/recognition-model/operations',headers=headers,json={'dry_run':True})
+    audit=client.get('/admin/recognition-model/audit',headers=headers)
+    export=client.get('/admin/recognition-model/audit/export',headers=headers)
+
+    assert dry_run.status_code==200
+    assert audit.status_code==200
+    assert audit.json()['events'][0]['action']=='operations_dry_run'
+    assert export.status_code==200
+    assert b'operations_dry_run' in export.content

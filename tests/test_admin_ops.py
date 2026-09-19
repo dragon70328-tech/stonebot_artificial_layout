@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from src.admin_audit import append_admin_audit, list_admin_audit
 from src.admin_ops import recognition_admin_status, rollback_recognition_model
 from src.recognition_model import save_recognition_model
 
@@ -38,3 +39,11 @@ def test_admin_status_and_rollback(tmp_path:Path):
     assert result['model_version']=='model-a'
     assert result['backup']
     assert restored['current_model']['model_version']=='model-a'
+def test_admin_audit_is_append_only_and_lists_newest_first(tmp_path:Path):
+    append_admin_audit(tmp_path,actor_tenant='admin-a',action='dry_run',status='success',details={'ok':True})
+    append_admin_audit(tmp_path,actor_tenant='admin-b',action='rollback',status='failed',details={'version':'v1'})
+
+    events=list_admin_audit(tmp_path)
+
+    assert [item['action'] for item in events]==['rollback','dry_run']
+    assert events[0]['actor_tenant']=='admin-b'

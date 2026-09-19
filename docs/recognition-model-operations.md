@@ -183,3 +183,22 @@ deploy\recognition-model-ops-task.ps1 `
 ```
 
 添加 `-ApplyRetention` 才会执行反馈归档。
+
+## 管理审计
+
+管理页支持保存管理员租户 ID 和 API Key，并在请求时自动添加认证头。
+
+新增审计接口：
+
+```text
+GET /admin/recognition-model/audit
+GET /admin/recognition-model/audit/export
+```
+
+审计日志写入：
+
+```text
+recognition_models/operations/audit.jsonl
+```
+
+每次运维预演、正式运维和模型回滚都会记录操作租户、动作、状态和参数。

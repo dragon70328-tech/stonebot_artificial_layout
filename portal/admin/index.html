@@ -12,6 +12,7 @@
     h1 { margin:0; font-size:18px; }
     main { max-width:1180px; margin:0 auto; padding:20px; }
     .toolbar { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px; }
+    .toolbar input { border:1px solid var(--border); border-radius:8px; padding:7px 9px; background:var(--panel); color:var(--text); }
     button { border:1px solid var(--border); border-radius:8px; padding:7px 11px; background:var(--panel); color:var(--text); cursor:pointer; }
     button.primary { background:var(--accent); color:white; border-color:var(--accent); }
     button.warning { color:var(--warning); }
@@ -42,6 +43,10 @@
     <button id="dry-run">检查运维计划</button>
     <button id="run" class="primary">执行监控与重训</button>
     <button id="retention" class="warning">归档过期反馈</button>
+    <input id="auth-tenant" placeholder="管理员租户 ID" value="default">
+    <input id="auth-key" type="password" placeholder="API Key（可选）">
+    <button id="save-auth">保存登录</button>
+    <button id="clear-auth">清除登录</button>
   </div>
   <div class="cards" id="cards"></div>
   <section class="section">
@@ -53,12 +58,19 @@
     <div id="feedback"></div>
   </section>
   <section class="section">
+    <h2>审计日志 <button id="export-audit">导出 JSONL</button></h2>
+    <div id="audit"></div>
+  </section>
+  <section class="section">
     <h2>最近运维报告</h2>
     <pre id="operations"></pre>
   </section>
 </main>
+<script src="./admin-ui.js"></script>
 <script>
 const API = "/admin/recognition-model";
+const ui = window.StonebotAdminUI;
+const AUTH_KEY = "stonebot.admin.auth";
 const statusEl = document.getElementById("status");
 let current = null;
 
@@ -71,13 +83,30 @@ function esc(value) {
     .replaceAll("&","&amp;").replaceAll("<","&lt;")
     .replaceAll(">","&gt;").replaceAll('"',"&quot;");
 }
+function storedAuth() {
+  try {
+    return JSON.parse(localStorage.getItem(AUTH_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+function requestHeaders() {
+  const auth = storedAuth();
+  return {
+    "Content-Type": "application/json",
+    ...ui.authHeaders(auth.apiKey, auth.tenantId),
+  };
+}
 async function api(path, options = {}) {
   const response = await fetch(API + path, {
-    headers: { "Content-Type": "application/json" },
+    headers: requestHeaders(),
     ...options,
   });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+  const contentType = response.headers.get("content-type") || "";
+  const payload = contentType.includes("application/json")
+    ? await response.json()
+    : await response.text();
+  if (!response.ok) throw new Error(ui.parseError(payload, response.status));
   return payload;
 }
 function renderCards(data) {
@@ -118,9 +147,22 @@ function renderFeedback(data) {
     <table><thead><tr><th>租户</th><th>反馈文件</th></tr></thead>
     <tbody>${rows || '<tr><td colspan="2">暂无全局反馈</td></tr>'}</tbody></table>`;
 }
-async function load() {
+function renderAudit(events) {
+  const rows = (events || []).map((item) => `
+    <tr>
+      <td>${ui.escapeHtml(item.created_at || "")}</td>
+      <td>${ui.escapeHtml(item.actor_tenant || "")}</td>
+      <td>${ui.escapeHtml(ui.auditLabel(item.action, item.status))}</td>
+      <td>${ui.escapeHtml(JSON.stringify(item.details || {}))}</td>
+    </tr>`).join("");
+  document.getElementById("audit").innerHTML = `
+    <table><thead><tr><th>时间</th><th>操作租户</th><th>动作</th><th>详情</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="4">暂无审计记录</td></tr>'}</tbody></table>`;
+}async function load() {
   try {
     current = await api("/status");
+    const audit = await api("/audit?limit=100");
+    renderAudit(audit.events || []);
     renderCards(current);
     renderVersions(current);
     renderFeedback(current);
@@ -139,11 +181,10 @@ async function runOperations(dryRun, applyRetention = false) {
     setStatus(dryRun ? "正在生成运维计划..." : "运维周期已提交...");
     const payload = await api("/operations", {
       method: "POST",
-      body: JSON.stringify({
-        dry_run: dryRun,
-        activate: true,
-        apply_retention: applyRetention,
-      }),
+      body: JSON.stringify(ui.buildOperationPayload({
+        dryRun,
+        applyRetention,
+      })),
     });
     setStatus(dryRun ? "运维计划已生成" : "运维周期正在后台执行", "success");
     if (!dryRun) setTimeout(load, 1500);
@@ -167,7 +208,38 @@ async function activateVersion(version) {
     setStatus(error.message, "error");
   }
 }
-document.getElementById("refresh").addEventListener("click", load);
+const savedAuth = storedAuth();
+document.getElementById("auth-tenant").value = savedAuth.tenantId || "default";
+document.getElementById("auth-key").value = savedAuth.apiKey || "";
+document.getElementById("save-auth").addEventListener("click", () => {
+  localStorage.setItem(AUTH_KEY, JSON.stringify({
+    tenantId: document.getElementById("auth-tenant").value.trim(),
+    apiKey: document.getElementById("auth-key").value,
+  }));
+  setStatus("登录信息已保存", "success");
+  load();
+});
+document.getElementById("clear-auth").addEventListener("click", () => {
+  localStorage.removeItem(AUTH_KEY);
+  document.getElementById("auth-key").value = "";
+  setStatus("登录信息已清除");
+  load();
+});
+document.getElementById("export-audit").addEventListener("click", async () => {
+  try {
+    const response = await fetch(`${API}/audit/export`, { headers: requestHeaders() });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "recognition-model-audit.jsonl";
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+});document.getElementById("refresh").addEventListener("click", load);
 document.getElementById("dry-run").addEventListener("click", () => runOperations(true));
 document.getElementById("run").addEventListener("click", () => runOperations(false));
 document.getElementById("retention").addEventListener("click", async () => {

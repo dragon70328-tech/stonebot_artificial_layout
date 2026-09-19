@@ -26,6 +26,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
+from src.admin_audit import append_admin_audit, audit_log_path, list_admin_audit
 from src.admin_ops import (
     recognition_admin_status,
     rollback_recognition_model,
@@ -1553,31 +1554,86 @@ def recognition_model_admin_status(
     return recognition_admin_status(manager.root)
 
 
+@app.get("/admin/recognition-model/audit")
+def recognition_model_admin_audit(
+    limit: int = 100,
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
+) -> dict[str, Any]:
+    _require_role(tenant, "admin")
+    return {"events": list_admin_audit(manager.root, limit=min(max(limit, 1), 1000))}
+
+@app.get("/admin/recognition-model/audit/export")
+def export_recognition_model_admin_audit(
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
+) -> Response:
+    _require_role(tenant, "admin")
+    path = audit_log_path(manager.root)
+    data = path.read_bytes() if path.exists() else b""
+    return Response(content=data, media_type="application/x-ndjson", headers={"Content-Disposition": 'attachment; filename="recognition-model-audit.jsonl"'})
+
 @app.post("/admin/recognition-model/operations")
 def run_recognition_model_operations(
     request: AdminOperationRequest,
     tenant: TenantAuth = Depends(get_authenticated_tenant),
 ):
     _require_role(tenant, "admin")
+    parameters = request.model_dump(mode="json")
     if request.dry_run:
-        return run_admin_operations(
-            manager.root,
-            tenant_id=request.tenant_id,
-            dry_run=True,
-            activate=request.activate,
-            apply_retention=request.apply_retention,
-            force=request.force,
-        )
+        try:
+            result = run_admin_operations(
+                manager.root,
+                tenant_id=request.tenant_id,
+                dry_run=True,
+                activate=request.activate,
+                apply_retention=request.apply_retention,
+                force=request.force,
+            )
+            append_admin_audit(
+                manager.root,
+                actor_tenant=tenant.tenant_id,
+                action="operations_dry_run",
+                status="success",
+                details=parameters,
+            )
+            return result
+        except Exception as exc:
+            append_admin_audit(
+                manager.root,
+                actor_tenant=tenant.tenant_id,
+                action="operations_dry_run",
+                status="failed",
+                details={**parameters, "error": str(exc)},
+            )
+            raise
+
+    def _run_background_operations() -> None:
+        try:
+            run_admin_operations(
+                manager.root,
+                tenant_id=request.tenant_id,
+                dry_run=False,
+                activate=request.activate,
+                apply_retention=request.apply_retention,
+                force=request.force,
+            )
+            append_admin_audit(
+                manager.root,
+                actor_tenant=tenant.tenant_id,
+                action="operations_run",
+                status="success",
+                details=parameters,
+            )
+        except Exception as exc:
+            append_admin_audit(
+                manager.root,
+                actor_tenant=tenant.tenant_id,
+                action="operations_run",
+                status="failed",
+                details={**parameters, "error": str(exc)},
+            )
+
     thread = threading.Thread(
-        target=run_admin_operations,
-        kwargs={
-            "root": manager.root,
-            "tenant_id": request.tenant_id,
-            "dry_run": False,
-            "activate": request.activate,
-            "apply_retention": request.apply_retention,
-            "force": request.force,
-        },
+        target=_run_background_operations,
         daemon=True,
         name="recognition-model-admin-operation",
     )
@@ -1595,8 +1651,23 @@ def rollback_recognition_model_version(
 ) -> dict[str, Any]:
     _require_role(tenant, "admin")
     try:
-        return rollback_recognition_model(manager.root, request.version)
+        result = rollback_recognition_model(manager.root, request.version)
+        append_admin_audit(
+            manager.root,
+            actor_tenant=tenant.tenant_id,
+            action="model_rollback",
+            status="success",
+            details=result,
+        )
+        return result
     except ValueError as exc:
+        append_admin_audit(
+            manager.root,
+            actor_tenant=tenant.tenant_id,
+            action="model_rollback",
+            status="failed",
+            details={"version": request.version, "error": str(exc)},
+        )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 if PORTAL_ADMIN_DIR.exists():
