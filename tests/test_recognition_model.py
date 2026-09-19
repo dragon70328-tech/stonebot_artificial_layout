@@ -6,6 +6,8 @@ from src.entity_classifier import classify_candidates
 from src.recognition_contracts import CandidateSnapshot, RecognitionFeedback
 from src.recognition_model import (
     build_training_dataset,
+    compare_recognition_models,
+    detect_feature_drift,
     evaluate_model_promotion,
     feedback_to_samples,
     load_recognition_model,
@@ -133,3 +135,30 @@ def test_model_promotion_gate_blocks_low_quality_models():
 
     assert rejected["approved"] is False
     assert approved["approved"] is True
+def test_candidate_comparison_and_feature_drift():
+    samples = feedback_to_samples(_feedback(1))
+    samples += feedback_to_samples(_feedback(2))
+    current = {
+        "feature_names": ["x"],
+        "mean": [0.0, 0.0, 0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0, 1.0, 1.0],
+        "weights": [2.0, 0.0, 0.0, 0.0, 0.0],
+        "bias": -15.0,
+    }
+    worse = {
+        **current,
+        "bias": 10.0,
+    }
+
+    comparison = compare_recognition_models(current, worse, samples)
+    drift = detect_feature_drift(
+        {
+            **current,
+            "mean": [100.0, 0.0, 0.0, 0.0, 0.0],
+        },
+        samples,
+    )
+
+    assert comparison["approved"] is False
+    assert drift["drift_detected"] is True
+    assert "log_area" in drift["drifted_features"]

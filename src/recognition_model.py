@@ -267,6 +267,122 @@ def evaluate_model_promotion(
         "metrics": metrics,
     }
 
+def _sample_matrix(samples: list[dict[str, Any]]) -> np.ndarray:
+    if not samples:
+        return np.empty((0, len(FEATURE_NAMES)), dtype=float)
+    return np.asarray([item["features"] for item in samples], dtype=float)
+
+
+def evaluate_model_on_samples(
+    model: dict[str, Any] | None,
+    samples: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not model or not samples:
+        return {"metrics": {}, "sample_count": len(samples), "probabilities": []}
+    labels = np.asarray([int(item["label"]) for item in samples], dtype=float)
+    matrix = _sample_matrix(samples)
+    try:
+        mean = np.asarray(model["mean"], dtype=float)
+        scale = np.asarray(model["scale"], dtype=float)
+        scale[scale < 1e-9] = 1.0
+        weights = np.asarray(model["weights"], dtype=float)
+        probabilities = _sigmoid(
+            ((matrix - mean) / scale) @ weights + float(model["bias"])
+        )
+    except Exception:
+        return {"metrics": {}, "sample_count": len(samples), "probabilities": []}
+    return {
+        "metrics": _metrics(labels, probabilities),
+        "sample_count": len(samples),
+        "probabilities": [float(value) for value in probabilities],
+    }
+
+
+def compare_recognition_models(
+    current_model: dict[str, Any] | None,
+    candidate_model: dict[str, Any],
+    samples: list[dict[str, Any]],
+    *,
+    max_accuracy_drop: float = 0.02,
+    max_precision_drop: float = 0.05,
+    max_recall_drop: float = 0.05,
+) -> dict[str, Any]:
+    current = evaluate_model_on_samples(current_model, samples)
+    candidate = evaluate_model_on_samples(candidate_model, samples)
+    current_metrics = current.get("metrics") or {}
+    candidate_metrics = candidate.get("metrics") or {}
+    if not current_metrics:
+        return {
+            "approved": True,
+            "reasons": [],
+            "current_metrics": {},
+            "candidate_metrics": candidate_metrics,
+            "delta": {},
+            "sample_count": len(samples),
+        }
+    delta = {
+        key: round(
+            float(candidate_metrics.get(key, 0.0))
+            - float(current_metrics.get(key, 0.0)),
+            4,
+        )
+        for key in ("accuracy", "precision", "recall")
+    }
+    reasons: list[str] = []
+    if delta["accuracy"] < -max_accuracy_drop:
+        reasons.append(f"准确率下降 {abs(delta['accuracy']):.4f}")
+    if delta["precision"] < -max_precision_drop:
+        reasons.append(f"精确率下降 {abs(delta['precision']):.4f}")
+    if delta["recall"] < -max_recall_drop:
+        reasons.append(f"召回率下降 {abs(delta['recall']):.4f}")
+    return {
+        "approved": not reasons,
+        "reasons": reasons,
+        "current_metrics": current_metrics,
+        "candidate_metrics": candidate_metrics,
+        "delta": delta,
+        "sample_count": len(samples),
+    }
+
+
+def detect_feature_drift(
+    model: dict[str, Any] | None,
+    recent_samples: list[dict[str, Any]],
+    *,
+    z_threshold: float = 1.0,
+) -> dict[str, Any]:
+    if not model or not recent_samples:
+        return {
+            "drift_detected": False,
+            "drifted_features": [],
+            "max_standardized_shift": 0.0,
+            "sample_count": len(recent_samples),
+        }
+    try:
+        mean = np.asarray(model["mean"], dtype=float)
+        scale = np.asarray(model["scale"], dtype=float)
+        scale[scale < 1e-9] = 1.0
+        recent_mean = _sample_matrix(recent_samples).mean(axis=0)
+        standardized_shift = np.abs((recent_mean - mean) / scale)
+    except Exception:
+        return {
+            "drift_detected": False,
+            "drifted_features": [],
+            "max_standardized_shift": 0.0,
+            "sample_count": len(recent_samples),
+        }
+    drifted = [
+        FEATURE_NAMES[index]
+        for index, value in enumerate(standardized_shift)
+        if float(value) >= z_threshold
+    ]
+    return {
+        "drift_detected": bool(drifted),
+        "drifted_features": drifted,
+        "max_standardized_shift": round(float(standardized_shift.max()), 4),
+        "sample_count": len(recent_samples),
+    }
+
 def save_recognition_model(path: str | Path, model: dict[str, Any]) -> None:
     model_path = Path(path)
     model_path.parent.mkdir(parents=True, exist_ok=True)

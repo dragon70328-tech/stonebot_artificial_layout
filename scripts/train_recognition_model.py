@@ -13,8 +13,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.recognition_model import (
     build_training_dataset,
+    compare_recognition_models,
+    detect_feature_drift,
     discover_feedback_files,
     evaluate_model_promotion,
+    load_recognition_model,
     save_recognition_model,
     train_recognition_model,
 )
@@ -52,9 +55,16 @@ def main() -> int:
         model,
         min_samples=args.min_samples,
     )
-    activate = bool(args.activate) and (
-        promotion["approved"] or args.force_activate
+    current_model_path = output_dir / "current.json"
+    current_model = load_recognition_model(current_model_path)
+    comparison = compare_recognition_models(
+        current_model,
+        model,
+        samples,
     )
+    drift = detect_feature_drift(current_model, samples)
+    approved = promotion["approved"] and comparison["approved"]
+    activate = bool(args.activate) and (approved or args.force_activate)
     if activate:
         save_recognition_model(output_dir / "current.json", model)
     manifest = {
@@ -66,6 +76,9 @@ def main() -> int:
         "active": activate,
         "forced": bool(args.force_activate),
         "promotion": promotion,
+        "comparison_to_current": comparison,
+        "drift": drift,
+        "approved": approved,
         "metrics": model["metrics"],
     }
     output_dir.mkdir(parents=True, exist_ok=True)
