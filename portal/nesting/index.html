@@ -162,7 +162,29 @@
       font: inherit;
       color: var(--text);
       background: var(--panel);
-    }    .drawing-preview {
+    }    .active-learning {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px dashed var(--border);
+    }
+    .active-learning-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .active-learning-list { display: flex; flex-wrap: wrap; gap: 6px; }
+    .active-learning-item {
+      text-align: left;
+      max-width: 280px;
+      font-size: 12px;
+      background: var(--warning-soft);
+      border-color: #fcd34d;
+      color: #92400e;
+    }
+    .active-learning-item small { display: block; color: var(--muted); margin-top: 2px; }    .drawing-preview {
       margin-top: 12px;
       padding-top: 12px;
       border-top: 1px dashed var(--border);
@@ -224,7 +246,11 @@
       stroke-dasharray: 6 4;
     }
     .preview-shape:hover { fill: rgba(251, 191, 36, .28); }
-    .preview-shape.selected {
+    .preview-shape.attention:not(.selected) {
+      stroke: #ea580c;
+      stroke-dasharray: 5 3;
+      stroke-width: 2.2;
+    }    .preview-shape.selected {
       fill: rgba(251, 191, 36, .46);
       stroke: #b45309;
       stroke-width: 2.8;
@@ -549,6 +575,13 @@
           <span id="learning-memory-summary">项目记忆尚未更新</span>
         </div>
       </div>
+      <div id="active-learning" class="active-learning" hidden>
+        <div class="active-learning-head">
+          <strong>建议优先确认</strong>
+          <span id="active-learning-count"></span>
+        </div>
+        <div id="active-learning-list" class="active-learning-list"></div>
+      </div>
       <div id="drawing-preview" class="drawing-preview" hidden>
         <div class="drawing-preview-head">
           <div class="drawing-preview-title">
@@ -673,6 +706,7 @@
       currentJobId: null,
       latestStatus: null,
       selectedCorrectionTargets: [],
+      activeLearningTargets: [],
       pollTimers: [],
       preview: null,
       previewJobId: null,
@@ -701,6 +735,9 @@
     const correctionTargetSummaryEl = document.getElementById("correction-target-summary");
     const correctionFeedbackScopeEl = document.getElementById("correction-feedback-scope");
     const learningMemorySummaryEl = document.getElementById("learning-memory-summary");
+    const activeLearningEl = document.getElementById("active-learning");
+    const activeLearningListEl = document.getElementById("active-learning-list");
+    const activeLearningCountEl = document.getElementById("active-learning-count");
     const drawingPreviewEl = document.getElementById("drawing-preview");
     const drawingPreviewSummaryEl = document.getElementById("drawing-preview-summary");
     const drawingPreviewSvgEl = document.getElementById("drawing-preview-svg");
@@ -958,8 +995,10 @@
       for (const option of correctionTargetSelectEl.options) {
         option.selected = selected.has(option.value);
       }
+      const attention = new Set(state.activeLearningTargets);
       drawingPreviewSvgEl.querySelectorAll("[data-preview-target]").forEach((element) => {
         element.classList.toggle("selected", selected.has(element.dataset.previewTarget));
+        element.classList.toggle("attention", attention.has(element.dataset.previewTarget));
       });
       updateCorrectionTargetSummary();
     }
@@ -1162,6 +1201,34 @@
       syncPreviewSelection();
     }
 
+    function renderActiveLearning(status) {
+      const queue = (
+        status
+        && status.correction_context
+        && Array.isArray(status.correction_context.active_learning)
+      ) ? status.correction_context.active_learning : [];
+      state.activeLearningTargets = queue.map((item) => String(item.target_id || ""));
+      if (!queue.length) {
+        activeLearningEl.hidden = true;
+        activeLearningListEl.innerHTML = "";
+        activeLearningCountEl.textContent = "";
+        syncPreviewSelection();
+        return;
+      }
+      activeLearningEl.hidden = false;
+      activeLearningCountEl.textContent = `${queue.length} 项`;
+      activeLearningListEl.innerHTML = queue.map((item) => {
+        const target = ui.escapeHtml(item.target_id || "");
+        const kind = ui.escapeHtml(item.kind || "entity");
+        const label = ui.escapeHtml(item.entity_handle || item.target_id || "");
+        const reasons = (item.reasons || []).map((reason) => ui.escapeHtml(reason)).join("；");
+        return (
+          `<button type="button" class="active-learning-item" data-active-target="${target}">`
+          + `${kind} · ${label}<small>${reasons}</small></button>`
+        );
+      }).join("");
+      syncPreviewSelection();
+    }
     function renderLearningMemory(status) {
       const learning = (status && status.correction_context && status.correction_context.learning) || {};
       const count = Number(learning.memory_feedback_count || 0);
@@ -1200,6 +1267,7 @@
       metricsEl.innerHTML = renderMetrics(status);
       renderCorrectionTargets(status);
       renderLearningMemory(status);
+      renderActiveLearning(status);
       loadDrawingPreview(status);
 
       const next = ui.nextAction(status);
@@ -1573,6 +1641,11 @@
       setStatus("已清除上传文件");
     });
     document.getElementById("btn-new").addEventListener("click", newConversation);
+    activeLearningListEl.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-active-target]");
+      if (!button) return;
+      toggleCorrectionTarget(button.dataset.activeTarget);
+    });
     correctionTargetSelectEl.addEventListener("change", () => {
       state.selectedCorrectionTargets = Array.from(correctionTargetSelectEl.options)
         .filter((option) => option.selected)

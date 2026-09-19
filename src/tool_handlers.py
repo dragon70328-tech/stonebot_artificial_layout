@@ -69,6 +69,7 @@ def _read_dxf(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
     path = _set_input_path(ctx, args)
     panel_layers = args.get("panel_layers")
     exclude_layers = args.get("exclude_layers")
+    ctx.classified_candidates = []
     if ctx.drawing_profile is not None:
         parts_data, _doc = read_dxf_with_profile(
             path,
@@ -77,6 +78,7 @@ def _read_dxf(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
             exclude_layers=exclude_layers,
             recognition_memory=ctx.recognition_memory,
             recognition_model=ctx.recognition_model,
+            classification_sink=ctx.classified_candidates,
         )
     else:
         parts_data, _doc = read_dxf(

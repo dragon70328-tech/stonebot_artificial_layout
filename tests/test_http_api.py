@@ -286,6 +286,8 @@ def test_nesting_frontend_has_action_contract(tmp_path, monkeypatch):
         "correction-target-summary",
         "correction-feedback-scope",
         "learning-memory-summary",
+        "active-learning",
+        "active-learning-list",
         "drawing-preview",
         "drawing-preview-svg",
         "drawing-preview-fit",

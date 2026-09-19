@@ -2,12 +2,14 @@ from pathlib import Path
 
 from shapely.geometry import Polygon
 
+from src.active_learning import build_active_learning_queue
 from src.correction_contracts import CorrectionPlan
 from src.drawing_corrections import apply_correction_plan
 from src.entity_classifier import classify_candidates
 from src.job_context import JobContext
 from src.models import Part
 from src.recognition_contracts import FeedbackScope
+from src.recognition_feedback import record_confirmation_feedback
 from src.recognition_memory import (
     load_recognition_memory,
     new_recognition_memory,
@@ -130,3 +132,55 @@ def test_classifier_uses_project_memory_as_weak_layer_hint():
 
     assert classified[0]["classification"]["role"] == "panel"
     assert "layer:panel_hint" in classified[0]["classification"]["reasons"]
+def test_active_learning_prioritizes_unknown_and_conflicting_candidates(tmp_path):
+    context = _panel_context(tmp_path)
+    context.parts_data[0]["classification"] = {
+        "role": "panel",
+        "confidence": 0.4,
+        "panel_score": 0.42,
+        "hole_score": 0.40,
+        "reasons": [
+            "model:panel_probability=0.2",
+            "layer:unknown_hint",
+        ],
+        "features": {"has_number_text": False},
+    }
+    context.classified_candidates = [
+        {
+            "handle": "H1",
+            "layer": "0",
+            "polygon": context.parts[0].outer_polygon,
+            "classification": context.parts_data[0]["classification"],
+        },
+        {
+            "handle": "H9",
+            "layer": "0",
+            "polygon": Polygon([(200, 0), (300, 0), (300, 100), (200, 100)]),
+            "classification": {
+                "role": "unknown",
+                "confidence": 0.3,
+                "panel_score": 0.3,
+                "hole_score": 0.35,
+                "reasons": ["layer:unknown_hint"],
+                "features": {"has_number_text": False},
+            },
+        },
+    ]
+
+    queue = build_active_learning_queue(context)
+
+    assert queue[0]["target_id"] == "handle:H9"
+    assert any(item["target_id"] == "1" for item in queue)
+
+
+def test_confirmation_records_positive_feedback_and_updates_memory(tmp_path):
+    context = _panel_context(tmp_path)
+
+    feedback, path = record_confirmation_feedback(context)
+
+    assert path.exists()
+    assert feedback.instruction == "用户确认原位DXF识别结果"
+    assert len(feedback.after_panels) == 1
+    assert context.recognition_memory["feedback_count"] == 1
+    hints = recognition_memory_hints(context.recognition_memory)
+    assert "ORIGINAL_PANEL" in hints["panel_layers"]

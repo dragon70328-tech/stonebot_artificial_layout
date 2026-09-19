@@ -36,6 +36,7 @@ class JobContext:
     parts_data: list[dict[str, Any]] | None = None
     parts: list[Any] | None = None
     closed_entities: list[dict[str, Any]] = field(default_factory=list)
+    classified_candidates: list[dict[str, Any]] = field(default_factory=list)
     recognized_drawing: Any | None = None
     audit_issues: list[Any] = field(default_factory=list)
 
@@ -51,6 +52,8 @@ class JobContext:
     recognition_memory_path: Path | None = None
     recognition_model: dict[str, Any] = field(default_factory=dict)
     recognition_model_path: Path | None = None
+    recognition_confirmation_recorded: bool = False
+    recognition_confirmation_artifact_path: Path | None = None
 
     trials: int = 1
     seed: int = 0

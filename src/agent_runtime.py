@@ -23,6 +23,7 @@ from src.artifact_store import ArtifactStore
 from src.correction_contracts import CorrectionPlan
 from src.drawing_corrections import build_correction_context
 from src.job_context import JobContext
+from src.recognition_feedback import record_confirmation_feedback
 from src.recognition_memory import load_recognition_memory
 from src.recognition_model import load_recognition_model
 from src.nesting_contracts import ProcessPolicy, SheetSpec
@@ -225,6 +226,15 @@ class AgentRuntime:
         if normalized not in {"confirm", "yes", "y"}:
             raise ValueError(f"unknown confirmation decision: {decision!r}")
 
+        if (
+            self.last_result.stage == WorkflowStage.AUDITED.value
+            and not self.context.recognition_confirmation_recorded
+        ):
+            _feedback, feedback_path = record_confirmation_feedback(self.context)
+            self.context.recognition_confirmation_recorded = True
+            self.context.recognition_confirmation_artifact_path = feedback_path
+            self._record_artifacts()
+
         if self.provider_name == "queue":
             self.provider.enqueue(
                 plan_after_confirmation(
@@ -344,6 +354,9 @@ class AgentRuntime:
             "nested_dxf": self.context.nested_dxf_path,
             "report": self.context.report_path,
             "check": self.context.check_path,
+            "recognition_confirmation": (
+                self.context.recognition_confirmation_artifact_path
+            ),
         }
         for correction in self.context.correction_history:
             revision = correction.get("revision")

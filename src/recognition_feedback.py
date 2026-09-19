@@ -214,26 +214,10 @@ def write_recognition_feedback(
     return path
 
 
-def record_recognition_feedback(
+def _persist_feedback(
     ctx: JobContext,
-    plan: CorrectionPlan,
-    *,
-    revision: int,
-    before_parts: list[Any],
-    after_parts: list[Any],
-    before_data: list[dict[str, Any]] | None,
-    after_data: list[dict[str, Any]] | None,
-) -> tuple[RecognitionFeedback, Path]:
-    """Persist feedback and update project memory for project-scoped learning."""
-    feedback = build_recognition_feedback(
-        ctx,
-        plan,
-        before_parts=before_parts,
-        after_parts=after_parts,
-        before_data=before_data,
-        after_data=after_data,
-        revision=revision,
-    )
+    feedback: RecognitionFeedback,
+) -> Path:
     path = write_recognition_feedback(ctx, feedback)
     if (
         str(feedback.scope) == FeedbackScope.GLOBAL.value
@@ -255,4 +239,58 @@ def record_recognition_feedback(
         save_recognition_memory(ctx.recognition_memory_path, memory)
         ctx.recognition_memory = memory
     ctx.recognition_feedback.append(feedback.model_dump(mode="json"))
-    return feedback, path
+    return path
+
+
+def record_recognition_feedback(
+    ctx: JobContext,
+    plan: CorrectionPlan,
+    *,
+    revision: int,
+    before_parts: list[Any],
+    after_parts: list[Any],
+    before_data: list[dict[str, Any]] | None,
+    after_data: list[dict[str, Any]] | None,
+) -> tuple[RecognitionFeedback, Path]:
+    """Persist feedback and update project memory for project-scoped learning."""
+    feedback = build_recognition_feedback(
+        ctx,
+        plan,
+        before_parts=before_parts,
+        after_parts=after_parts,
+        before_data=before_data,
+        after_data=after_data,
+        revision=revision,
+    )
+    return feedback, _persist_feedback(ctx, feedback)
+
+
+def record_confirmation_feedback(
+    ctx: JobContext,
+    *,
+    scope: FeedbackScope = FeedbackScope.PROJECT,
+) -> tuple[RecognitionFeedback, Path]:
+    """Record a positive confirmation for the currently reviewed drawing."""
+    data_by_id = _data_by_id(getattr(ctx, "parts_data", None))
+    closed_entities = _closed_entities_by_handle(ctx)
+    after_panels = [
+        _panel_snapshot(part, data_by_id.get(int(part.id)))
+        for part in (ctx.parts or [])
+    ]
+    after_hole_map = _collect_hole_snapshots(
+        ctx.parts or [],
+        data_by_id,
+        closed_entities,
+    )
+    feedback = RecognitionFeedback(
+        job_id=getattr(ctx, "job_id", None) or None,
+        project_id=ctx.project_id or Path(ctx.dxf_path).stem,
+        drawing_digest=_digest_file(ctx.dxf_path),
+        revision=len(ctx.recognition_feedback) + 1,
+        instruction="用户确认原位DXF识别结果",
+        scope=scope,
+        operations=[{"operation": "confirm_drawing"}],
+        after_panels=after_panels,
+        after_holes=list(after_hole_map.values()),
+    )
+    return feedback, _persist_feedback(ctx, feedback)

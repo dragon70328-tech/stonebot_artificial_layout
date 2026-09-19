@@ -1023,6 +1023,7 @@ def _extract_profile_panels(
     label_boxes: list[Polygon | None] | None = None,
     recognition_memory: dict[str, Any] | None = None,
     recognition_model: dict[str, Any] | None = None,
+    classification_sink: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     panel_layer = profile.panel_layer or None
     panel_layers = (
@@ -1108,6 +1109,8 @@ def _extract_profile_panels(
         recognition_memory=recognition_memory,
         recognition_model=recognition_model,
     )
+    if classification_sink is not None:
+        classification_sink.extend(classified_candidates)
     accepted_candidates = [
         candidate
         for candidate in classified_candidates
@@ -1357,6 +1360,7 @@ def _collect_profile_number_texts(
     exclude_layers: list[str] | None = None,
     recognition_memory: dict[str, Any] | None = None,
     recognition_model: dict[str, Any] | None = None,
+    classification_sink: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     memory_hints = recognition_memory_hints(recognition_memory)
     allowed_layers = set(profile.number_layers)
@@ -1667,6 +1671,7 @@ def read_dxf_with_profile(
     exclude_layers: list[str] | None = None,
     recognition_memory: dict[str, Any] | None = None,
     recognition_model: dict[str, Any] | None = None,
+    classification_sink: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], ezdxf.document.Drawing]:
     """按图纸画像读取 DXF 并返回与 read_dxf 相同结构的 parts_data。
 
@@ -1689,6 +1694,7 @@ def read_dxf_with_profile(
         label_boxes=[text.get("box") for text in texts],
         recognition_memory=recognition_memory,
         recognition_model=recognition_model,
+        classification_sink=classification_sink,
     )
     zone_texts = _collect_zone_texts(
         doc,

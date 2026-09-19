@@ -12,6 +12,7 @@ from typing import Any
 from shapely.geometry import LineString
 from shapely.ops import split, unary_union
 
+from src.active_learning import build_active_learning_queue
 from src.correction_contracts import (
     CorrectionOperation,
     CorrectionOperationType,
@@ -112,6 +113,7 @@ def build_correction_context(ctx: JobContext) -> dict[str, Any]:
         "parts": items,
         "unrecognized_entities": unrecognized,
         "part_count": len(items),
+        "active_learning": build_active_learning_queue(ctx),
         "correction_revision": ctx.correction_revision,
         "learning": {
             "feedback_count": len(getattr(ctx, "recognition_feedback", [])),
