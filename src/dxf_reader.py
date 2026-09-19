@@ -106,20 +106,21 @@ def _closed_loop_points(points: list, tolerance: float = 0.01) -> list:
     A plain ``append(first)`` creates self-touching/invalid geometry. Prefer
     trimming the repeated prefix/suffix before handing the loop to Shapely.
     """
-    points = _dedupe_consecutive_points(points, tolerance)
+    cleanup_tolerance = min(max(float(tolerance), 1e-9), 0.01)
+    points = _dedupe_consecutive_points(points, cleanup_tolerance)
     if len(points) < 3:
         return []
 
     first = points[0]
     last = points[-1]
-    if math.hypot(first[0] - last[0], first[1] - last[1]) <= tolerance:
+    if math.hypot(first[0] - last[0], first[1] - last[1]) <= cleanup_tolerance:
         return points[:-1]
 
     for index in range(1, len(points) - 1):
         if math.hypot(
             first[0] - points[index][0],
             first[1] - points[index][1],
-        ) <= tolerance:
+        ) <= cleanup_tolerance:
             loop = points[:index]
             if len(loop) >= 3:
                 return loop
@@ -128,18 +129,18 @@ def _closed_loop_points(points: list, tolerance: float = 0.01) -> list:
         if math.hypot(
             last[0] - points[index][0],
             last[1] - points[index][1],
-        ) <= tolerance:
+        ) <= cleanup_tolerance:
             loop = points[index:]
             if loop and math.hypot(
                 loop[0][0] - loop[-1][0],
                 loop[0][1] - loop[-1][1],
-            ) <= tolerance:
+            ) <= cleanup_tolerance:
                 loop = loop[:-1]
             if len(loop) >= 3:
                 return loop
 
     if any(
-        _point_on_segment(last, points[index], points[index + 1], tolerance)
+        _point_on_segment(last, points[index], points[index + 1], cleanup_tolerance)
         for index in range(len(points) - 2)
     ):
         return points[:-1]
@@ -261,6 +262,7 @@ def _is_recoverable_closed(entity, tolerance: float = 0.01) -> bool:
 
     if len(points) < 3:
         return False
+    cleanup_tolerance = min(max(float(tolerance), 1e-9), 0.01)
 
     first = points[0]
     last = points[-1]
@@ -285,7 +287,7 @@ def _is_recoverable_closed(entity, tolerance: float = 0.01) -> bool:
             return polygon.area > 0.01
 
     last_on_existing_edge = any(
-        _point_on_segment(last, points[index], points[index + 1], tolerance)
+        _point_on_segment(last, points[index], points[index + 1], cleanup_tolerance)
         for index in range(len(points) - 2)
     )
     if not last_on_existing_edge:

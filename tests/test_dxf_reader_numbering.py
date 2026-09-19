@@ -391,3 +391,26 @@ def test_assign_numbers_makes_duplicate_original_numbers_unique():
     parts = assign_numbers(parts_data, skip_unnumbered=False)
     assert [part.number for part in parts] == ["A1-22B", "A1-22B-2", "P-0001"]
     assert parts[1].original_number == "A1-22B"
+
+def test_large_closure_tolerance_does_not_collapse_closed_polyline(tmp_path):
+    path = tmp_path / "large_tolerance.dxf"
+    doc = ezdxf.new("R2010")
+    doc.layers.add("PANEL")
+    msp = doc.modelspace()
+    msp.add_lwpolyline(
+        [(0, 0), (1000, 0), (1000, 1000), (0, 1000), (0, 0)],
+        dxfattribs={"layer": "PANEL"},
+    )
+    doc.saveas(path)
+    doc = ezdxf.readfile(path)
+
+    candidates = extract_closed_entity_candidates(
+        doc,
+        panel_layers=["PANEL"],
+        exclude_linetypes=[],
+        closed_tolerance=1500.0,
+        layer_filter_mode="hint",
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0]["polygon"].area == 1000000.0
