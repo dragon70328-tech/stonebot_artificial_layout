@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 import ezdxf
 from ezdxf.enums import TextEntityAlignment
 from shapely.geometry import Point
@@ -744,6 +745,51 @@ def test_read_dxf_with_profile_hole_layers_only_assigns_contained_circles(tmp_pa
     assert len(parts) == 2
     assert sum(len(part["holes"]) for part in parts) == 1
 
+
+@pytest.mark.parametrize("build_hierarchy", [True, False])
+def test_read_dxf_with_profile_recovers_when_layer_hints_are_wrong(
+    tmp_path,
+    build_hierarchy,
+):
+    path = tmp_path / "renamed_layers.dxf"
+    doc = ezdxf.new("R2010")
+    for layer in ("CUSTOM_A", "CUSTOM_B", "CUSTOM_C", "LABELS"):
+        doc.layers.add(layer)
+    msp = doc.modelspace()
+    msp.add_lwpolyline(
+        [(0, 0), (1000, 0), (1000, 600), (0, 600), (0, 0)],
+        dxfattribs={"layer": "CUSTOM_A"},
+    )
+    msp.add_lwpolyline(
+        [(1200, 0), (2200, 0), (2200, 600), (1200, 600), (1200, 0)],
+        dxfattribs={"layer": "CUSTOM_B"},
+    )
+    msp.add_circle((500, 300), radius=80, dxfattribs={"layer": "CUSTOM_C"})
+    first = msp.add_text("PANEL-1", dxfattribs={"layer": "LABELS"})
+    first.set_placement((500, 300))
+    second = msp.add_text("PANEL-2", dxfattribs={"layer": "LABELS"})
+    second.set_placement((1700, 300))
+    doc.saveas(path)
+
+    profile = DrawingProfile(
+        name="renamed_layers",
+        version="1.0.0",
+        panel_layers=["OLD_PANEL_LAYER"],
+        hole_layers=["OLD_HOLE_LAYER"],
+        number_layers=["OLD_LABELS_LAYER"],
+        label_pattern=r"^PANEL-\d+$",
+        use_hatch=False,
+        build_hierarchy=build_hierarchy,
+        exclude_entity_types=[],
+        exclude_linetypes=[],
+        small_area_threshold=100.0,
+    )
+
+    parts, _ = read_dxf_with_profile(path, profile)
+
+    assert len(parts) == 2
+    assert sum(len(part["holes"]) for part in parts) == 1
+    assert {part["original_number"] for part in parts} == {"PANEL-1", "PANEL-2"}
 
 def test_read_dxf_with_profile_grid_mode_reconstructs_rectangular_cells(tmp_path):
     path = tmp_path / "grid_panels.dxf"

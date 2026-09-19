@@ -27,6 +27,11 @@ def test_parts_data_to_recognized_drawing_builds_panels_and_holes(tmp_path):
                 "area": combined.area,
                 "confidence": 0.9,
                 "source": "closed_polygon",
+                "classification": {
+                    "role": "panel",
+                    "confidence": 0.9,
+                    "reasons": ["geometry:closed_non_circle"],
+                },
             }
         ],
         source,
@@ -38,6 +43,6 @@ def test_parts_data_to_recognized_drawing_builds_panels_and_holes(tmp_path):
     assert len(drawing.panels[0].holes) == 1
     assert drawing.panels[0].number == "01B-1"
     assert drawing.panels[0].holes[0].entity_handle == "H1"
+    assert drawing.panels[0].properties["classification"]["role"] == "panel"
     assert drawing.input_digest is not None
     assert drawing.output_digest is not None
-

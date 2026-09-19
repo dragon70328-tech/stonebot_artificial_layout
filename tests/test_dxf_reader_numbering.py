@@ -9,6 +9,7 @@ from src.dxf_reader import (
     _entity_to_polygon,
     _is_closed,
     _looks_like_number,
+    extract_closed_entity_candidates,
     extract_closed_polygons,
     read_dxf,
 )
@@ -221,6 +222,40 @@ def test_closed_loop_cleans_consecutive_duplicate_vertices(tmp_path):
     assert polygon.is_valid
     assert polygon.area == 100.0
 
+
+def test_extract_closed_entity_candidates_hint_mode_keeps_unknown_layers(tmp_path):
+    path = tmp_path / "layer_hint_mode.dxf"
+    doc = ezdxf.new("R2010")
+    for layer in ("PANEL", "RANDOM"):
+        doc.layers.add(layer)
+    msp = doc.modelspace()
+    msp.add_lwpolyline(
+        [(0, 0), (100, 0), (100, 100), (0, 100), (0, 0)],
+        dxfattribs={"layer": "PANEL"},
+    )
+    msp.add_lwpolyline(
+        [(200, 0), (300, 0), (300, 100), (200, 100), (200, 0)],
+        dxfattribs={"layer": "RANDOM"},
+    )
+    doc.saveas(path)
+    doc = ezdxf.readfile(path)
+
+    strict = extract_closed_entity_candidates(
+        doc,
+        panel_layers=["PANEL"],
+        exclude_linetypes=[],
+        layer_filter_mode="strict",
+    )
+    hinted = extract_closed_entity_candidates(
+        doc,
+        panel_layers=["PANEL"],
+        exclude_linetypes=[],
+        layer_filter_mode="hint",
+    )
+
+    assert len(strict) == 1
+    assert len(hinted) == 2
+    assert [item["layer_hints"]["panel"] for item in hinted] == [True, False]
 
 def test_extract_closed_polygons_does_not_recover_plain_open_polyline(tmp_path):
     path = tmp_path / "plain_open.dxf"

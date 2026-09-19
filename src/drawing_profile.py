@@ -1,4 +1,4 @@
-﻿"""图纸画像与匹配模块。
+"""图纸画像与匹配模块。
 
 把一个已经跑通的人工读图流程沉淀为 DrawingProfile，后续上传新图纸时先计算
 图纸指纹，再匹配已有画像，避免每次从零开始分析。
@@ -23,14 +23,16 @@ from shapely.geometry import LineString, MultiPolygon, Point, Polygon
 from shapely.ops import polygonize, unary_union
 from shapely.strtree import STRtree
 
+from .entity_classifier import classify_candidates
 from .dxf_reader import (
     _build_part_hierarchy,
     _entity_to_polygon,
+    _is_contained_as_hole,
     _is_closed,
     _is_recoverable_closed,
     _linetype_name,
     _lwpolyline_points,
-    extract_closed_polygons,
+    extract_closed_entity_candidates,
 )
 
 
@@ -1017,6 +1019,7 @@ def _extract_profile_panels(
     profile: DrawingProfile,
     panel_layer_override: list[str] | None = None,
     exclude_layers: list[str] | None = None,
+    label_boxes: list[Polygon | None] | None = None,
 ) -> list[dict[str, Any]]:
     panel_layer = profile.panel_layer or None
     panel_layers = (
@@ -1082,31 +1085,63 @@ def _extract_profile_panels(
             _assign_profile_holes(panels, doc, profile, excluded_layers)
             return panels
 
-    polygon_items = extract_closed_polygons(
+    raw_candidates = extract_closed_entity_candidates(
         doc,
         panel_layers=panel_layers,
         exclude_layers=exclude_layers,
         exclude_linetypes=profile.exclude_linetypes,
         closed_tolerance=profile.closed_tolerance,
         exclude_handles=set(profile.exclude_entity_handles),
+        hole_layers=profile.hole_layers,
+        layer_filter_mode="hint",
     )
-    handle_to_layer: dict[str, str] = {}
-    for entity in doc.modelspace():
-        handle = getattr(entity.dxf, "handle", None)
-        if handle is not None:
-            handle_to_layer[str(handle)] = getattr(entity.dxf, "layer", "0") or "0"
+    classified_candidates = classify_candidates(
+        raw_candidates,
+        panel_layers=panel_layers,
+        hole_layers=profile.hole_layers,
+        exclude_layers=exclude_layers,
+        small_area_threshold=profile.small_area_threshold,
+        label_boxes=label_boxes,
+    )
+    accepted_candidates = [
+        candidate
+        for candidate in classified_candidates
+        if candidate["classification"]["role"] in {"panel", "hole"}
+    ]
+    classified_holes = [
+        candidate
+        for candidate in accepted_candidates
+        if candidate["classification"]["role"] == "hole"
+    ]
 
-    if polygon_items:
+    if accepted_candidates:
+        polygon_items = [
+            (candidate["polygon"], candidate.get("handle"))
+            for candidate in accepted_candidates
+        ]
         if profile.build_hierarchy:
             hierarchy = _build_part_hierarchy(polygon_items)
             for item in hierarchy:
                 if item["parent"] != -1:
                     continue
+                source_candidate = accepted_candidates[item["orig_index"]]
+                source_classification = source_candidate["classification"]
+                if source_classification["role"] != "panel":
+                    continue
 
+                child_candidates = [
+                    accepted_candidates[child_index]
+                    for child_index in item["children"]
+                ]
+                hole_candidates = [
+                    candidate
+                    for candidate in child_candidates
+                    if candidate["classification"]["role"] == "hole"
+                ]
                 outer = item["poly"]
-                holes = [hierarchy[child]["poly"] for child in item["children"]]
+                holes = [candidate["polygon"] for candidate in hole_candidates]
                 hole_handles = [
-                    hierarchy[child].get("handle") for child in item["children"]
+                    candidate.get("handle") for candidate in hole_candidates
                 ]
                 combined = outer
                 if holes:
@@ -1127,15 +1162,18 @@ def _extract_profile_panels(
                         "centroid": combined.centroid,
                         "area": combined.area,
                         "handle": item.get("handle"),
-                        "layer": handle_to_layer.get(
-                            str(item.get("handle")), profile.panel_layer or ""
-                        ),
-                        "source": "closed_polygon",
-                        "confidence": 0.9,
+                        "layer": source_candidate.get("layer"),
+                        "source": "classified_closed_polygon",
+                        "confidence": source_classification["confidence"],
+                        "classification": source_classification,
                     }
                 )
         else:
-            for polygon, handle in polygon_items:
+            for source_candidate in accepted_candidates:
+                source_classification = source_candidate["classification"]
+                if source_classification["role"] != "panel":
+                    continue
+                polygon = source_candidate["polygon"]
                 if polygon.is_empty or polygon.area <= 0.01:
                     continue
                 panels.append(
@@ -1147,16 +1185,16 @@ def _extract_profile_panels(
                         "hole_handles": [],
                         "centroid": polygon.centroid,
                         "area": polygon.area,
-                        "handle": handle,
-                        "layer": handle_to_layer.get(
-                            str(handle), profile.panel_layer or ""
-                        ),
-                        "source": "closed_polygon",
-                        "confidence": 0.9,
+                        "handle": source_candidate.get("handle"),
+                        "layer": source_candidate.get("layer"),
+                        "source": "classified_closed_polygon",
+                        "confidence": source_classification["confidence"],
+                        "classification": source_classification,
                     }
                 )
 
     line_entities = []
+    fallback_line_entities = []
     excluded_linetypes = {value.upper() for value in profile.exclude_linetypes}
     allowed_panel_layers = _profile_panel_layers(profile)
     for entity in doc.modelspace():
@@ -1165,12 +1203,15 @@ def _extract_profile_panels(
         layer = getattr(entity.dxf, "layer", "0") or "0"
         if layer in excluded_layers:
             continue
-        if allowed_panel_layers and layer not in allowed_panel_layers:
-            continue
         linetype = _linetype_name(entity, doc).upper()
         if linetype in excluded_linetypes:
             continue
-        line_entities.append(entity)
+        if allowed_panel_layers and layer not in allowed_panel_layers:
+            fallback_line_entities.append(entity)
+        else:
+            line_entities.append(entity)
+    if allowed_panel_layers and not line_entities:
+        line_entities = fallback_line_entities
 
     for polygon in _polygons_from_line_entities(line_entities):
         if polygon.is_empty or polygon.area <= 0.01:
@@ -1192,9 +1233,58 @@ def _extract_profile_panels(
                 "confidence": 0.7,
             }
         )
+    _assign_classified_holes(panels, classified_holes)
     _assign_profile_holes(panels, doc, profile, excluded_layers)
     return panels
 
+
+def _assign_classified_holes(
+    panels: list[dict[str, Any]],
+    hole_candidates: list[dict[str, Any]],
+) -> None:
+    """Assign geometry-classified holes to the smallest containing panel."""
+    if not panels or not hole_candidates:
+        return
+    assigned_handles = {
+        str(handle)
+        for panel in panels
+        for handle in panel.get("hole_handles", [])
+        if handle
+    }
+    for candidate in hole_candidates:
+        hole_polygon = candidate.get("polygon")
+        if not isinstance(hole_polygon, Polygon):
+            continue
+        handle = candidate.get("handle")
+        if handle and str(handle) in assigned_handles:
+            continue
+        containing = []
+        for panel in panels:
+            outer = panel.get("outer_polygon")
+            if not isinstance(outer, Polygon) or outer.area <= hole_polygon.area:
+                continue
+            try:
+                if outer.contains(hole_polygon) or _is_contained_as_hole(
+                    outer, hole_polygon
+                ):
+                    containing.append(panel)
+            except Exception:
+                continue
+        if not containing:
+            continue
+        panel = min(containing, key=lambda item: float(item["outer_polygon"].area))
+        combined = panel["polygon"].difference(hole_polygon)
+        if isinstance(combined, MultiPolygon):
+            combined = max(combined.geoms, key=lambda geom: geom.area)
+        if combined.is_empty or combined.area <= 0.01:
+            continue
+        panel["polygon"] = combined
+        panel["area"] = combined.area
+        panel["centroid"] = combined.centroid
+        panel["holes"].append(hole_polygon)
+        panel["hole_handles"] = panel.get("hole_handles", []) + [handle]
+        if handle:
+            assigned_handles.add(str(handle))
 
 def _assign_profile_holes(
     panels: list[dict[str, Any]],
@@ -1264,15 +1354,14 @@ def _collect_profile_number_texts(
     allowed_layers = set(profile.number_layers)
     excluded_layers = {value for value in (exclude_layers or [])}
     pattern = profile.compiled_label_pattern()
-    texts: list[dict[str, Any]] = []
+    preferred: list[dict[str, Any]] = []
+    fallback: list[dict[str, Any]] = []
 
     for entity in doc.modelspace():
         if entity.dxftype() not in ("TEXT", "MTEXT"):
             continue
         layer = getattr(entity.dxf, "layer", "0") or "0"
         if layer in excluded_layers:
-            continue
-        if allowed_layers and layer not in allowed_layers:
             continue
         if getattr(entity.dxf, "handle", None) in profile.exclude_entity_handles:
             continue
@@ -1289,18 +1378,18 @@ def _collect_profile_number_texts(
         text = text.strip()
         if not pattern.match(text):
             continue
-        texts.append(
-            {
-                "entity": entity,
-                "text": text,
-                "layer": layer,
-                "point": _entity_coordinates(entity),
-                "box": _text_box_polygon(entity),
-            }
-        )
-    return texts
-
-
+        item = {
+            "entity": entity,
+            "text": text,
+            "layer": layer,
+            "point": _entity_coordinates(entity),
+            "box": _text_box_polygon(entity),
+            "layer_hint": bool(allowed_layers and layer in allowed_layers),
+        }
+        fallback.append(item)
+        if not allowed_layers or layer in allowed_layers:
+            preferred.append(item)
+    return preferred if preferred else fallback
 def _collect_zone_texts(
     doc: ezdxf.document.Drawing,
     profile: DrawingProfile,
@@ -1374,7 +1463,10 @@ def _assign_texts_to_panels(
                 continue
             point = Point(text["point"][0], text["point"][1])
             try:
-                if panel["polygon"].contains(point):
+                if (
+                    panel["polygon"].contains(point)
+                    or panel.get("outer_polygon", panel["polygon"]).covers(point)
+                ):
                     inside.append(text_index)
             except Exception:
                 continue
@@ -1382,8 +1474,9 @@ def _assign_texts_to_panels(
             if profile.conflict_resolution == "best_overlap":
                 best = max(
                     inside,
-                    key=lambda index: _overlap_ratio(
-                        panel["polygon"], texts[index]["box"]
+                    key=lambda index: max(
+                        _overlap_ratio(panel["polygon"], texts[index]["box"]),
+                        _overlap_ratio(panel.get("outer_polygon", panel["polygon"]), texts[index]["box"]),
                     ),
                 )
             else:
@@ -1401,7 +1494,10 @@ def _assign_texts_to_panels(
         for text_index, text in enumerate(texts):
             if text_index in matched_texts:
                 continue
-            ratio = _overlap_ratio(panel["polygon"], text["box"])
+            ratio = max(
+                _overlap_ratio(panel["polygon"], text["box"]),
+                _overlap_ratio(panel.get("outer_polygon", panel["polygon"]), text["box"]),
+            )
             if ratio > best_ratio:
                 best_ratio = ratio
                 best_index = text_index
@@ -1568,16 +1664,17 @@ def read_dxf_with_profile(
     """
     filepath = Path(filepath)
     doc = ezdxf.readfile(str(filepath))
+    texts = _collect_profile_number_texts(
+        doc,
+        profile,
+        exclude_layers=exclude_layers,
+    )
     panels = _extract_profile_panels(
         doc,
         profile,
         panel_layer_override=panel_layers,
         exclude_layers=exclude_layers,
-    )
-    texts = _collect_profile_number_texts(
-        doc,
-        profile,
-        exclude_layers=exclude_layers,
+        label_boxes=[text.get("box") for text in texts],
     )
     zone_texts = _collect_zone_texts(
         doc,
@@ -1632,6 +1729,9 @@ def read_dxf_with_profile(
                 "outer_handle": panel.get("handle"),
                 "hole_handles": panel.get("hole_handles", []),
                 "layer": panel.get("layer"),
+                "confidence": panel.get("confidence", 1.0),
+                "source": panel.get("source", "closed_polygon"),
+                "classification": panel.get("classification"),
             }
         )
     return parts_data, doc

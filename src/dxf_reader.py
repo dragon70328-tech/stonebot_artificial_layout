@@ -383,10 +383,22 @@ def extract_closed_entity_candidates(doc,
                                      exclude_layers = None,
                                      exclude_linetypes = None,
                                      closed_tolerance: float = 0.01,
-                                     exclude_handles = None):
-    """提取封闭实体候选，同时保留 handle、图层和线型信息。"""
+                                     exclude_handles = None,
+                                     hole_layers = None,
+                                     layer_filter_mode: str = "strict"):
+    """提取封闭实体候选，同时保留 handle、图层和线型信息。
+
+    ``strict`` 保持旧行为，只保留 panel_layers 中实体。对于通用图纸和画像
+    匹配路径使用 ``hint``：不在指定图层中的实体仍保留，图层信息只作为
+    分类器的弱提示，最终由几何、包含关系和文本证据决定。
+    """
+    if layer_filter_mode not in {"strict", "hint", "off"}:
+        raise ValueError(f"unsupported layer_filter_mode: {layer_filter_mode}")
     if exclude_linetypes is None:
         exclude_linetypes = DEFAULT_EXCLUDE_LINETYPES
+    panel_layer_set = set(panel_layers or [])
+    hole_layer_set = set(hole_layers or [])
+    excluded_layer_set = set(exclude_layers or [])
     results = []
     msp = doc.modelspace()
 
@@ -396,10 +408,14 @@ def extract_closed_entity_candidates(doc,
         if exclude_handles is not None and handle in exclude_handles:
             continue
 
-        if panel_layers is not None and layer not in panel_layers:
-            continue
-        if exclude_layers is not None and layer in exclude_layers:
-            continue
+        panel_hint = layer in panel_layer_set
+        hole_hint = layer in hole_layer_set
+        excluded_hint = layer in excluded_layer_set
+        if layer_filter_mode == "strict":
+            if panel_layers is not None and not panel_hint:
+                continue
+            if excluded_hint:
+                continue
 
         linetype = _linetype_name(entity, doc)
         if linetype in exclude_linetypes:
@@ -416,6 +432,11 @@ def extract_closed_entity_candidates(doc,
                     "linetype": linetype,
                     "polygon": poly,
                     "entity_type": entity.dxftype(),
+                    "layer_hints": {
+                        "panel": panel_hint,
+                        "hole": hole_hint,
+                        "exclude": excluded_hint,
+                    },
                 }
             )
 
@@ -427,7 +448,9 @@ def extract_closed_polygons(doc,
                              exclude_layers = None,
                              exclude_linetypes = None,
                              closed_tolerance: float = 0.01,
-                             exclude_handles = None):
+                             exclude_handles = None,
+                             hole_layers = None,
+                             layer_filter_mode: str = "strict"):
     return [
         (item["polygon"], item["handle"])
         for item in extract_closed_entity_candidates(
@@ -437,6 +460,8 @@ def extract_closed_polygons(doc,
             exclude_linetypes=exclude_linetypes,
             closed_tolerance=closed_tolerance,
             exclude_handles=exclude_handles,
+            hole_layers=hole_layers,
+            layer_filter_mode=layer_filter_mode,
         )
     ]
 
