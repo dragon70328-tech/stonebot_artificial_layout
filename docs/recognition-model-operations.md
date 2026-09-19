@@ -113,3 +113,33 @@ python scripts/prune_recognition_feedback.py \
 ```text
 global_feedback/archive/YYYYMM/<tenant_id>/
 ```
+## 一体化定时运维周期
+
+推荐定时任务直接调用一体化脚本，它会依次执行：
+
+```text
+监控当前模型
+  -> 判断是否重训
+  -> 训练和质量审批
+  -> 可选激活
+  -> 反馈保留归档
+```
+
+```bash
+python scripts/run_recognition_model_ops.py \
+  --feedback-dir recognition_models/global_feedback \
+  --output-dir recognition_models \
+  --min-new-feedback 20 \
+  --max-interval-days 30 \
+  --retention-max-age-days 180 \
+  --retention-max-files-per-tenant 500
+```
+
+首次运行或确认流程时建议使用：
+
+```bash
+python scripts/run_recognition_model_ops.py --dry-run
+```
+
+只有显式添加 `--apply-retention` 才会移动反馈文件。周期报告保存在
+`recognition_models/operations/latest.json`。
