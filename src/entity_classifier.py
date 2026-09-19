@@ -16,6 +16,7 @@ from shapely.strtree import STRtree
 
 from src.dxf_reader import _is_contained_as_hole
 from src.recognition_memory import recognition_memory_hints
+from src.recognition_model import predict_panel_probability
 
 
 def _normalized_layers(values: Iterable[str] | None) -> set[str]:
@@ -101,6 +102,7 @@ def classify_candidates(
     small_area_threshold: float = 100.0,
     label_boxes: Iterable[Polygon | None] | None = None,
     recognition_memory: dict[str, Any] | None = None,
+    recognition_model: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Annotate candidates with role scores and evidence.
 
@@ -266,6 +268,20 @@ def classify_candidates(
             if 0.25 <= ratio <= 4.0:
                 hole_score += 0.06
                 reasons.append("memory:hole_area_similar")
+
+        model_probability = predict_panel_probability(
+            recognition_model,
+            candidate.get("polygon"),
+            entity_type,
+        )
+        if model_probability is not None:
+            model_weight = float(
+                (recognition_model or {}).get("classifier_weight", 0.36)
+            )
+            model_signal = (model_probability - 0.5) * model_weight
+            panel_score += model_signal
+            hole_score -= model_signal
+            reasons.append(f"model:panel_probability={model_probability:.4f}")
 
         # Explicit hints are strong but not absolute; a small circle on a panel
         # layer remains a hole candidate, and a large unknown-layer outline can

@@ -49,6 +49,8 @@ class JobContext:
     recognition_feedback: list[dict[str, Any]] = field(default_factory=list)
     recognition_memory: dict[str, Any] = field(default_factory=dict)
     recognition_memory_path: Path | None = None
+    recognition_model: dict[str, Any] = field(default_factory=dict)
+    recognition_model_path: Path | None = None
 
     trials: int = 1
     seed: int = 0
@@ -114,6 +116,10 @@ class JobContext:
             "recognition_memory": {
                 "feedback_count": int(self.recognition_memory.get("feedback_count", 0)),
                 "updated_at": self.recognition_memory.get("updated_at"),
+            },
+            "recognition_model": {
+                "model_version": self.recognition_model.get("model_version"),
+                "metrics": self.recognition_model.get("metrics"),
             },
             "nesting": (
                 {

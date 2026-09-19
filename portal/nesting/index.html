@@ -1173,8 +1173,11 @@
       const updated = learning.memory_updated_at
         ? `，最近更新：${String(learning.memory_updated_at).slice(0, 19).replace("T", " ")}`
         : "";
+      const modelVersion = learning.model_version
+        ? `，全局模型：${String(learning.model_version).replace("recognition-model-", "")}`
+        : "";
       learningMemorySummaryEl.textContent = (
-        `项目记忆：已学习 ${count} 次，当前任务反馈 ${feedbackCount} 次${updated}`
+        `项目记忆：已学习 ${count} 次，当前任务反馈 ${feedbackCount} 次${updated}${modelVersion}`
       );
     }
     function renderJobPanel(status) {

@@ -76,6 +76,7 @@ def _read_dxf(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
             panel_layers=panel_layers,
             exclude_layers=exclude_layers,
             recognition_memory=ctx.recognition_memory,
+            recognition_model=ctx.recognition_model,
         )
     else:
         parts_data, _doc = read_dxf(

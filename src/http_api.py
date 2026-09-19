@@ -420,13 +420,11 @@ class JobManager:
                 )
                 / "recognition_memory.json"
             ),
+            recognition_model_path=(
+                self.root / "recognition_models" / "current.json"
+            ),
             global_feedback_dir=(
-                self.tenant_store.project_dir(
-                    request.tenant_id,
-                    self._project_id(request),
-                )
-                / "learning_feedback"
-                / "global"
+                self.root / "recognition_models" / "global_feedback"
             ),
             session_id=job_id,
             restore_session=restore_session,

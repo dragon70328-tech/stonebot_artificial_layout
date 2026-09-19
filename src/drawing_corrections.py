@@ -123,6 +123,12 @@ def build_correction_context(ctx: JobContext) -> dict[str, Any]:
             "memory_updated_at": (
                 getattr(ctx, "recognition_memory", {}) or {}
             ).get("updated_at"),
+            "model_version": (
+                getattr(ctx, "recognition_model", {}) or {}
+            ).get("model_version"),
+            "model_metrics": (
+                getattr(ctx, "recognition_model", {}) or {}
+            ).get("metrics"),
         },
     }
 

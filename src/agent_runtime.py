@@ -24,6 +24,7 @@ from src.correction_contracts import CorrectionPlan
 from src.drawing_corrections import build_correction_context
 from src.job_context import JobContext
 from src.recognition_memory import load_recognition_memory
+from src.recognition_model import load_recognition_model
 from src.nesting_contracts import ProcessPolicy, SheetSpec
 from src.object_store import ObjectStore
 from src.session_store import SqliteWorkflowSessionStore, WorkflowSessionStore
@@ -61,6 +62,7 @@ class AgentRuntime:
         output_dir: Path | None = None,
         project_id: str | None = None,
         recognition_memory_path: Path | None = None,
+        recognition_model_path: Path | None = None,
         global_feedback_dir: Path | None = None,
         session_id: str | None = None,
         restore_session: WorkflowSession | None = None,
@@ -82,8 +84,16 @@ class AgentRuntime:
             if global_feedback_dir is not None
             else self.output_dir / "global_feedback"
         )
+        self.recognition_model_path = (
+            Path(recognition_model_path)
+            if recognition_model_path is not None
+            else self.output_dir / "recognition_model.json"
+        )
         self.recognition_memory = load_recognition_memory(
             self.recognition_memory_path
+        )
+        self.recognition_model = load_recognition_model(
+            self.recognition_model_path
         )
         self.numbered_path = str(self.output_dir / f"{stem}_numbered_原位.dxf")
         suffix = f"{int(width_mm)}x{int(height_mm)}"
@@ -109,6 +119,8 @@ class AgentRuntime:
             output_dir=self.output_dir,
             recognition_memory=self.recognition_memory,
             recognition_memory_path=self.recognition_memory_path,
+            recognition_model=self.recognition_model,
+            recognition_model_path=self.recognition_model_path,
             global_feedback_dir=self.global_feedback_dir,
         )
 
