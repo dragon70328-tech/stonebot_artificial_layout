@@ -266,6 +266,25 @@
     return parts[parts.length - 1] || String(path);
   }
 
+  function correctionTargetId(item) {
+    if (!item) return "";
+    const value = item.target_id
+      || item.hole_id
+      || item.panel_id
+      || item.part_id
+      || (item.entity_handle ? `handle:${item.entity_handle}` : "");
+    return value ? String(value) : "";
+  }
+
+  function previewArtifactKey(artifacts, revision) {
+    const available = artifacts || {};
+    const revisionNumber = Number(revision);
+    if (Number.isInteger(revisionNumber) && revisionNumber > 0) {
+      const revisionKey = `numbered_dxf_r${revisionNumber}`;
+      if (available[revisionKey]) return revisionKey;
+    }
+    return available.numbered_dxf ? "numbered_dxf" : null;
+  }
   function parseApiError(payload, statusCode) {
     if (payload && typeof payload === "object" && payload.detail) {
       return String(payload.detail);
@@ -303,6 +322,8 @@
     stageProgress,
     jobMetrics,
     jobArtifacts,
+    correctionTargetId,
+    previewArtifactKey,
     artifactLabel,
     effectiveSheetDimensions,
     validateNestingParameters,

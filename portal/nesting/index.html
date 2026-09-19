@@ -146,6 +146,107 @@
       font-size: 12px;
       color: var(--muted);
     }
+    .drawing-preview {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px dashed var(--border);
+    }
+    .drawing-preview-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .drawing-preview-title { display: flex; flex-direction: column; gap: 2px; }
+    .drawing-preview-title small { color: var(--muted); font-size: 12px; }
+    .drawing-preview-actions { display: flex; align-items: center; gap: 6px; }
+    .drawing-preview-actions button {
+      padding: 4px 8px;
+      border-radius: 7px;
+      font-size: 12px;
+    }
+    .drawing-preview-actions a {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 12px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 4px 8px;
+      background: var(--panel);
+    }
+    .drawing-preview-stage {
+      height: min(58vh, 560px);
+      min-height: 340px;
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background:
+        linear-gradient(90deg, rgba(148, 163, 184, .14) 1px, transparent 1px),
+        linear-gradient(rgba(148, 163, 184, .14) 1px, transparent 1px),
+        #fbfdff;
+      background-size: 24px 24px;
+    }
+    #drawing-preview-svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+      touch-action: none;
+      cursor: crosshair;
+    }
+    .preview-shape {
+      vector-effect: non-scaling-stroke;
+      stroke-width: 1.15;
+      transition: fill .12s ease, stroke .12s ease;
+    }
+    .preview-panel { fill: rgba(37, 99, 235, .10); stroke: #1e3a8a; }
+    .preview-hole { fill: rgba(255, 255, 255, .78); stroke: var(--warning); }
+    .preview-unrecognized {
+      fill: rgba(220, 38, 38, .10);
+      stroke: var(--danger);
+      stroke-dasharray: 6 4;
+    }
+    .preview-shape:hover { fill: rgba(251, 191, 36, .28); }
+    .preview-shape.selected {
+      fill: rgba(251, 191, 36, .46);
+      stroke: #b45309;
+      stroke-width: 2.8;
+    }
+    .preview-label {
+      fill: #172554;
+      font-weight: 700;
+      text-anchor: middle;
+      dominant-baseline: central;
+      paint-order: stroke;
+      stroke: rgba(255, 255, 255, .9);
+      stroke-width: 3px;
+      pointer-events: none;
+    }
+    .preview-label.selected { fill: #9a3412; }
+    .drawing-preview-empty {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      padding: 20px;
+      text-align: center;
+    }
+    .preview-hint { margin-top: 6px; color: var(--muted); font-size: 12px; }
+    .preview-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 7px; font-size: 12px; color: var(--muted); }
+    .preview-legend span::before {
+      content: "";
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      margin-right: 5px;
+      border: 1px solid currentColor;
+      vertical-align: -1px;
+    }
+    .preview-legend .panel::before { background: rgba(37, 99, 235, .16); color: #1e3a8a; }
+    .preview-legend .hole::before { background: white; color: var(--warning); }
+    .preview-legend .unrecognized::before { background: rgba(220, 38, 38, .12); color: var(--danger); }
     .job-panel {
       margin-bottom: 12px;
       border: 1px solid var(--border);
@@ -423,6 +524,31 @@
         <select id="correction-target-select" multiple size="5"></select>
         <div id="correction-target-summary" class="correction-target-summary">未选择目标</div>
       </div>
+      <div id="drawing-preview" class="drawing-preview" hidden>
+        <div class="drawing-preview-head">
+          <div class="drawing-preview-title">
+            <strong>原位 DXF 预览</strong>
+            <small id="drawing-preview-summary">正在加载几何...</small>
+          </div>
+          <div class="drawing-preview-actions">
+            <button id="drawing-preview-zoom-out" type="button" title="缩小">−</button>
+            <button id="drawing-preview-fit" type="button">适应</button>
+            <button id="drawing-preview-zoom-in" type="button" title="放大">＋</button>
+            <a id="drawing-preview-download" href="#" hidden>下载原位 DXF</a>
+          </div>
+        </div>
+        <div class="preview-legend">
+          <span class="panel">规格板</span>
+          <span class="hole">孔洞</span>
+          <span class="unrecognized">未识别封闭实体</span>
+          <span>黄色高亮 = 已选择纠错目标</span>
+        </div>
+        <div id="drawing-preview-stage" class="drawing-preview-stage">
+          <svg id="drawing-preview-svg" role="img" aria-label="原位 DXF 几何预览"></svg>
+          <div id="drawing-preview-empty" class="drawing-preview-empty" hidden></div>
+        </div>
+        <div class="preview-hint">单击图形可直接选中或取消；滚轮缩放，点击“适应”恢复全图。</div>
+      </div>
       <div id="next-action" class="next-action"></div>
       <div id="job-error" class="error-box" hidden></div>
     </section>
@@ -523,6 +649,11 @@
       latestStatus: null,
       selectedCorrectionTargets: [],
       pollTimers: [],
+      preview: null,
+      previewJobId: null,
+      previewRevision: null,
+      previewRequestToken: 0,
+      previewOriginalViewBox: null,
     };
 
     const messagesEl = document.getElementById("messages");
@@ -543,6 +674,11 @@
     const correctionTargetsEl = document.getElementById("correction-targets");
     const correctionTargetSelectEl = document.getElementById("correction-target-select");
     const correctionTargetSummaryEl = document.getElementById("correction-target-summary");
+    const drawingPreviewEl = document.getElementById("drawing-preview");
+    const drawingPreviewSummaryEl = document.getElementById("drawing-preview-summary");
+    const drawingPreviewSvgEl = document.getElementById("drawing-preview-svg");
+    const drawingPreviewEmptyEl = document.getElementById("drawing-preview-empty");
+    const drawingPreviewDownloadEl = document.getElementById("drawing-preview-download");
     const parameterEls = {
       process: document.getElementById("param-process"),
       width: document.getElementById("param-width"),
@@ -779,6 +915,178 @@
       return `面板 | ${number} | ${item.hole_count || 0} 孔 | ${Number(item.area || 0).toFixed(1)} mm²`;
     }
 
+    function updateCorrectionTargetSummary() {
+      const labels = state.selectedCorrectionTargets.map((value) => {
+        const option = Array.from(correctionTargetSelectEl.options)
+          .find((item) => item.value === value);
+        return option ? option.textContent : value;
+      });
+      correctionTargetSummaryEl.textContent = labels.length
+        ? `已选择：${labels.join("、")}`
+        : "未选择目标";
+    }
+
+    function syncPreviewSelection() {
+      const selected = new Set(state.selectedCorrectionTargets);
+      for (const option of correctionTargetSelectEl.options) {
+        option.selected = selected.has(option.value);
+      }
+      drawingPreviewSvgEl.querySelectorAll("[data-preview-target]").forEach((element) => {
+        element.classList.toggle("selected", selected.has(element.dataset.previewTarget));
+      });
+      updateCorrectionTargetSummary();
+    }
+
+    function toggleCorrectionTarget(value) {
+      if (!value) return;
+      const target = String(value);
+      if (state.selectedCorrectionTargets.includes(target)) {
+        state.selectedCorrectionTargets = state.selectedCorrectionTargets.filter(
+          (item) => item !== target,
+        );
+      } else {
+        state.selectedCorrectionTargets = [...state.selectedCorrectionTargets, target];
+      }
+      syncPreviewSelection();
+    }
+
+    function previewPoints(points) {
+      return (points || []).map((point) => `${point[0]},${point[1]}`).join(" ");
+    }
+
+    function renderDrawingPreview(payload) {
+      const entities = payload.entities || [];
+      const viewBox = payload.view_box || [0, 0, 1, 1];
+      const labelSize = Math.max(Math.max(Number(viewBox[2]), Number(viewBox[3])) / 110, 1);
+      const shapes = [];
+      for (const entity of entities) {
+        const target = ui.correctionTargetId(entity);
+        const kind = ui.escapeHtml(entity.kind || "entity");
+        const role = ui.escapeHtml(entity.role || "outer");
+        const title = entity.number
+          || entity.entity_handle
+          || target
+          || "图纸实体";
+        shapes.push(
+          `<polygon class="preview-shape preview-${kind} role-${role}" `
+          + `points="${ui.escapeHtml(previewPoints(entity.points))}" `
+          + `data-preview-target="${ui.escapeHtml(target)}">`
+          + `<title>${ui.escapeHtml(title)}</title></polygon>`,
+        );
+        if (entity.kind === "panel" && entity.role === "outer" && entity.label_position) {
+          const [x, y] = entity.label_position;
+          shapes.push(
+            `<text class="preview-label" x="${x}" y="${y}" `
+            + `font-size="${labelSize}" data-preview-target="${ui.escapeHtml(target)}">`
+            + `${ui.escapeHtml(entity.number || target)}</text>`,
+          );
+        }
+      }
+      drawingPreviewSvgEl.setAttribute("viewBox", viewBox.join(" "));
+      drawingPreviewSvgEl.innerHTML = `<g>${shapes.join("")}</g>`;
+      state.previewOriginalViewBox = [...viewBox];
+      const counts = payload.counts || {};
+      drawingPreviewSummaryEl.textContent = (
+        `面板 ${counts.panels || 0} · 孔洞 ${counts.holes || 0} · `
+        + `未识别 ${counts.unrecognized || 0} · 版本 r${payload.revision || 0}`
+      );
+      drawingPreviewEmptyEl.hidden = entities.length > 0;
+      drawingPreviewEmptyEl.textContent = entities.length ? "" : "当前图纸没有可预览的封闭实体";
+      syncPreviewSelection();
+    }
+
+    function zoomDrawingPreview(factor) {
+      const viewBox = drawingPreviewSvgEl.getAttribute("viewBox");
+      if (!viewBox) return;
+      const values = viewBox.split(/\s+/).map(Number);
+      if (values.length !== 4 || values.some((value) => !Number.isFinite(value))) return;
+      const [x, y, width, height] = values;
+      const nextWidth = width * factor;
+      const nextHeight = height * factor;
+      const nextX = x + (width - nextWidth) / 2;
+      const nextY = y + (height - nextHeight) / 2;
+      drawingPreviewSvgEl.setAttribute(
+        "viewBox",
+        [nextX, nextY, nextWidth, nextHeight].map((value) => value.toFixed(3)).join(" "),
+      );
+    }
+
+    function fitDrawingPreview() {
+      if (!state.previewOriginalViewBox) return;
+      drawingPreviewSvgEl.setAttribute(
+        "viewBox",
+        state.previewOriginalViewBox.map((value) => Number(value).toFixed(3)).join(" "),
+      );
+    }
+
+    function hideDrawingPreview() {
+      state.preview = null;
+      state.previewJobId = null;
+      state.previewRevision = null;
+      drawingPreviewEl.hidden = true;
+      drawingPreviewSvgEl.innerHTML = "";
+      drawingPreviewDownloadEl.hidden = true;
+    }
+
+    function updatePreviewDownload(status, revision) {
+      const key = ui.previewArtifactKey(ui.jobArtifacts(status), revision);
+      if (!key || !status || !status.job_id) {
+        drawingPreviewDownloadEl.hidden = true;
+        return;
+      }
+      drawingPreviewDownloadEl.href = (
+        `${API_BASE}/jobs/${encodeURIComponent(status.job_id)}`
+        + `/artifacts/${encodeURIComponent(key)}`
+      );
+      drawingPreviewDownloadEl.hidden = false;
+    }
+
+    async function loadDrawingPreview(status, force = false) {
+      const correctionContext = (status && status.correction_context) || {};
+      const parts = correctionContext.parts || [];
+      const unrecognized = correctionContext.unrecognized_entities || [];
+      if (!status || !status.job_id || (!parts.length && !unrecognized.length)) {
+        hideDrawingPreview();
+        return;
+      }
+
+      const revision = Number(
+        status.correction_revision || correctionContext.correction_revision || 0,
+      );
+      updatePreviewDownload(status, revision);
+      const cacheHit = (
+        !force
+        && state.preview
+        && state.previewJobId === status.job_id
+        && state.previewRevision === revision
+      );
+      if (cacheHit) return;
+
+      const requestToken = state.previewRequestToken + 1;
+      state.previewRequestToken = requestToken;
+      drawingPreviewEl.hidden = false;
+      drawingPreviewSummaryEl.textContent = "正在加载几何...";
+      drawingPreviewEmptyEl.hidden = false;
+      drawingPreviewEmptyEl.textContent = "正在加载原位 DXF 预览...";
+      drawingPreviewSvgEl.innerHTML = "";
+      try {
+        const payload = await api(
+          `/jobs/${encodeURIComponent(status.job_id)}/drawing-preview`,
+        );
+        if (requestToken !== state.previewRequestToken) return;
+        state.preview = payload;
+        state.previewJobId = status.job_id;
+        state.previewRevision = Number(payload.revision || revision);
+        renderDrawingPreview(payload);
+        updatePreviewDownload(status, state.previewRevision);
+      } catch (error) {
+        if (requestToken !== state.previewRequestToken) return;
+        drawingPreviewEl.hidden = false;
+        drawingPreviewSummaryEl.textContent = "预览加载失败";
+        drawingPreviewEmptyEl.hidden = false;
+        drawingPreviewEmptyEl.textContent = error.message;
+      }
+    }
     function renderCorrectionTargets(status) {
       const correctionContext = (status && status.correction_context) || {};
       const parts = correctionContext.parts || [];
@@ -793,13 +1101,13 @@
 
       const options = [];
       for (const part of parts) {
-        const panelTarget = part.number || part.part_id;
+        const panelTarget = ui.correctionTargetId(part);
         options.push({
           value: panelTarget,
           label: targetLabel(part),
         });
         for (const hole of (part.holes || [])) {
-          const holeTarget = hole.hole_id || hole.entity_handle;
+          const holeTarget = ui.correctionTargetId(hole);
           if (!holeTarget) continue;
           options.push({
             value: holeTarget,
@@ -808,7 +1116,7 @@
         }
       }
       for (const entity of unrecognized) {
-        const entityTarget = entity.target_id || `handle:` + entity.entity_handle;
+        const entityTarget = ui.correctionTargetId(entity);
         const entityArea = Number(entity.area || 0).toFixed(1);
         options.push({
           value: entityTarget,
@@ -824,17 +1132,13 @@
       state.selectedCorrectionTargets = state.selectedCorrectionTargets.filter(
         (value) => available.has(value),
       );
-      for (const option of correctionTargetSelectEl.options) {
-        option.selected = state.selectedCorrectionTargets.includes(option.value);
-      }
-      correctionTargetSummaryEl.textContent = state.selectedCorrectionTargets.length
-        ? `已选择：${state.selectedCorrectionTargets.join("、")}`
-        : "未选择目标";
+      syncPreviewSelection();
     }
 
     function renderJobPanel(status) {
       if (!status) {
         jobPanelEl.hidden = true;
+        hideDrawingPreview();
         updateActionButtons();
         return;
       }
@@ -850,6 +1154,7 @@
       stepsEl.innerHTML = renderSteps(status);
       metricsEl.innerHTML = renderMetrics(status);
       renderCorrectionTargets(status);
+      loadDrawingPreview(status);
 
       const next = ui.nextAction(status);
       nextActionEl.innerHTML = `
@@ -1223,10 +1528,24 @@
       state.selectedCorrectionTargets = Array.from(correctionTargetSelectEl.options)
         .filter((option) => option.selected)
         .map((option) => option.value);
-      correctionTargetSummaryEl.textContent = state.selectedCorrectionTargets.length
-        ? `已选择：${state.selectedCorrectionTargets.join("、")}`
-        : "未选择目标";
+      syncPreviewSelection();
     });
+    drawingPreviewSvgEl.addEventListener("click", (event) => {
+      const shape = event.target.closest("[data-preview-target]");
+      if (!shape) return;
+      toggleCorrectionTarget(shape.dataset.previewTarget);
+    });
+    drawingPreviewSvgEl.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      zoomDrawingPreview(event.deltaY < 0 ? 0.82 : 1.22);
+    }, { passive: false });
+    document.getElementById("drawing-preview-zoom-in").addEventListener("click", () => {
+      zoomDrawingPreview(0.82);
+    });
+    document.getElementById("drawing-preview-zoom-out").addEventListener("click", () => {
+      zoomDrawingPreview(1.22);
+    });
+    document.getElementById("drawing-preview-fit").addEventListener("click", fitDrawingPreview);
     inputEl.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();

@@ -234,6 +234,20 @@ def test_correction_endpoint_applies_structured_plan(tmp_path, monkeypatch):
     assert manager.corrected[1].operations[0].value == "P-1A"
 
 
+def test_drawing_preview_endpoint_returns_clickable_model(tmp_path, monkeypatch):
+    manager = FakeCorrectionManager(tmp_path)
+    monkeypatch.setattr("src.http_api.manager", manager)
+    monkeypatch.setattr(
+        "src.http_api.build_drawing_preview",
+        lambda context: {"revision": 0, "entities": [{"target_id": "P-1"}]},
+    )
+    client = TestClient(app)
+
+    response = client.get("/jobs/job-correction/drawing-preview")
+
+    assert response.status_code == 200
+    assert response.json()["entities"][0]["target_id"] == "P-1"
+
 def test_root_serves_nesting_chat_frontend(tmp_path, monkeypatch):
     monkeypatch.setattr("src.http_api.manager", SyncJobManager(tmp_path))
     client = TestClient(app)
@@ -268,6 +282,10 @@ def test_nesting_frontend_has_action_contract(tmp_path, monkeypatch):
         "correction-targets",
         "correction-target-select",
         "correction-target-summary",
+        "drawing-preview",
+        "drawing-preview-svg",
+        "drawing-preview-fit",
+        "drawing-preview-download",
         "parameter-panel",
         "param-process",
         "param-width",

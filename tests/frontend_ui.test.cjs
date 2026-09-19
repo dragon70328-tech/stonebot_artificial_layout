@@ -188,3 +188,22 @@ test("parseApiError prefers FastAPI detail and handles text payloads", () => {
 test("escapeHtml neutralizes markup", () => {
   assert.equal(ui.escapeHtml('<script>alert("x")</script>'), "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;");
 });
+test("correctionTargetId returns the stable backend target identifier", () => {
+  assert.equal(ui.correctionTargetId({ target_id: "panel-1" }), "panel-1");
+  assert.equal(ui.correctionTargetId({ hole_id: "handle:H2" }), "handle:H2");
+  assert.equal(ui.correctionTargetId({ entity_handle: "H9" }), "handle:H9");
+  assert.equal(ui.correctionTargetId({ panel_id: "panel-3", part_id: "3" }), "panel-3");
+  assert.equal(ui.correctionTargetId(null), "");
+});
+
+test("previewArtifactKey prefers the current numbered revision", () => {
+  assert.equal(
+    ui.previewArtifactKey({ numbered_dxf: "base.dxf", numbered_dxf_r2: "r2.dxf" }, 2),
+    "numbered_dxf_r2",
+  );
+  assert.equal(
+    ui.previewArtifactKey({ numbered_dxf: "base.dxf" }, 2),
+    "numbered_dxf",
+  );
+  assert.equal(ui.previewArtifactKey({}, 0), null);
+});

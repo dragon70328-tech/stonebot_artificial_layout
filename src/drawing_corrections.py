@@ -49,6 +49,7 @@ def build_correction_context(ctx: JobContext) -> dict[str, Any]:
             )
             holes.append(
                 {
+                    "target_id": _hole_id(part, hole_index),
                     "hole_id": _hole_id(part, hole_index),
                     "entity_handle": handle,
                     "area": round(float(hole.area), 3),
@@ -57,6 +58,7 @@ def build_correction_context(ctx: JobContext) -> dict[str, Any]:
             )
         items.append(
             {
+                "target_id": panel_id or str(part.id),
                 "panel_id": panel_id,
                 "part_id": str(part.id),
                 "number": part.number,

@@ -54,3 +54,14 @@ python -m http.server 8080
 
 - 纯 UI 状态逻辑：`node tests/frontend_ui.test.cjs`
 - 静态资源与操作按钮契约：`python -X utf8 -m pytest -q tests/test_http_api.py::test_root_serves_portal_ui_module tests/test_http_api.py::test_nesting_frontend_has_action_contract`
+## 原位预览与点选
+
+任务生成可用的原位 DXF 后，识图排板页会显示在线几何预览：
+
+- 蓝色轮廓为已识别规格板，橙色为孔洞，红色虚线为未识别封闭实体；
+- 单击图形可选中或取消对应纠错目标，并与下方多选列表双向同步；
+- 面板编号显示在轮廓中心，支持滚轮缩放和“适应”全图；
+- 可直接下载当前纠错版本的原位编号 DXF。
+
+预览数据由 `GET /jobs/{job_id}/drawing-preview` 提供，实体 ID 与
+`POST /jobs/{job_id}/corrections` 接受的 `target_id` 完全一致。

@@ -35,6 +35,7 @@ from src.correction_planner import CorrectionPlanner
 from src.conversation_planner import ConversationPlanner
 from src.conversation_store import ConversationStore
 from src.drawing_corrections import build_correction_context
+from src.drawing_preview import build_drawing_preview
 from src.dxf_writer import write_nested_dxf
 from src.input_guard import DXFInputLimits, check_dxf_file
 from src.job_repository import build_job_repository
@@ -1358,6 +1359,20 @@ def download_artifact(
             "Content-Disposition": f'attachment; filename="{safe_filename}"',
         },
     )
+
+
+@app.get("/jobs/{job_id}/drawing-preview")
+def get_drawing_preview(
+    job_id: str,
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
+) -> dict[str, Any]:
+    _require_role(tenant, "operator")
+    _require_job_tenant(job_id, tenant)
+    try:
+        runtime = manager.get(job_id)
+        return build_drawing_preview(runtime.context)
+    except (JobStateError, RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/jobs/{job_id}/corrections")
