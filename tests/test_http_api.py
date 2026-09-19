@@ -861,3 +861,27 @@ def test_fastapi_lifespan_shuts_down_worker(tmp_path, monkeypatch):
 
     assert manager._worker_thread is not None
     assert manager._worker_thread.is_alive() is False
+def test_admin_recognition_model_page_and_status(tmp_path, monkeypatch):
+    manager=SyncJobManager(tmp_path)
+    monkeypatch.setattr('src.http_api.manager',manager)
+    monkeypatch.setattr(
+        'src.http_api.load_tenant_api_keys',
+        lambda:{'admin-tenant':'admin-secret'},
+    )
+    client=TestClient(app)
+    headers={'X-API-Key':'admin-secret','X-Tenant-ID':'admin-tenant'}
+
+    page=client.get('/admin/')
+    status=client.get('/admin/recognition-model/status',headers=headers)
+    dry_run=client.post(
+        '/admin/recognition-model/operations',
+        headers=headers,
+        json={'dry_run':True,'activate':True},
+    )
+
+    assert page.status_code==200
+    assert '识别模型运维' in page.text
+    assert status.status_code==200
+    assert status.json()['feedback']['total']==0
+    assert dry_run.status_code==200
+    assert dry_run.json()['dry_run'] is True

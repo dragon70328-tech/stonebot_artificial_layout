@@ -1,0 +1,5 @@
+# Recognition-learning operations cycle.
+# Install as a cron entry after replacing paths.
+#
+# Every Monday at 03:15:
+15 3 * * 1 /opt/stonebot/venv/bin/python /opt/stonebot/stonebot_artificial_layout_architecture/scripts/run_recognition_model_ops.py --feedback-dir /opt/stonebot/data/recognition_models/global_feedback --output-dir /opt/stonebot/data/recognition_models --min-new-feedback 20 --max-interval-days 30 --retention-max-age-days 180 --retention-max-files-per-tenant 500 >> /var/log/stonebot/recognition-ops.log 2>&1

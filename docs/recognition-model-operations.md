@@ -143,3 +143,43 @@ python scripts/run_recognition_model_ops.py --dry-run
 
 只有显式添加 `--apply-retention` 才会移动反馈文件。周期报告保存在
 `recognition_models/operations/latest.json`。
+## 管理员界面
+
+启动 FastAPI 后访问：
+
+```text
+/admin/
+```
+
+需要 `admin` 角色。界面支持：
+
+- 查看当前模型、版本、指标和反馈数量；
+- 查看最近训练、监控和运维报告；
+- 生成 dry-run 运维计划；
+- 后台执行监控、重训和可选激活；
+- 按版本回滚模型。
+
+管理 API：
+
+```text
+GET  /admin/recognition-model/status
+POST /admin/recognition-model/operations
+POST /admin/recognition-model/rollback
+```
+
+## 定时任务模板
+
+Linux Cron 示例：
+
+```text
+deploy/recognition-model-ops.cron.example
+```
+
+Windows 任务计划程序可使用：
+
+```powershell
+deploy\recognition-model-ops-task.ps1 `
+  -ProjectRoot C:\path\to\stonebot_artificial_layout_architecture
+```
+
+添加 `-ApplyRetention` 才会执行反馈归档。

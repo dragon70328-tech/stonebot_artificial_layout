@@ -26,6 +26,11 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
+from src.admin_ops import (
+    recognition_admin_status,
+    rollback_recognition_model,
+    run_admin_operations,
+)
 from src.agent_loop import AgentLoopResult
 from src.agent_runtime import AgentRuntime
 from src.artifact_store import content_digest
@@ -63,6 +68,7 @@ from src.workflow_session import WorkflowStage
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PORTAL_NESTING_DIR = PROJECT_ROOT / "portal" / "nesting"
+PORTAL_ADMIN_DIR = PROJECT_ROOT / "portal" / "admin"
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_-]+")
 JOB_PARAMETER_KEYS = {
     "width_mm",
@@ -145,6 +151,17 @@ class CorrectionRequest(BaseModel):
     operations: list[dict[str, Any]] | None = None
     feedback_scope: FeedbackScope = FeedbackScope.PROJECT
 
+
+class AdminOperationRequest(BaseModel):
+    tenant_id: str | None = None
+    dry_run: bool = True
+    activate: bool = True
+    apply_retention: bool = False
+    force: bool = False
+
+
+class ModelRollbackRequest(BaseModel):
+    version: str = Field(min_length=1)
 
 class ConversationCreateRequest(BaseModel):
     tenant_id: str = "default"
@@ -1528,5 +1545,61 @@ def review_job(
     )
 
 
+@app.get("/admin/recognition-model/status")
+def recognition_model_admin_status(
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
+) -> dict[str, Any]:
+    _require_role(tenant, "admin")
+    return recognition_admin_status(manager.root)
+
+
+@app.post("/admin/recognition-model/operations")
+def run_recognition_model_operations(
+    request: AdminOperationRequest,
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
+):
+    _require_role(tenant, "admin")
+    if request.dry_run:
+        return run_admin_operations(
+            manager.root,
+            tenant_id=request.tenant_id,
+            dry_run=True,
+            activate=request.activate,
+            apply_retention=request.apply_retention,
+            force=request.force,
+        )
+    thread = threading.Thread(
+        target=run_admin_operations,
+        kwargs={
+            "root": manager.root,
+            "tenant_id": request.tenant_id,
+            "dry_run": False,
+            "activate": request.activate,
+            "apply_retention": request.apply_retention,
+            "force": request.force,
+        },
+        daemon=True,
+        name="recognition-model-admin-operation",
+    )
+    thread.start()
+    return JSONResponse(
+        status_code=202,
+        content={"status": "started"},
+    )
+
+
+@app.post("/admin/recognition-model/rollback")
+def rollback_recognition_model_version(
+    request: ModelRollbackRequest,
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
+) -> dict[str, Any]:
+    _require_role(tenant, "admin")
+    try:
+        return rollback_recognition_model(manager.root, request.version)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+if PORTAL_ADMIN_DIR.exists():
+    app.mount("/admin", StaticFiles(directory=PORTAL_ADMIN_DIR, html=True), name="portal-admin")
 if PORTAL_NESTING_DIR.exists():
     app.mount("/", StaticFiles(directory=PORTAL_NESTING_DIR, html=True), name="portal-nesting")
