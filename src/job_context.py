@@ -20,6 +20,7 @@ from src.units import UnitSystem
 @dataclass
 class JobContext:
     dxf_path: str = ""
+    tenant_id: str = "default"
     project_id: str = ""
     job_id: str = ""
     unit: UnitSystem = UnitSystem.METRIC

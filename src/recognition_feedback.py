@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from src.recognition_contracts import (
     RecognitionFeedback,
 )
 from src.recognition_memory import save_recognition_memory, update_recognition_memory
+from src.recognition_model import polygon_feature_vector
 
 
 def _digest_file(path: str | Path) -> str:
@@ -58,6 +60,10 @@ def _panel_snapshot(
         area=float(part.area),
         bounds=[float(value) for value in part.outer_polygon.bounds],
         geometry_wkt=part.outer_polygon.wkt,
+        features=polygon_feature_vector(
+            part.outer_polygon,
+            data.get("entity_type") or data.get("source"),
+        ),
         classification=data.get("classification"),
         source=data.get("source"),
     )
@@ -98,6 +104,10 @@ def _hole_snapshot(
         area=float(hole.area),
         bounds=[float(value) for value in hole.bounds],
         geometry_wkt=hole.wkt,
+        features=polygon_feature_vector(
+            hole,
+            (candidate or {}).get("entity_type"),
+        ),
         classification=None,
         source="hole",
     )
@@ -187,6 +197,7 @@ def build_recognition_feedback(
 
     return RecognitionFeedback(
         job_id=getattr(ctx, "job_id", None) or None,
+        tenant_id=ctx.tenant_id,
         project_id=ctx.project_id or Path(ctx.dxf_path).stem,
         drawing_digest=_digest_file(ctx.dxf_path),
         revision=revision,
@@ -214,6 +225,60 @@ def write_recognition_feedback(
     return path
 
 
+def _redact_snapshot(snapshot: CandidateSnapshot) -> CandidateSnapshot:
+    digest = hashlib.sha256(snapshot.target_id.encode("utf-8")).hexdigest()[:16]
+    return snapshot.model_copy(
+        update={
+            "target_id": f"anon-{digest}",
+            "entity_handle": None,
+            "layer": None,
+            "number_layer": None,
+            "entity_type": snapshot.entity_type,
+            "number": None,
+            "material_group": None,
+            "bounds": [],
+            "geometry_wkt": "",
+            "features": snapshot.features,
+            "classification": None,
+            "source": "global_redacted",
+        }
+    )
+
+
+def _redact_global_feedback(
+    feedback: RecognitionFeedback,
+) -> RecognitionFeedback:
+    digest = hashlib.sha256(
+        f"{feedback.tenant_id}:{feedback.drawing_digest}".encode("utf-8")
+    ).hexdigest()
+    return feedback.model_copy(
+        update={
+            "job_id": None,
+            "project_id": "",
+            "drawing_digest": digest,
+            "instruction": "global_learning_sample",
+            "operations": [
+                {
+                    "operation": item.get("operation"),
+                    "reason": "",
+                }
+                for item in feedback.operations
+            ],
+            "before_panels": [
+                _redact_snapshot(item) for item in feedback.before_panels
+            ],
+            "after_panels": [
+                _redact_snapshot(item) for item in feedback.after_panels
+            ],
+            "before_holes": [
+                _redact_snapshot(item) for item in feedback.before_holes
+            ],
+            "after_holes": [
+                _redact_snapshot(item) for item in feedback.after_holes
+            ],
+        }
+    )
+
 def _persist_feedback(
     ctx: JobContext,
     feedback: RecognitionFeedback,
@@ -223,9 +288,12 @@ def _persist_feedback(
         str(feedback.scope) == FeedbackScope.GLOBAL.value
         and ctx.global_feedback_dir is not None
     ):
-        ctx.global_feedback_dir.mkdir(parents=True, exist_ok=True)
-        (ctx.global_feedback_dir / path.name).write_text(
-            path.read_text(encoding="utf-8"),
+        safe_tenant = re.sub(r"[^A-Za-z0-9_-]+", "_", ctx.tenant_id or "default")
+        tenant_dir = ctx.global_feedback_dir / safe_tenant
+        tenant_dir.mkdir(parents=True, exist_ok=True)
+        redacted = _redact_global_feedback(feedback)
+        (tenant_dir / path.name).write_text(
+            redacted.to_json(indent=2),
             encoding="utf-8",
         )
     if (
@@ -284,6 +352,7 @@ def record_confirmation_feedback(
     )
     feedback = RecognitionFeedback(
         job_id=getattr(ctx, "job_id", None) or None,
+        tenant_id=ctx.tenant_id,
         project_id=ctx.project_id or Path(ctx.dxf_path).stem,
         drawing_digest=_digest_file(ctx.dxf_path),
         revision=len(ctx.recognition_feedback) + 1,

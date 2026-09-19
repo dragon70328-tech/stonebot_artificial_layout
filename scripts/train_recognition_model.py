@@ -33,6 +33,7 @@ def main() -> int:
         "--output-dir",
         default=str(PROJECT_ROOT / "recognition_models"),
     )
+    parser.add_argument("--tenant-id")
     parser.add_argument("--min-samples", type=int, default=20)
     parser.add_argument("--epochs", type=int, default=800)
     parser.add_argument("--learning-rate", type=float, default=0.08)
@@ -40,8 +41,14 @@ def main() -> int:
     parser.add_argument("--force-activate", action="store_true")
     args = parser.parse_args()
 
-    feedback_files = discover_feedback_files(args.feedback_dir)
-    samples = build_training_dataset(feedback_files)
+    feedback_files = discover_feedback_files(
+        args.feedback_dir,
+        tenant_id=args.tenant_id,
+    )
+    samples = build_training_dataset(
+        feedback_files,
+        tenant_id=args.tenant_id,
+    )
     model = train_recognition_model(
         samples,
         min_samples=args.min_samples,

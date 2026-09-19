@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from shapely.geometry import Polygon
@@ -104,7 +105,9 @@ def test_global_feedback_is_queued_without_local_memory_update(tmp_path):
     result = apply_correction_plan(context, plan)
 
     assert result.feedback_scope == "global"
-    assert (tmp_path / "global_feedback" / Path(result.feedback_artifact_path).name).exists()
+    assert (
+        tmp_path / "global_feedback" / "default" / Path(result.feedback_artifact_path).name
+    ).exists()
     assert not context.recognition_memory_path.exists()
     assert context.recognition_memory.get("feedback_count", 0) == 0
 
@@ -193,5 +196,10 @@ def test_global_confirmation_does_not_update_project_memory(tmp_path):
     )
 
     assert feedback.scope == "global"
-    assert (tmp_path / "global_feedback" / path.name).exists()
+    global_path = tmp_path / "global_feedback" / "default" / path.name
+    assert global_path.exists()
+    payload = json.loads(global_path.read_text(encoding="utf-8"))
+    assert payload["after_panels"][0]["geometry_wkt"] == ""
+    assert payload["after_panels"][0]["layer"] is None
+    assert payload["after_panels"][0]["features"]
     assert not context.recognition_memory_path.exists()

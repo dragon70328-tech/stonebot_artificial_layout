@@ -51,7 +51,15 @@ def _polygon_features(
     ]
 
 
+def polygon_feature_vector(
+    polygon: Polygon | None,
+    entity_type: str | None,
+) -> list[float]:
+    return _polygon_features(polygon, entity_type)
+
 def snapshot_features(snapshot: CandidateSnapshot) -> list[float]:
+    if snapshot.features is not None:
+        return [float(value) for value in snapshot.features]
     try:
         polygon = wkt.loads(snapshot.geometry_wkt)
     except Exception:
@@ -93,7 +101,11 @@ def load_feedback_file(path: str | Path) -> RecognitionFeedback:
     )
 
 
-def build_training_dataset(feedback_paths: list[str | Path]) -> list[dict[str, Any]]:
+def build_training_dataset(
+    feedback_paths: list[str | Path],
+    *,
+    tenant_id: str | None = None,
+) -> list[dict[str, Any]]:
     samples: list[dict[str, Any]] = []
     for path in sorted(Path(item) for item in feedback_paths):
         if path.suffix.lower() != ".json":
@@ -104,12 +116,20 @@ def build_training_dataset(feedback_paths: list[str | Path]) -> list[dict[str, A
             feedback = load_feedback_file(path)
         except Exception:
             continue
+        if tenant_id is not None and feedback.tenant_id != tenant_id:
+            continue
         samples.extend(feedback_to_samples(feedback))
     return samples
 
 
-def discover_feedback_files(directory: str | Path) -> list[Path]:
+def discover_feedback_files(
+    directory: str | Path,
+    *,
+    tenant_id: str | None = None,
+) -> list[Path]:
     root = Path(directory)
+    if tenant_id:
+        root = root / tenant_id
     if not root.exists():
         return []
     return sorted(root.rglob("*.json"))

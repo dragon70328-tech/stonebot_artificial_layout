@@ -67,3 +67,49 @@ python scripts/activate_recognition_model.py \
 ```
 
 默认再次执行质量门；紧急回滚可使用 `--force`。
+## 租户隔离
+
+全局反馈按租户保存：
+
+```text
+recognition_models/global_feedback/<tenant_id>/
+```
+
+未指定 `--tenant-id` 时训练会汇总所有已同意全局学习的租户。需要训练租户专属模型时：
+
+```bash
+python scripts/train_recognition_model.py \
+  --tenant-id tenant-a \
+  --feedback-dir recognition_models/global_feedback \
+  --output-dir recognition_models/tenants/tenant-a \
+  --activate
+```
+
+全局队列中的几何、图层、编号和材料信息会先脱敏，只保留训练特征、标签和匿名图纸摘要。
+
+## 反馈保留与归档
+
+默认只预演，不移动文件：
+
+```bash
+python scripts/prune_recognition_feedback.py \
+  --feedback-dir recognition_models/global_feedback \
+  --max-age-days 180 \
+  --max-files-per-tenant 500
+```
+
+确认结果后执行归档：
+
+```bash
+python scripts/prune_recognition_feedback.py \
+  --feedback-dir recognition_models/global_feedback \
+  --max-age-days 180 \
+  --max-files-per-tenant 500 \
+  --apply
+```
+
+归档目录按月份和租户组织：
+
+```text
+global_feedback/archive/YYYYMM/<tenant_id>/
+```

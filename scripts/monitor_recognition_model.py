@@ -31,6 +31,7 @@ def main() -> int:
         "--current",
         default=str(PROJECT_ROOT / "recognition_models" / "current.json"),
     )
+    parser.add_argument("--tenant-id")
     parser.add_argument("--candidate")
     parser.add_argument(
         "--output",
@@ -39,8 +40,14 @@ def main() -> int:
     parser.add_argument("--drift-threshold", type=float, default=1.0)
     args = parser.parse_args()
 
-    feedback_files = discover_feedback_files(args.feedback_dir)
-    samples = build_training_dataset(feedback_files)
+    feedback_files = discover_feedback_files(
+        args.feedback_dir,
+        tenant_id=args.tenant_id,
+    )
+    samples = build_training_dataset(
+        feedback_files,
+        tenant_id=args.tenant_id,
+    )
     current_model = load_recognition_model(args.current)
     current = evaluate_model_on_samples(current_model, samples)
     candidate = (

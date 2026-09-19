@@ -413,6 +413,7 @@ class JobManager:
             artifact_object_prefix=f"jobs/{job_id}/artifacts",
             session_store=self._session_store_for(request),
             output_dir=self._output_dir(request),
+            tenant_id=request.tenant_id,
             project_id=self._project_id(request),
             recognition_memory_path=(
                 self.tenant_store.project_dir(

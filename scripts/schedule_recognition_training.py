@@ -56,6 +56,7 @@ def main() -> int:
         "--output-dir",
         default=str(PROJECT_ROOT / "recognition_models"),
     )
+    parser.add_argument("--tenant-id")
     parser.add_argument("--min-new-feedback", type=int, default=20)
     parser.add_argument("--min-total-feedback", type=int, default=20)
     parser.add_argument("--max-interval-days", type=int, default=30)
@@ -79,7 +80,10 @@ def main() -> int:
         if monitoring_path.exists()
         else None
     )
-    feedback_files = discover_feedback_files(args.feedback_dir)
+    feedback_files = discover_feedback_files(
+        args.feedback_dir,
+        tenant_id=args.tenant_id,
+    )
     decision = evaluate_training_trigger(
         current_model=current_model,
         feedback_files=feedback_files,
@@ -105,7 +109,10 @@ def main() -> int:
         return 3
 
     try:
-        samples = build_training_dataset(feedback_files)
+        samples = build_training_dataset(
+            feedback_files,
+            tenant_id=args.tenant_id,
+        )
         candidate = train_recognition_model(
             samples,
             min_samples=args.min_samples,

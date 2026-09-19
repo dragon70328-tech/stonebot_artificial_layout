@@ -17,7 +17,7 @@ from src.recognition_model import (
 )
 
 
-def _feedback(index: int) -> RecognitionFeedback:
+def _feedback(index: int, tenant_id: str = "default") -> RecognitionFeedback:
     panel = Polygon([(0, 0), (100, 0), (100, 100), (0, 100)])
     hole = Point(50, 50).buffer(5, quad_segs=16)
     panel_snapshot = CandidateSnapshot(
@@ -42,6 +42,7 @@ def _feedback(index: int) -> RecognitionFeedback:
     )
     return RecognitionFeedback(
         feedback_id=f"feedback-{index}",
+        tenant_id=tenant_id,
         project_id=f"project-{index}",
         drawing_digest=f"drawing-{index}",
         revision=1,
@@ -162,3 +163,18 @@ def test_candidate_comparison_and_feature_drift():
     assert comparison["approved"] is False
     assert drift["drift_detected"] is True
     assert "log_area" in drift["drifted_features"]
+def test_training_dataset_can_filter_by_tenant(tmp_path):
+    first = _feedback(1, tenant_id="tenant-a")
+    second = _feedback(2, tenant_id="tenant-b")
+    first_path = tmp_path / "first.json"
+    second_path = tmp_path / "second.json"
+    first_path.write_text(first.to_json(), encoding="utf-8")
+    second_path.write_text(second.to_json(), encoding="utf-8")
+
+    samples = build_training_dataset(
+        [first_path, second_path],
+        tenant_id="tenant-a",
+    )
+
+    assert len(samples) == 2
+    assert {sample["project_id"] for sample in samples} == {"project-1"}

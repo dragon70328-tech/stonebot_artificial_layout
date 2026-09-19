@@ -62,6 +62,7 @@ class AgentRuntime:
         artifact_object_prefix: str | None = None,
         session_store: WorkflowSessionStore | SqliteWorkflowSessionStore | None = None,
         output_dir: Path | None = None,
+        tenant_id: str = "default",
         project_id: str | None = None,
         recognition_memory_path: Path | None = None,
         recognition_model_path: Path | None = None,
@@ -104,6 +105,7 @@ class AgentRuntime:
 
         self.context = JobContext(
             dxf_path=str(self.dxf_path),
+            tenant_id=tenant_id,
             project_id=self.project_id,
             unit=unit,
             nesting_profile=profile,

@@ -31,8 +31,9 @@ class CandidateSnapshot(Contract):
     number: str | None = None
     material_group: str | None = None
     area: float = Field(ge=0)
-    bounds: list[float] = Field(min_length=4, max_length=4)
-    geometry_wkt: str
+    bounds: list[float] = Field(default_factory=list)
+    geometry_wkt: str = ""
+    features: list[float] | None = None
     classification: dict | None = None
     source: str | None = None
 
@@ -42,6 +43,7 @@ class RecognitionFeedback(Contract):
 
     feedback_id: str = Field(default_factory=lambda: f"feedback-{uuid.uuid4().hex}")
     job_id: str | None = None
+    tenant_id: str = "default"
     project_id: str = ""
     drawing_digest: str
     revision: int = Field(ge=1)
