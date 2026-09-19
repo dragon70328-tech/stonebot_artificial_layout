@@ -1171,6 +1171,7 @@ def _extract_profile_panels(
                         "area": combined.area,
                         "handle": item.get("handle"),
                         "layer": source_candidate.get("layer"),
+                        "closure_gap": source_candidate.get("closure_gap", 0.0),
                         "source": "classified_closed_polygon",
                         "confidence": source_classification["confidence"],
                         "classification": source_classification,
@@ -1195,6 +1196,7 @@ def _extract_profile_panels(
                         "area": polygon.area,
                         "handle": source_candidate.get("handle"),
                         "layer": source_candidate.get("layer"),
+                        "closure_gap": source_candidate.get("closure_gap", 0.0),
                         "source": "classified_closed_polygon",
                         "confidence": source_classification["confidence"],
                         "classification": source_classification,
@@ -1755,6 +1757,7 @@ def read_dxf_with_profile(
                 "number_layer": number_layer,
                 "confidence": panel.get("confidence", 1.0),
                 "source": panel.get("source", "closed_polygon"),
+                "closure_gap": float(panel.get("closure_gap", 0.0) or 0.0),
                 "classification": panel.get("classification"),
             }
         )

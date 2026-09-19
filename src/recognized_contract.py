@@ -73,6 +73,7 @@ def parts_data_to_recognized_drawing(
                 properties={
                     "area": float(part.get("area", part["polygon"].area)),
                     "source": part.get("source", "closed_polygon"),
+                    "closure_gap": float(part.get("closure_gap", 0.0) or 0.0),
                     **(
                         {"classification": part["classification"]}
                         if part.get("classification") is not None

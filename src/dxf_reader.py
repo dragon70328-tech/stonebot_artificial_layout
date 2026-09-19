@@ -380,6 +380,22 @@ def _linetype_name(entity, doc):
     return lt_upper
 
 
+def _closure_gap(entity) -> float:
+    """返回轮廓两端点的缺口距离（已显式闭合返回 0）。"""
+    if entity.dxftype() not in ("LWPOLYLINE", "POLYLINE"):
+        return 0.0
+    if getattr(entity, "closed", False):
+        return 0.0
+    if isinstance(entity, LWPolyline):
+        points = _lwpolyline_points(entity)
+    else:
+        points = [(v.dxf.location.x, v.dxf.location.y) for v in entity.vertices]
+    if len(points) < 2:
+        return 0.0
+    first, last = points[0], points[-1]
+    return math.hypot(first[0] - last[0], first[1] - last[1])
+
+
 def extract_closed_entity_candidates(doc,
                                      panel_layers = None,
                                      exclude_layers = None,
@@ -434,6 +450,7 @@ def extract_closed_entity_candidates(doc,
                     "linetype": linetype,
                     "polygon": poly,
                     "entity_type": entity.dxftype(),
+                    "closure_gap": _closure_gap(entity),
                     "layer_hints": {
                         "panel": panel_hint,
                         "hole": hole_hint,

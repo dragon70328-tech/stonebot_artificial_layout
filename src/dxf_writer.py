@@ -10,6 +10,11 @@ from src.models import Sheet, NestingResult, Part
 RED = 1
 BLUE = 5
 WHITE = 7
+ORANGE = 30
+
+# 原图轮廓缺口超过该值（mm）就视为“不规范图纸”，
+# 在 CHECK_CLOSURE 图层标出提示人工确认。
+CLOSURE_WARNING_GAP = 5.0
 
 
 def _largest_polygon(geom):
@@ -271,7 +276,8 @@ def write_numbered_parts_dxf(parts: list, output_path: str,
     layer_outer = "OUTER"
     layer_holes = "HOLES"
     layer_numbers = "NUMBERS"
-    for name in (layer_outer, layer_holes, layer_numbers):
+    layer_check = "CHECK_CLOSURE"
+    for name in (layer_outer, layer_holes, layer_numbers, layer_check):
         doc.layers.add(name)
 
     for part in parts:
@@ -294,9 +300,30 @@ def write_numbered_parts_dxf(parts: list, output_path: str,
                 )
                 group_entities.append(entity)
 
-        cx, cy = _label_point(part)
         b = outer.bounds if outer is not None else part.outer_polygon.bounds
         bw, bh = b[2] - b[0], b[3] - b[1]
+
+        # 原图轮廓未闭合：额外在 CHECK_CLOSURE 图层用橙色标出，
+        # 并注明缺口大小，提示用户在原位 DXF 核对。
+        gap = float(getattr(part, "closure_gap", 0.0) or 0.0)
+        if gap > CLOSURE_WARNING_GAP and ext is not None:
+            warning_entity = msp.add_lwpolyline(
+                [(x, y) for x, y in ext.coords],
+                dxfattribs={"layer": layer_check, "color": ORANGE},
+            )
+            group_entities.append(warning_entity)
+            note = msp.add_text(
+                f"未闭合：缺口{gap:.0f}mm",
+                dxfattribs={"layer": layer_check, "color": ORANGE,
+                            "height": max(20.0, min(bh * 0.15, 60.0))},
+            )
+            note.set_placement(
+                (b[0], b[1] - max(30.0, bh * 0.2)),
+                align=TextEntityAlignment.MIDDLE_LEFT,
+            )
+            group_entities.append(note)
+
+        cx, cy = _label_point(part)
         height = max(30.0, min(min(bw, bh) * 0.25, 80.0))
         height = min(height, bw / (0.72 * max(len(part.number), 1)))
         label = msp.add_text(

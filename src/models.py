@@ -20,6 +20,7 @@ class Part:
     label_position: tuple[float, float] = (0.0, 0.0)  # 编号标注位置
     outer_handle: str | None = None       # 原DXF中外轮廓实体handle
     hole_handles: list[str] = field(default_factory=list)  # 原DXF中孔洞实体handle
+    closure_gap: float = 0.0         # 原图轮廓未闭合的缺口(mm)，0=正常闭合
 
     def __post_init__(self):
         if self.area == 0.0:

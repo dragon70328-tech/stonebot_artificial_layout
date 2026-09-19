@@ -77,6 +77,7 @@ from src.workflow import (
     validate_mixed_nesting,
     _split_normal_parts_by_group,
 )
+from src.nesting_reviewer import find_reductions
 from src.postprocess import estimate_kerf_material, validate_kerf_material
 from src.template_nesting import match_template, nest_from_template
 from src.artifact_store import ArtifactStore
@@ -148,6 +149,10 @@ def parse_args():
                    help="关闭边缘对齐")
     p.add_argument("--no-confirm", action="store_true",
                    help="排板完成后不询问板数，直接开始后处理")
+    p.add_argument("--no-auto-review", action="store_true",
+                   help="排板后不自动回看跨板减板机会")
+    p.add_argument("--review-budget", type=float, default=120.0,
+                   help="自动回看的总时间上限（秒，默认 120）")
     p.add_argument("--report-only", action="store_true",
                    help="仅完成排板并报告大板使用量，不执行后处理和输出文件")
     p.add_argument("--check-only", action="store_true",
@@ -687,6 +692,108 @@ def apply_cli_overrides_to_project_config(config, args) -> None:
 #  核心排板流程
 # ═══════════════════════════════════════════════════════════════
 
+def _forced_closure_parts(recognized_drawing, threshold_mm: float = 5.0):
+    """列出靠强制闭合才成形的轮廓（缺口 > 阈值）。
+
+    图纸不规范时，画图人只画了几条边，未闭合的缺口只能用
+    两端点直线补上。这种轮廓必须提示用户确认，不能静默当作规范图形。
+    """
+    forced = []
+    for panel in getattr(recognized_drawing, "panels", []) or []:
+        gap = float((panel.properties or {}).get("closure_gap", 0.0) or 0.0)
+        if gap > threshold_mm:
+            forced.append({
+                "number": panel.number,
+                "handle": panel.entity_handle,
+                "closure_gap": round(gap, 1),
+            })
+    return forced
+
+
+def _rebuild_material_summary(result, previous_summary):
+    """回看减板后按材料分组重算板数与出材率。"""
+    previous = {
+        item.get("material_group"): item
+        for item in (previous_summary or [])
+    }
+    buckets: dict[str, list] = {}
+    for sheet in result.sheets:
+        labels = {part.material_group or "ALL" for part in sheet.parts}
+        label = next(iter(labels)) if len(labels) == 1 else "MIXED"
+        buckets.setdefault(label, []).append(sheet)
+
+    ordered = [label for label in previous if label in buckets]
+    ordered += [label for label in buckets if label not in previous]
+    summary = []
+    for label in ordered:
+        sheets = buckets[label]
+        part_area = sum(part.area for sheet in sheets for part in sheet.parts)
+        sheet_area = sum(sheet.total_area for sheet in sheets)
+        prev = previous.get(label, {})
+        summary.append({
+            "material_group": label,
+            "part_count": sum(len(sheet.parts) for sheet in sheets),
+            "sheets": len(sheets),
+            "yield_rate": round(part_area / sheet_area * 100, 2) if sheet_area else 0.0,
+            "theoretical_min_sheets": prev.get("theoretical_min_sheets", 0),
+        })
+    return summary
+
+
+def _auto_reduce_sheets(result, profile, material_summary, manufacturing_metrics, *,
+                        max_reductions: int = 5,
+                        max_donor_attempts: int = 60,
+                        time_budget_s: float = 120.0,
+                        per_donor_time_s: float = 20.0):
+    """后处理后回看排板结果，把能合并的板并掉。
+
+    回看是增强项：失败、超时、校验不通过都不影响主流程，
+    只是保留原排板。
+    """
+    print(f"回看排板结果：{result.total_sheets} 张板，"
+          f"寻找可合并的大板...")
+    try:
+        candidates, reduced = find_reductions(
+            result,
+            profile=profile,
+            max_reductions=max_reductions,
+            max_donor_attempts=max_donor_attempts,
+            min_gap=profile.min_gap,
+            time_budget_s=time_budget_s,
+            per_donor_time_s=per_donor_time_s,
+        )
+    except Exception as exc:  # noqa: BLE001 - 回看不能影响主流程
+        print(f"回看跳过：{exc}")
+        return [], result, material_summary, manufacturing_metrics
+
+    if not candidates:
+        print("回看完成：未发现可合并的大板。")
+        return [], result, material_summary, manufacturing_metrics
+
+    # 合并后重新压实并校验，不通过就回退到原排板
+    try:
+        new_metrics = postprocess_result(reduced, profile)
+        errors = validate_mixed_nesting(reduced, min_gap=profile.min_gap)
+    except Exception as exc:  # noqa: BLE001
+        print(f"回看结果不可用（{exc}），保留原排板。")
+        return [], result, material_summary, manufacturing_metrics
+    if errors:
+        print(f"回看结果校验未通过（{len(errors)} 处），保留原排板。")
+        return [], result, material_summary, manufacturing_metrics
+
+    removed = [candidate.removed_sheet_index for candidate in candidates]
+    print(f"回看减板：共减少 {len(candidates)} 张板"
+          f"（原 sheet {removed}），"
+          f"{result.total_sheets} -> {reduced.total_sheets} 张，"
+          f"出材率 {result.yield_rate:.2f}% -> {reduced.yield_rate:.2f}%")
+    return (
+        candidates,
+        reduced,
+        _rebuild_material_summary(reduced, material_summary),
+        new_metrics,
+    )
+
+
 def run(dxf_path: str, width: float, height: float, thickness: float,
         unit: UnitSystem, trials: int, seed: int, budget: float,
         skip_unnumbered: bool, layers: list | None,
@@ -703,7 +810,9 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         input_limits=None,
         kerf_mm: float = 0.0,
         sheet_oversize: tuple[float, float] | None = None,
-        output_root: Path | None = None) -> None:
+        output_root: Path | None = None,
+        auto_review: bool = True,
+        review_budget_s: float = 120.0) -> None:
     """核心排板流程"""
     if profile is None:
         profile = PROFILE_MIN_SHEETS
@@ -757,6 +866,14 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     skipped_material_numbers = prepared.skipped_material_numbers
     groups = prepared.groups
     material_group_enabled = prepared.material_group_enabled
+    forced_closure_parts = _forced_closure_parts(recognized_drawing)
+    if forced_closure_parts:
+        preview = "，".join(
+            f"{item['number'] or item['handle']}(缺口 {item['closure_gap']:.0f}mm)"
+            for item in forced_closure_parts[:5]
+        )
+        print(f"注意：{len(forced_closure_parts)} 个轮廓未闭合，已按两端点直线强制闭合，"
+              f"请核对原位 DXF：{preview}")
 
     session.transition(WorkflowStage.ANALYZED, summary={"dxf": dxf_path})
     session.transition(
@@ -903,6 +1020,16 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         }
     else:
         manufacturing_metrics = postprocess_result(result, profile)
+
+    # ── 回看排板结果：基于压实后的图形，能合并的少量板就合并 ──
+    review_candidates: list = []
+    if auto_review and not template_result and special_w is None:
+        (
+            review_candidates, result, material_summary, manufacturing_metrics,
+        ) = _auto_reduce_sheets(
+            result, profile, material_summary, manufacturing_metrics,
+            time_budget_s=review_budget_s,
+        )
     kerf_metrics = (
         estimate_kerf_material(result.sheets, kerf_mm)
         if kerf_mm > 0 else None
@@ -933,6 +1060,8 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         special_w, special_h, effective_thickness, unit_label,
         errors, manufacturing_metrics, sheet_oversize=(oversize_x, oversize_y),
     )
+    check_payload["forced_closure_count"] = len(forced_closure_parts)
+    check_payload["forced_closure_parts"] = forced_closure_parts
     if template_result:
         postprocess_warnings = []
         check_payload["postprocess_warning_count"] = 0
@@ -1001,6 +1130,17 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         kerf_metrics=kerf_metrics,
         sheet_oversize=(oversize_x, oversize_y),
     )
+    report["forced_closure_parts"] = forced_closure_parts
+    report["auto_review"] = {
+        "reduced_sheets": len(review_candidates),
+        "removed_sheet_indices": [
+            candidate.removed_sheet_index for candidate in review_candidates
+        ],
+        "moved_parts": [
+            number for candidate in review_candidates
+            for number in candidate.moved_parts
+        ],
+    }
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
@@ -1294,6 +1434,8 @@ def main():
         pairing=args.pairing,
         kerf_mm=args.kerf,
         sheet_oversize=sheet_oversize,
+        auto_review=not args.no_auto_review,
+        review_budget_s=args.review_budget,
     )
     if args.check_only:
         sys.exit(check_only_exit_code(outcome))

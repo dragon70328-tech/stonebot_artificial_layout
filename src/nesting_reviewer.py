@@ -12,17 +12,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
+import math
+import re
+import time
 from typing import Iterable
 
 import ezdxf
 from shapely.affinity import rotate, translate
 from shapely.geometry import Point, Polygon
 from shapely.ops import unary_union
+from shapely.prepared import prep
 
 from src.models import NestingResult, Part, Sheet
 
 
 EPS = 1e-3
+_MATERIAL_PREFIX = re.compile(r"^(?P<prefix>\d{2}B)")
 
 
 @dataclass
@@ -58,9 +63,17 @@ def _sheet_rect(sheet: Sheet) -> Polygon:
     ])
 
 
-def free_polygons_for_sheet(sheet: Sheet) -> list[Polygon]:
-    """Return the actual unused area of a sheet as polygons."""
-    occupied = unary_union([part.outer_polygon for part in sheet.parts])
+def free_polygons_for_sheet(sheet: Sheet, clearance: float = 0.0) -> list[Polygon]:
+    """Return the actual unused area of a sheet as polygons.
+
+    ``clearance`` 会围绕已有零件外扩后再挖空，保证新放入的零件与它们保持
+    至少该间距（桥梁加工的锯缝/间距约束）。
+    """
+    solids = [
+        part.outer_polygon.buffer(clearance) if clearance > EPS else part.outer_polygon
+        for part in sheet.parts
+    ]
+    occupied = unary_union(solids)
     return _as_polygons(_sheet_rect(sheet).difference(occupied))
 
 
@@ -146,8 +159,15 @@ def _placements_for_part(
     part: Part,
     free_polys: list[Polygon],
     rotations: Iterable[int],
+    limit: int | None = None,
 ) -> list[Part]:
     placements: list[Part] = []
+    # 预准备每个空闲区一次：buffer/covers 结果在多次候选点测试间复用，
+    # 避免对每个候选点重复构建 buffer（这是回看搜索的主要热点）。
+    prepared_polys = [
+        (free_poly, prep(free_poly.buffer(0.01)))
+        for free_poly in free_polys
+    ]
     for angle in rotations:
         rotated = part.outer_polygon
         if angle:
@@ -155,15 +175,17 @@ def _placements_for_part(
         minx, miny, maxx, maxy = rotated.bounds
         width = maxx - minx
         height = maxy - miny
-        for free_poly in free_polys:
+        for free_poly, prepared in prepared_polys:
             for x, y in _candidate_offsets(free_poly, width, height):
                 translated = translate(
                     rotated,
                     xoff=x - minx,
                     yoff=y - miny,
                 )
-                if free_poly.buffer(0.01).covers(translated):
+                if prepared.covers(translated):
                     placements.append(_transform_part(part, angle, x, y))
+                    if limit is not None and len(placements) >= limit:
+                        return placements
     return placements
 
 
@@ -171,13 +193,18 @@ def _placements_for_part(
 class _TargetState:
     sheet: Sheet
     free_polys: list[Polygon]
+    clearance: float = 0.0
 
     def with_part(self, part: Part) -> "_TargetState":
         sheet = replace(self.sheet, parts=[*self.sheet.parts, part])
+        solid = (
+            part.outer_polygon.buffer(self.clearance)
+            if self.clearance > EPS else part.outer_polygon
+        )
         free_polys: list[Polygon] = []
         for free_poly in self.free_polys:
-            free_polys.extend(_as_polygons(free_poly.difference(part.outer_polygon)))
-        return _TargetState(sheet, free_polys)
+            free_polys.extend(_as_polygons(free_poly.difference(solid)))
+        return _TargetState(sheet, free_polys, self.clearance)
 
 
 def _try_place_all(
@@ -186,18 +213,26 @@ def _try_place_all(
     rotations: list[int],
     *,
     nodes_left: list[int],
+    deadline: float | None = None,
+    placement_limit: int | None = 40,
 ) -> list[_TargetState] | None:
     if not parts:
         return states
     if nodes_left[0] <= 0:
         return None
+    if deadline is not None and time.monotonic() >= deadline:
+        return None
 
     part = parts[0]
     for state_index, state in enumerate(states):
-        candidates = _placements_for_part(part, state.free_polys, rotations)
+        candidates = _placements_for_part(
+            part, state.free_polys, rotations, limit=placement_limit,
+        )
         # Prefer the first valid placements, but still search alternatives.
-        for candidate in candidates[:40]:
+        for candidate in candidates:
             nodes_left[0] -= 1
+            if deadline is not None and time.monotonic() >= deadline:
+                return None
             next_states = list(states)
             next_states[state_index] = state.with_part(candidate)
             completed = _try_place_all(
@@ -205,6 +240,8 @@ def _try_place_all(
                 next_states,
                 rotations,
                 nodes_left=nodes_left,
+                deadline=deadline,
+                placement_limit=placement_limit,
             )
             if completed is not None:
                 return completed
@@ -213,19 +250,55 @@ def _try_place_all(
     return None
 
 
+MAX_REVIEW_ROTATIONS = 8
+
+
+def _edge_rotation_candidates(parts: list[Part]) -> list[float]:
+    """回看允许的角度：保留零件原朝向，再加少量最长边方向。
+
+    水刀允许任意角度，但回看时不能穷举 1°。这里只取"原朝向 + 该板零件
+    最长边方向"的少量角度，既给贴合留出余地，又把搜索量控制在可控范围。
+    """
+    edges: list[tuple[float, float]] = []
+    for part in parts:
+        coords = list(part.outer_polygon.exterior.coords)
+        for start, end in zip(coords, coords[1:]):
+            dx = float(end[0] - start[0])
+            dy = float(end[1] - start[1])
+            length = math.hypot(dx, dy)
+            if length < EPS:
+                continue
+            angle = round(math.degrees(math.atan2(dy, dx)) % 180.0, 2)
+            edges.append((length, angle))
+    angles: list[float] = [0.0]
+    for _, angle in sorted(edges, key=lambda item: -item[0]):
+        if len(angles) >= MAX_REVIEW_ROTATIONS:
+            break
+        if all(abs(angle - existing) > 0.5 for existing in angles):
+            angles.append(angle)
+    return angles
+
+
 def _try_reduce_donor(
     donor: Sheet,
     result: NestingResult,
     profile,
+    clearance: float = 0.0,
+    deadline: float | None = None,
+    max_nodes: int = 20000,
+    node_counter: list[int] | None = None,
+    placement_limit: int = 40,
 ) -> ReductionCandidate | None:
-    rotations = [0, 90, 180, 270] if profile is None else list(profile.rotation)
     if profile is not None and profile.arbitrary_rotation:
-        return None
+        rotations = _edge_rotation_candidates(donor.parts)
+    else:
+        rotations = [0, 90, 180, 270] if profile is None else list(profile.rotation)
 
     states = [
         _TargetState(
             sheet=replace(sheet),
-            free_polys=free_polygons_for_sheet(sheet),
+            free_polys=free_polygons_for_sheet(sheet, clearance),
+            clearance=clearance,
         )
         for sheet in result.sheets
         if sheet.index != donor.index and _compatible_target(donor, sheet, profile)
@@ -234,7 +307,13 @@ def _try_reduce_donor(
         return None
 
     parts = sorted(donor.parts, key=lambda part: part.area, reverse=True)
-    final_states = _try_place_all(parts, states, rotations, nodes_left=[20000])
+    nodes_left = [max_nodes]
+    final_states = _try_place_all(
+        parts, states, rotations,
+        nodes_left=nodes_left, deadline=deadline, placement_limit=placement_limit,
+    )
+    if node_counter is not None:
+        node_counter.append(max_nodes - nodes_left[0])
     if final_states is None:
         return None
 
@@ -274,6 +353,12 @@ def find_reductions(
     *,
     profile=None,
     max_reductions: int = 3,
+    max_donor_parts: int | None = None,
+    max_donor_fill_ratio: float | None = None,
+    max_donor_attempts: int | None = None,
+    min_gap: float = 0.0,
+    time_budget_s: float | None = None,
+    per_donor_time_s: float | None = None,
 ) -> tuple[list[ReductionCandidate], NestingResult]:
     """Find a sequence of local sheet reductions.
 
@@ -282,14 +367,39 @@ def find_reductions(
     """
     current = result
     candidates: list[ReductionCandidate] = []
+    clearance = max(float(min_gap), 0.0)
+    deadline = (
+        time.monotonic() + float(time_budget_s)
+        if time_budget_s is not None else None
+    )
     for _ in range(max_reductions):
+        if deadline is not None and time.monotonic() >= deadline:
+            break
         donors = sorted(
             current.sheets,
             key=lambda sheet: (len(sheet.parts), sum(part.area for part in sheet.parts)),
         )
         candidate = None
+        attempts = 0
         for donor in donors:
-            candidate = _try_reduce_donor(donor, current, profile)
+            if max_donor_parts is not None and len(donor.parts) > max_donor_parts:
+                continue
+            if max_donor_fill_ratio is not None:
+                fill_ratio = sum(part.area for part in donor.parts) / max(donor.total_area, EPS)
+                if fill_ratio > max_donor_fill_ratio:
+                    continue
+            if max_donor_attempts is not None and attempts >= max_donor_attempts:
+                break
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+            attempts += 1
+            donor_deadline = deadline
+            if per_donor_time_s is not None:
+                single = time.monotonic() + float(per_donor_time_s)
+                donor_deadline = single if donor_deadline is None else min(donor_deadline, single)
+            candidate = _try_reduce_donor(
+                donor, current, profile, clearance, deadline=donor_deadline,
+            )
             if candidate is not None:
                 break
         if candidate is None:
@@ -437,6 +547,9 @@ def load_nested_dxf(path: str | Path, *, thickness: float = 20.0) -> NestingResu
             if target.number:
                 continue
             target.number = entity.dxf.text
+            match = _MATERIAL_PREFIX.match(target.number)
+            if match:
+                target.material_group = match.group("prefix")
 
     for sheet in sheets:
         sheet.parts = [part for part in sheet.parts if part.number]

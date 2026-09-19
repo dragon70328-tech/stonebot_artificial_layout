@@ -76,3 +76,50 @@ def test_run_uses_profile_read_path_when_drawing_profile_matched(tmp_path):
         report_only=True,
         quick=True,
     )
+
+
+def test_forced_closure_parts_flags_large_gap(tmp_path):
+    path = tmp_path / "force_closed.dxf"
+    doc = ezdxf.new("R2010")
+    doc.layers.add("PANEL")
+    msp = doc.modelspace()
+    msp.add_lwpolyline(
+        [(0, 0), (1000, 0), (1000, 1000), (0, 1000)],
+        dxfattribs={"layer": "PANEL"},
+    )
+    doc.saveas(path)
+
+    from shapely.geometry import Polygon
+
+    from src.recognized_contract import parts_data_to_recognized_drawing
+
+    polygon = Polygon([(0, 0), (1000, 0), (1000, 1000), (0, 1000)])
+    parts_data = [
+        {
+            "index": 0,
+            "polygon": polygon,
+            "outer_polygon": polygon,
+            "holes": [],
+            "area": polygon.area,
+            "original_number": "02B-17",
+            "closure_gap": 704.25,
+            "confidence": 0.9,
+        },
+        {
+            "index": 1,
+            "polygon": polygon.buffer(0),
+            "outer_polygon": polygon,
+            "holes": [],
+            "area": polygon.area,
+            "original_number": "02B-18",
+            "closure_gap": 0.0,
+            "confidence": 1.0,
+        },
+    ]
+    drawing = parts_data_to_recognized_drawing(parts_data, str(path))
+
+    forced = app._forced_closure_parts(drawing)
+
+    assert forced == [
+        {"number": "02B-17", "handle": None, "closure_gap": 704.2},
+    ]

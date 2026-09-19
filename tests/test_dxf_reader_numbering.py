@@ -414,3 +414,60 @@ def test_large_closure_tolerance_does_not_collapse_closed_polyline(tmp_path):
 
     assert len(candidates) == 1
     assert candidates[0]["polygon"].area == 1000000.0
+
+
+def test_extract_closed_entity_candidates_records_closure_gap(tmp_path):
+    path = tmp_path / "open_quad.dxf"
+    doc = ezdxf.new("R2010")
+    doc.layers.add("PANEL")
+    msp = doc.modelspace()
+    # 4 个角点都画了，但没有画回第一个点：缺口约 700mm
+    msp.add_lwpolyline(
+        [(0, 0), (0, 600), (500, 800), (500, 1200)],
+        dxfattribs={"layer": "PANEL"},
+    )
+    doc.saveas(path)
+    doc = ezdxf.readfile(path)
+
+    loose = extract_closed_entity_candidates(
+        doc,
+        panel_layers=["PANEL"],
+        exclude_linetypes=[],
+        closed_tolerance=1500.0,
+        layer_filter_mode="hint",
+    )
+    strict = extract_closed_entity_candidates(
+        doc,
+        panel_layers=["PANEL"],
+        exclude_linetypes=[],
+        closed_tolerance=10.0,
+        layer_filter_mode="hint",
+    )
+
+    assert len(loose) == 1
+    assert abs(loose[0]["closure_gap"] - 1300.0) < 0.5
+    assert strict == []
+
+
+def test_closed_entity_candidates_report_zero_gap_for_closed_polyline(tmp_path):
+    path = tmp_path / "closed_quad.dxf"
+    doc = ezdxf.new("R2010")
+    doc.layers.add("PANEL")
+    msp = doc.modelspace()
+    entity = msp.add_lwpolyline(
+        [(0, 0), (100, 0), (100, 100), (0, 100)],
+        dxfattribs={"layer": "PANEL"},
+    )
+    entity.closed = True
+    doc.saveas(path)
+    doc = ezdxf.readfile(path)
+
+    candidates = extract_closed_entity_candidates(
+        doc,
+        panel_layers=["PANEL"],
+        exclude_linetypes=[],
+        closed_tolerance=1500.0,
+        layer_filter_mode="hint",
+    )
+    assert len(candidates) == 1
+    assert candidates[0]["closure_gap"] == 0.0
