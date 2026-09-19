@@ -21,6 +21,7 @@ from src.units import UnitSystem
 class JobContext:
     dxf_path: str = ""
     project_id: str = ""
+    job_id: str = ""
     unit: UnitSystem = UnitSystem.METRIC
     nesting_profile: NestingProfile | None = None
     sheet_spec: SheetSpec | None = None
@@ -45,6 +46,9 @@ class JobContext:
     validation_errors: list[str] = field(default_factory=list)
     correction_revision: int = 0
     correction_history: list[dict[str, Any]] = field(default_factory=list)
+    recognition_feedback: list[dict[str, Any]] = field(default_factory=list)
+    recognition_memory: dict[str, Any] = field(default_factory=dict)
+    recognition_memory_path: Path | None = None
 
     trials: int = 1
     seed: int = 0
@@ -54,6 +58,7 @@ class JobContext:
     skip_unnumbered: bool = True
 
     output_dir: Path | None = None
+    global_feedback_dir: Path | None = None
     numbered_dxf_path: Path | None = None
     nested_dxf_path: Path | None = None
     report_path: Path | None = None
@@ -105,6 +110,11 @@ class JobContext:
             },
             "correction_revision": self.correction_revision,
             "correction_history": self.correction_history,
+            "recognition_feedback_count": len(self.recognition_feedback),
+            "recognition_memory": {
+                "feedback_count": int(self.recognition_memory.get("feedback_count", 0)),
+                "updated_at": self.recognition_memory.get("updated_at"),
+            },
             "nesting": (
                 {
                     "total_sheets": result.total_sheets,

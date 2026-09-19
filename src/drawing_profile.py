@@ -24,6 +24,7 @@ from shapely.ops import polygonize, unary_union
 from shapely.strtree import STRtree
 
 from .entity_classifier import classify_candidates
+from .recognition_memory import recognition_memory_hints
 from .dxf_reader import (
     _build_part_hierarchy,
     _entity_to_polygon,
@@ -1020,6 +1021,7 @@ def _extract_profile_panels(
     panel_layer_override: list[str] | None = None,
     exclude_layers: list[str] | None = None,
     label_boxes: list[Polygon | None] | None = None,
+    recognition_memory: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     panel_layer = profile.panel_layer or None
     panel_layers = (
@@ -1102,6 +1104,7 @@ def _extract_profile_panels(
         exclude_layers=exclude_layers,
         small_area_threshold=profile.small_area_threshold,
         label_boxes=label_boxes,
+        recognition_memory=recognition_memory,
     )
     accepted_candidates = [
         candidate
@@ -1350,8 +1353,11 @@ def _collect_profile_number_texts(
     doc: ezdxf.document.Drawing,
     profile: DrawingProfile,
     exclude_layers: list[str] | None = None,
+    recognition_memory: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    memory_hints = recognition_memory_hints(recognition_memory)
     allowed_layers = set(profile.number_layers)
+    allowed_layers.update(memory_hints.get("number_layers", []))
     excluded_layers = {value for value in (exclude_layers or [])}
     pattern = profile.compiled_label_pattern()
     preferred: list[dict[str, Any]] = []
@@ -1656,6 +1662,7 @@ def read_dxf_with_profile(
     profile: DrawingProfile,
     panel_layers: list[str] | None = None,
     exclude_layers: list[str] | None = None,
+    recognition_memory: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], ezdxf.document.Drawing]:
     """按图纸画像读取 DXF 并返回与 read_dxf 相同结构的 parts_data。
 
@@ -1668,6 +1675,7 @@ def read_dxf_with_profile(
         doc,
         profile,
         exclude_layers=exclude_layers,
+        recognition_memory=recognition_memory,
     )
     panels = _extract_profile_panels(
         doc,
@@ -1675,6 +1683,7 @@ def read_dxf_with_profile(
         panel_layer_override=panel_layers,
         exclude_layers=exclude_layers,
         label_boxes=[text.get("box") for text in texts],
+        recognition_memory=recognition_memory,
     )
     zone_texts = _collect_zone_texts(
         doc,
@@ -1699,6 +1708,7 @@ def read_dxf_with_profile(
 
     parts_data: list[dict[str, Any]] = []
     for panel in panels:
+        number_layer = None
         if panel.get("original_number") is not None:
             original_number = panel["original_number"]
         elif profile.network_mode:
@@ -1711,8 +1721,10 @@ def read_dxf_with_profile(
             text_indexes = assignments.get(panel["index"], []) if assignments else []
             original_number = None
             if text_indexes:
+                number_text = texts[text_indexes[0]]
+                number_layer = number_text.get("layer")
                 original_number = _normalize_label(
-                    texts[text_indexes[0]]["text"],
+                    number_text["text"],
                     profile,
                 )
 
@@ -1729,6 +1741,7 @@ def read_dxf_with_profile(
                 "outer_handle": panel.get("handle"),
                 "hole_handles": panel.get("hole_handles", []),
                 "layer": panel.get("layer"),
+                "number_layer": number_layer,
                 "confidence": panel.get("confidence", 1.0),
                 "source": panel.get("source", "closed_polygon"),
                 "classification": panel.get("classification"),

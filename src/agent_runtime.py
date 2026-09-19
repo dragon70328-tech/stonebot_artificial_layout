@@ -23,6 +23,7 @@ from src.artifact_store import ArtifactStore
 from src.correction_contracts import CorrectionPlan
 from src.drawing_corrections import build_correction_context
 from src.job_context import JobContext
+from src.recognition_memory import load_recognition_memory
 from src.nesting_contracts import ProcessPolicy, SheetSpec
 from src.object_store import ObjectStore
 from src.session_store import SqliteWorkflowSessionStore, WorkflowSessionStore
@@ -58,6 +59,9 @@ class AgentRuntime:
         artifact_object_prefix: str | None = None,
         session_store: WorkflowSessionStore | SqliteWorkflowSessionStore | None = None,
         output_dir: Path | None = None,
+        project_id: str | None = None,
+        recognition_memory_path: Path | None = None,
+        global_feedback_dir: Path | None = None,
         session_id: str | None = None,
         restore_session: WorkflowSession | None = None,
     ) -> None:
@@ -67,6 +71,20 @@ class AgentRuntime:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         stem = self.dxf_path.stem
+        self.project_id = project_id or stem
+        self.recognition_memory_path = (
+            Path(recognition_memory_path)
+            if recognition_memory_path is not None
+            else self.output_dir / "recognition_memory.json"
+        )
+        self.global_feedback_dir = (
+            Path(global_feedback_dir)
+            if global_feedback_dir is not None
+            else self.output_dir / "global_feedback"
+        )
+        self.recognition_memory = load_recognition_memory(
+            self.recognition_memory_path
+        )
         self.numbered_path = str(self.output_dir / f"{stem}_numbered_原位.dxf")
         suffix = f"{int(width_mm)}x{int(height_mm)}"
         self.nested_path = str(self.output_dir / f"{stem}_nested_{suffix}.dxf")
@@ -74,6 +92,7 @@ class AgentRuntime:
 
         self.context = JobContext(
             dxf_path=str(self.dxf_path),
+            project_id=self.project_id,
             unit=unit,
             nesting_profile=profile,
             sheet_spec=sheet_spec,
@@ -88,12 +107,16 @@ class AgentRuntime:
             pairing=pairing,
             skip_unnumbered=skip_unnumbered,
             output_dir=self.output_dir,
+            recognition_memory=self.recognition_memory,
+            recognition_memory_path=self.recognition_memory_path,
+            global_feedback_dir=self.global_feedback_dir,
         )
 
         self.session_id = (
             session_id
             or f"agent-{stem}-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
         )
+        self.context.job_id = self.session_id
         self.session = restore_session or WorkflowSession(
             session_id=self.session_id
         )
@@ -318,6 +341,11 @@ class AgentRuntime:
             diff_path = correction.get("diff_artifact_path")
             if revision is not None and diff_path:
                 candidates[f"correction_diff_r{revision}"] = Path(diff_path)
+            feedback_path = correction.get("feedback_artifact_path")
+            if revision is not None and feedback_path:
+                candidates[f"recognition_feedback_r{revision}"] = Path(
+                    feedback_path
+                )
         project_id = self.context.project_id or self.dxf_path.stem
         for key, path in candidates.items():
             if path is None or not Path(path).exists():

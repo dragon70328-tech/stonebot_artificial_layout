@@ -40,6 +40,7 @@ from src.dxf_writer import write_nested_dxf
 from src.input_guard import DXFInputLimits, check_dxf_file
 from src.job_repository import build_job_repository
 from src.llm_client import LLMError
+from src.recognition_contracts import FeedbackScope
 from src.nesting_contracts import (
     OversizeMode,
     ProcessPolicy,
@@ -141,6 +142,7 @@ class CorrectionRequest(BaseModel):
     instruction: str = Field(min_length=1)
     target_ids: list[str] = Field(default_factory=list)
     operations: list[dict[str, Any]] | None = None
+    feedback_scope: FeedbackScope = FeedbackScope.PROJECT
 
 
 class ConversationCreateRequest(BaseModel):
@@ -410,6 +412,22 @@ class JobManager:
             artifact_object_prefix=f"jobs/{job_id}/artifacts",
             session_store=self._session_store_for(request),
             output_dir=self._output_dir(request),
+            project_id=self._project_id(request),
+            recognition_memory_path=(
+                self.tenant_store.project_dir(
+                    request.tenant_id,
+                    self._project_id(request),
+                )
+                / "recognition_memory.json"
+            ),
+            global_feedback_dir=(
+                self.tenant_store.project_dir(
+                    request.tenant_id,
+                    self._project_id(request),
+                )
+                / "learning_feedback"
+                / "global"
+            ),
             session_id=job_id,
             restore_session=restore_session,
         )
@@ -1061,14 +1079,16 @@ def respond_to_conversation(
                 if key in JOB_PARAMETER_KEYS
             }
         )
-    if (
-        intent.get("action") == "correct_drawing"
-        and latest_parameters.get("target_ids") is not None
-    ):
-        intent["target_ids"] = [
-            str(item)
-            for item in latest_parameters.get("target_ids", [])
-        ]
+    if intent.get("action") == "correct_drawing":
+        if latest_parameters.get("target_ids") is not None:
+            intent["target_ids"] = [
+                str(item)
+                for item in latest_parameters.get("target_ids", [])
+            ]
+        if latest_parameters.get("feedback_scope") is not None:
+            intent["feedback_scope"] = str(
+                latest_parameters.get("feedback_scope")
+            )
 
     action = intent["action"]
     try:
@@ -1167,6 +1187,13 @@ def respond_to_conversation(
                     for item in intent.get("target_ids", [])
                 ],
             )
+            feedback_scope = FeedbackScope(
+                str(intent.get("feedback_scope", "project"))
+            )
+            if hasattr(plan, "model_copy"):
+                plan = plan.model_copy(update={"feedback_scope": feedback_scope})
+            else:
+                plan.feedback_scope = feedback_scope
             correction = manager.correct(job_id, plan)
             result_payload = runtime.status()
             result_payload["correction"] = correction
@@ -1389,12 +1416,16 @@ def correct_job(
             plan = CorrectionPlan(
                 instruction=request.instruction,
                 operations=request.operations,
+                feedback_scope=request.feedback_scope,
             )
         else:
             plan = CorrectionPlanner().plan(
                 request.instruction,
                 context=build_correction_context(runtime.context),
                 target_ids=request.target_ids,
+            )
+            plan = plan.model_copy(
+                update={"feedback_scope": request.feedback_scope}
             )
         correction = manager.correct(job_id, plan)
     except LLMError as exc:

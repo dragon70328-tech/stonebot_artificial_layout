@@ -15,6 +15,7 @@ from shapely.geometry import Polygon
 from shapely.strtree import STRtree
 
 from src.dxf_reader import _is_contained_as_hole
+from src.recognition_memory import recognition_memory_hints
 
 
 def _normalized_layers(values: Iterable[str] | None) -> set[str]:
@@ -99,6 +100,7 @@ def classify_candidates(
     exclude_layers: Iterable[str] | None = None,
     small_area_threshold: float = 100.0,
     label_boxes: Iterable[Polygon | None] | None = None,
+    recognition_memory: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Annotate candidates with role scores and evidence.
 
@@ -106,9 +108,16 @@ def classify_candidates(
     is not mutated, and the classification is deterministic for the same
     geometry, layer hints and text boxes.
     """
+    memory_hints = recognition_memory_hints(recognition_memory)
     panel_layer_set = _normalized_layers(panel_layers)
     hole_layer_set = _normalized_layers(hole_layers)
     excluded_layer_set = _normalized_layers(exclude_layers)
+    panel_layer_set.update(
+        _normalized_layers(memory_hints.get("panel_layers", []))
+    )
+    hole_layer_set.update(
+        _normalized_layers(memory_hints.get("hole_layers", []))
+    )
     text_boxes = [box for box in (label_boxes or []) if box is not None]
     configured_layer_hints = bool(
         panel_layer_set or hole_layer_set or excluded_layer_set
@@ -244,6 +253,19 @@ def classify_candidates(
         if features["compactness"] > 0.92 and not is_circle:
             hole_score += 0.05
             reasons.append("geometry:roundish")
+
+        panel_area_mean = float(memory_hints.get("panel_area_mean", 0.0))
+        hole_area_mean = float(memory_hints.get("hole_area_mean", 0.0))
+        if panel_area_mean > 0.0:
+            ratio = features["area"] / panel_area_mean
+            if 0.25 <= ratio <= 4.0:
+                panel_score += 0.06
+                reasons.append("memory:panel_area_similar")
+        if hole_area_mean > 0.0:
+            ratio = features["area"] / hole_area_mean
+            if 0.25 <= ratio <= 4.0:
+                hole_score += 0.06
+                reasons.append("memory:hole_area_similar")
 
         # Explicit hints are strong but not absolute; a small circle on a panel
         # layer remains a hole candidate, and a large unknown-layer outline can

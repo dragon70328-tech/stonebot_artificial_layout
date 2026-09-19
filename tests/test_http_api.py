@@ -218,6 +218,7 @@ def test_correction_endpoint_applies_structured_plan(tmp_path, monkeypatch):
         "/jobs/job-correction/corrections",
         json={
             "instruction": "把 P-1 改成 P-1A",
+            "feedback_scope": "global",
             "operations": [
                 {
                     "operation": "rename_number",
@@ -232,6 +233,7 @@ def test_correction_endpoint_applies_structured_plan(tmp_path, monkeypatch):
     assert response.json()["correction"]["revision"] == 1
     assert manager.corrected[0] == "job-correction"
     assert manager.corrected[1].operations[0].value == "P-1A"
+    assert manager.corrected[1].feedback_scope == "global"
 
 
 def test_drawing_preview_endpoint_returns_clickable_model(tmp_path, monkeypatch):
@@ -282,6 +284,8 @@ def test_nesting_frontend_has_action_contract(tmp_path, monkeypatch):
         "correction-targets",
         "correction-target-select",
         "correction-target-summary",
+        "correction-feedback-scope",
+        "learning-memory-summary",
         "drawing-preview",
         "drawing-preview-svg",
         "drawing-preview-fit",

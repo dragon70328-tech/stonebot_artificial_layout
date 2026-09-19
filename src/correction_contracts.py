@@ -11,6 +11,7 @@ from enum import Enum
 from pydantic import Field, model_validator
 
 from src.contracts import ActorKind, Contract
+from src.recognition_contracts import FeedbackScope
 
 
 class CorrectionOperationType(str, Enum):
@@ -76,6 +77,7 @@ class CorrectionPlan(Contract):
     instruction: str = Field(min_length=1)
     operations: list[CorrectionOperation] = Field(min_length=1)
     created_by: ActorKind = ActorKind.AI
+    feedback_scope: FeedbackScope = FeedbackScope.PROJECT
 
     @model_validator(mode="after")
     def reject_noop_swap(self) -> "CorrectionPlan":
@@ -100,3 +102,6 @@ class CorrectionResult(Contract):
     operations_applied: list[str] = Field(default_factory=list)
     removed_part_ids: list[int] = Field(default_factory=list)
     part_numbers: list[str] = Field(default_factory=list)
+    feedback_artifact_path: str | None = None
+    feedback_scope: FeedbackScope = FeedbackScope.PROJECT
+    feedback_action_count: int = Field(default=0, ge=0)

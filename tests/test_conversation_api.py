@@ -317,7 +317,10 @@ def test_respond_correct_drawing_regenerates_numbered_dxf(tmp_path, monkeypatch)
         json={
             "role": "user",
             "content": "把 P-1 改成 P-1A",
-            "parameters": {"target_ids": ["P-1"]},
+            "parameters": {
+                "target_ids": ["P-1"],
+                "feedback_scope": "global",
+            },
         },
     )
 
@@ -328,6 +331,7 @@ def test_respond_correct_drawing_regenerates_numbered_dxf(tmp_path, monkeypatch)
     assert manager.corrected[0] == "job-1"
     assert correction_planner.calls[0][0] == "把 P-1 改成 P-1A"
     assert correction_planner.calls[0][2] == ["P-1"]
+    assert manager.corrected[1].feedback_scope == "global"
 
 
 def test_respond_review_job_adds_assistant_summary(tmp_path, monkeypatch):

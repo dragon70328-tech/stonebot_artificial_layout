@@ -146,7 +146,23 @@
       font-size: 12px;
       color: var(--muted);
     }
-    .drawing-preview {
+    .learning-scope {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .learning-scope select {
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 4px 6px;
+      font: inherit;
+      color: var(--text);
+      background: var(--panel);
+    }    .drawing-preview {
       margin-top: 12px;
       padding-top: 12px;
       border-top: 1px dashed var(--border);
@@ -523,6 +539,15 @@
         <div class="parameter-label">纠错目标（可多选）</div>
         <select id="correction-target-select" multiple size="5"></select>
         <div id="correction-target-summary" class="correction-target-summary">未选择目标</div>
+        <div class="learning-scope">
+          <label for="correction-feedback-scope">学习范围</label>
+          <select id="correction-feedback-scope">
+            <option value="project">仅本项目（推荐）</option>
+            <option value="global">参与全局模型</option>
+            <option value="none">不学习</option>
+          </select>
+          <span id="learning-memory-summary">项目记忆尚未更新</span>
+        </div>
       </div>
       <div id="drawing-preview" class="drawing-preview" hidden>
         <div class="drawing-preview-head">
@@ -674,6 +699,8 @@
     const correctionTargetsEl = document.getElementById("correction-targets");
     const correctionTargetSelectEl = document.getElementById("correction-target-select");
     const correctionTargetSummaryEl = document.getElementById("correction-target-summary");
+    const correctionFeedbackScopeEl = document.getElementById("correction-feedback-scope");
+    const learningMemorySummaryEl = document.getElementById("learning-memory-summary");
     const drawingPreviewEl = document.getElementById("drawing-preview");
     const drawingPreviewSummaryEl = document.getElementById("drawing-preview-summary");
     const drawingPreviewSvgEl = document.getElementById("drawing-preview-svg");
@@ -1135,6 +1162,21 @@
       syncPreviewSelection();
     }
 
+    function renderLearningMemory(status) {
+      const learning = (status && status.correction_context && status.correction_context.learning) || {};
+      const count = Number(learning.memory_feedback_count || 0);
+      const feedbackCount = Number(learning.feedback_count || 0);
+      if (!count && !feedbackCount) {
+        learningMemorySummaryEl.textContent = "项目记忆尚未更新";
+        return;
+      }
+      const updated = learning.memory_updated_at
+        ? `，最近更新：${String(learning.memory_updated_at).slice(0, 19).replace("T", " ")}`
+        : "";
+      learningMemorySummaryEl.textContent = (
+        `项目记忆：已学习 ${count} 次，当前任务反馈 ${feedbackCount} 次${updated}`
+      );
+    }
     function renderJobPanel(status) {
       if (!status) {
         jobPanelEl.hidden = true;
@@ -1154,6 +1196,7 @@
       stepsEl.innerHTML = renderSteps(status);
       metricsEl.innerHTML = renderMetrics(status);
       renderCorrectionTargets(status);
+      renderLearningMemory(status);
       loadDrawingPreview(status);
 
       const next = ui.nextAction(status);
@@ -1434,9 +1477,12 @@
         const attachments = state.lastUpload ? [state.lastUpload] : [];
         const parameters = creatingJob
           ? buildNestingParameters()
-          : (state.selectedCorrectionTargets.length
-            ? { target_ids: [...state.selectedCorrectionTargets] }
-            : null);
+          : {
+              feedback_scope: correctionFeedbackScopeEl.value,
+              ...(state.selectedCorrectionTargets.length
+                ? { target_ids: [...state.selectedCorrectionTargets] }
+                : {}),
+            };
         await sendChat(content, attachments, parameters);
         state.lastUpload = null;
         state.selectedCorrectionTargets = [];

@@ -20,6 +20,7 @@ from src.correction_contracts import (
 )
 from src.correction_diff import write_correction_diff_dxf
 from src.dxf_writer import write_numbered_parts_dxf
+from src.recognition_feedback import record_recognition_feedback
 from src.job_context import JobContext
 from src.models import Part
 from src.recognized_contract import parts_data_to_recognized_drawing
@@ -34,6 +35,11 @@ def build_correction_context(ctx: JobContext) -> dict[str, Any]:
         else []
     )
     items: list[dict[str, Any]] = []
+    part_data_by_id = {
+        int(item["index"]): item
+        for item in (getattr(ctx, "parts_data", None) or [])
+        if item.get("index") is not None
+    }
     for index, part in enumerate(parts):
         panel_id = (
             recognized_panels[index].panel_id
@@ -68,6 +74,12 @@ def build_correction_context(ctx: JobContext) -> dict[str, Any]:
                 "hole_count": len(part.holes),
                 "holes": holes,
                 "area": round(float(part.area), 3),
+                "confidence": part_data_by_id.get(int(part.id), {}).get(
+                    "confidence"
+                ),
+                "classification": part_data_by_id.get(int(part.id), {}).get(
+                    "classification"
+                ),
             }
         )
     known_handles = {
@@ -101,6 +113,17 @@ def build_correction_context(ctx: JobContext) -> dict[str, Any]:
         "unrecognized_entities": unrecognized,
         "part_count": len(items),
         "correction_revision": ctx.correction_revision,
+        "learning": {
+            "feedback_count": len(getattr(ctx, "recognition_feedback", [])),
+            "memory_feedback_count": int(
+                (getattr(ctx, "recognition_memory", {}) or {}).get(
+                    "feedback_count", 0
+                )
+            ),
+            "memory_updated_at": (
+                getattr(ctx, "recognition_memory", {}) or {}
+            ).get("updated_at"),
+        },
     }
 
 
@@ -304,6 +327,7 @@ def _apply_operation(
             else None
         )
         _refresh_part_geometry(source, parts_data)
+        source_data = _part_data(parts_data, source) or {}
         new_id = max(int(item.id) for item in parts) + 1
         new_part = Part(
             id=new_id,
@@ -330,6 +354,10 @@ def _apply_operation(
                 "area": float(hole.area),
                 "centroid": tuple(hole.centroid.coords[0]),
                 "outer_handle": handle,
+                "layer": source_data.get("layer"),
+                "number_layer": source_data.get("number_layer"),
+                "confidence": 0.9,
+                "source": "user_promoted_hole",
             }
         )
         return
@@ -421,6 +449,7 @@ def _apply_operation(
         part.hole_handles = [handle for _hole, handle in source_holes]
         part.label_position = tuple(pieces[source_side].representative_point().coords[0])
         _refresh_part_geometry(part, parts_data)
+        source_data = _part_data(parts_data, part) or {}
         new_id = max(int(item.id) for item in parts) + 1
         new_outer = pieces[other_side]
         new_holes = [hole for hole, _handle in other_holes]
@@ -428,7 +457,7 @@ def _apply_operation(
         new_polygon = _combined_polygon(new_outer, new_holes)
         new_part = Part(id=new_id, number=new_number, polygon=new_polygon, outer_polygon=new_outer, holes=new_holes, original_number=new_number, material_group=part.material_group, area=float(new_polygon.area), label_position=tuple(new_outer.representative_point().coords[0]), hole_handles=new_handles)
         parts.append(new_part)
-        parts_data.append({"index": new_id, "polygon": new_polygon, "outer_polygon": new_outer, "holes": new_holes, "hole_handles": new_handles, "original_number": new_number, "material_group": part.material_group, "area": float(new_polygon.area), "centroid": tuple(new_outer.centroid.coords[0]), "outer_handle": None})
+        parts_data.append({"index": new_id, "polygon": new_polygon, "outer_polygon": new_outer, "holes": new_holes, "hole_handles": new_handles, "original_number": new_number, "material_group": part.material_group, "area": float(new_polygon.area), "centroid": tuple(new_outer.centroid.coords[0]), "outer_handle": None, "layer": source_data.get("layer"), "number_layer": source_data.get("number_layer"), "confidence": 0.9, "source": "user_split_panel"})
         return
     if operation.operation == CorrectionOperationType.ADD_PANEL_FROM_ENTITY:
         candidate = _resolve_candidate(closed_entities, operation.target)
@@ -462,6 +491,11 @@ def _apply_operation(
                 "area": float(polygon.area),
                 "centroid": tuple(polygon.centroid.coords[0]),
                 "outer_handle": handle,
+                "layer": candidate.get("layer"),
+                "number_layer": None,
+                "entity_type": candidate.get("entity_type"),
+                "confidence": 0.9,
+                "source": "user_added_candidate",
             }
         )
         return
@@ -525,6 +559,7 @@ def apply_correction_plan(
         raise ValueError("drawing corrections require an existing numbered drawing")
 
     before_parts = deepcopy(ctx.parts)
+    before_data = deepcopy(ctx.parts_data or [])
     working_parts = deepcopy(ctx.parts)
     working_data = deepcopy(ctx.parts_data or [])
     before_digest = _parts_digest(working_parts)
@@ -575,6 +610,22 @@ def apply_correction_plan(
         instruction=plan.instruction,
     )
 
+    feedback, feedback_path = record_recognition_feedback(
+        ctx,
+        plan,
+        revision=revision,
+        before_parts=before_parts,
+        after_parts=working_parts,
+        before_data=before_data,
+        after_data=working_data,
+    )
+    feedback_action_count = (
+        len(feedback.before_panels)
+        + len(feedback.after_panels)
+        + len(feedback.before_holes)
+        + len(feedback.after_holes)
+    )
+
     ctx.parts = working_parts
     ctx.parts_data = working_data
     ctx.correction_revision = revision
@@ -609,6 +660,9 @@ def apply_correction_plan(
         "artifact_path": str(output_path),
         "diff_artifact_path": str(diff_path),
         "diff_counts": diff_counts,
+        "feedback_artifact_path": str(feedback_path),
+        "feedback_scope": str(feedback.scope),
+        "feedback_action_count": feedback_action_count,
         "before_digest": before_digest,
         "after_digest": after_digest,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -625,4 +679,7 @@ def apply_correction_plan(
         operations_applied=applied,
         removed_part_ids=removed_part_ids,
         part_numbers=numbers,
+        feedback_artifact_path=str(feedback_path),
+        feedback_scope=feedback.scope,
+        feedback_action_count=feedback_action_count,
     )
