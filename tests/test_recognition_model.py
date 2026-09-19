@@ -6,6 +6,7 @@ from src.entity_classifier import classify_candidates
 from src.recognition_contracts import CandidateSnapshot, RecognitionFeedback
 from src.recognition_model import (
     build_training_dataset,
+    evaluate_model_promotion,
     feedback_to_samples,
     load_recognition_model,
     predict_panel_probability,
@@ -114,3 +115,21 @@ def test_feedback_to_samples_marks_corrected_panels_and_holes():
 
     assert [sample["label"] for sample in samples] == [1, 0]
     assert samples[0]["drawing_digest"] == "drawing-1"
+def test_model_promotion_gate_blocks_low_quality_models():
+    rejected = evaluate_model_promotion(
+        {
+            "sample_count": 4,
+            "drawing_count": 1,
+            "metrics": {"accuracy": 0.5, "precision": 0.4, "recall": 0.3},
+        }
+    )
+    approved = evaluate_model_promotion(
+        {
+            "sample_count": 30,
+            "drawing_count": 8,
+            "metrics": {"accuracy": 0.9, "precision": 0.85, "recall": 0.8},
+        }
+    )
+
+    assert rejected["approved"] is False
+    assert approved["approved"] is True

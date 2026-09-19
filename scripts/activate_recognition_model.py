@@ -11,7 +11,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.recognition_model import load_recognition_model, save_recognition_model
+from src.recognition_model import (
+    evaluate_model_promotion,
+    load_recognition_model,
+    save_recognition_model,
+)
 
 
 def main() -> int:
@@ -22,11 +26,16 @@ def main() -> int:
         default=str(PROJECT_ROOT / "recognition_models" / "current.json"),
     )
     parser.add_argument("--backup-dir")
+    parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
     model = load_recognition_model(args.model_path)
     if not model or not model.get("feature_names") or not model.get("weights"):
         raise SystemExit(f"invalid recognition model: {args.model_path}")
+    promotion = evaluate_model_promotion(model)
+    if not promotion["approved"] and not args.force:
+        reasons = "；".join(promotion["reasons"])
+        raise SystemExit(f"model did not pass promotion gate: {reasons}")
     current = Path(args.current)
     if current.exists() and args.backup_dir:
         backup_dir = Path(args.backup_dir)

@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.recognition_model import (
     build_training_dataset,
     discover_feedback_files,
+    evaluate_model_promotion,
     save_recognition_model,
     train_recognition_model,
 )
@@ -33,6 +34,7 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=800)
     parser.add_argument("--learning-rate", type=float, default=0.08)
     parser.add_argument("--activate", action="store_true")
+    parser.add_argument("--force-activate", action="store_true")
     args = parser.parse_args()
 
     feedback_files = discover_feedback_files(args.feedback_dir)
@@ -46,14 +48,24 @@ def main() -> int:
     output_dir = Path(args.output_dir)
     version_path = output_dir / "versions" / f"{model['model_version']}.json"
     save_recognition_model(version_path, model)
-    if args.activate:
+    promotion = evaluate_model_promotion(
+        model,
+        min_samples=args.min_samples,
+    )
+    activate = bool(args.activate) and (
+        promotion["approved"] or args.force_activate
+    )
+    if activate:
         save_recognition_model(output_dir / "current.json", model)
     manifest = {
         "feedback_files": [str(path) for path in feedback_files],
         "sample_count": len(samples),
         "drawing_count": model["drawing_count"],
         "version_path": str(version_path),
-        "active": bool(args.activate),
+        "requested_activate": bool(args.activate),
+        "active": activate,
+        "forced": bool(args.force_activate),
+        "promotion": promotion,
         "metrics": model["metrics"],
     }
     output_dir.mkdir(parents=True, exist_ok=True)

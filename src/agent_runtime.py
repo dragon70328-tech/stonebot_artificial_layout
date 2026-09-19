@@ -23,6 +23,7 @@ from src.artifact_store import ArtifactStore
 from src.correction_contracts import CorrectionPlan
 from src.drawing_corrections import build_correction_context
 from src.job_context import JobContext
+from src.recognition_contracts import FeedbackScope
 from src.recognition_feedback import record_confirmation_feedback
 from src.recognition_memory import load_recognition_memory
 from src.recognition_model import load_recognition_model
@@ -204,7 +205,12 @@ class AgentRuntime:
             )
         return self.run_next()
 
-    def confirm(self, decision: str) -> AgentLoopResult:
+    def confirm(
+        self,
+        decision: str,
+        *,
+        feedback_scope: FeedbackScope = FeedbackScope.PROJECT,
+    ) -> AgentLoopResult:
         if self.last_result is None or not self.last_result.confirmation_required:
             raise RuntimeError("no confirmation gate is waiting")
 
@@ -230,7 +236,10 @@ class AgentRuntime:
             self.last_result.stage == WorkflowStage.AUDITED.value
             and not self.context.recognition_confirmation_recorded
         ):
-            _feedback, feedback_path = record_confirmation_feedback(self.context)
+            _feedback, feedback_path = record_confirmation_feedback(
+                self.context,
+                scope=FeedbackScope(feedback_scope),
+            )
             self.context.recognition_confirmation_recorded = True
             self.context.recognition_confirmation_artifact_path = feedback_path
             self._record_artifacts()

@@ -67,8 +67,20 @@ class SyncJobManager(JobManager):
         runtime.run_next()
         return runtime
 
-    def confirm(self, job_id, decision, *, run_in_background=True):
-        return super().confirm(job_id, decision, run_in_background=False)
+    def confirm(
+        self,
+        job_id,
+        decision,
+        *,
+        feedback_scope="project",
+        run_in_background=True,
+    ):
+        return super().confirm(
+            job_id,
+            decision,
+            feedback_scope=feedback_scope,
+            run_in_background=False,
+        )
 
     def run(self, job_id, *, run_in_background=True):
         return super().run(job_id, run_in_background=False)

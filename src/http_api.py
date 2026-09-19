@@ -132,6 +132,7 @@ class JobCreateRequest(BaseModel):
 
 class ConfirmationRequest(BaseModel):
     decision: str
+    feedback_scope: FeedbackScope = FeedbackScope.PROJECT
 
 
 class ReviewRequest(BaseModel):
@@ -529,7 +530,12 @@ class JobManager:
             ).resume().to_dict(),
             "confirm_job": lambda payload: self.get(
                 payload["job_id"]
-            ).confirm(payload["decision"]).to_dict(),
+            ).confirm(
+                payload["decision"],
+                feedback_scope=FeedbackScope(
+                    payload.get("feedback_scope", "project")
+                ),
+            ).to_dict(),
             "review_job": lambda payload: self.review(
                 payload["job_id"],
                 int(payload.get("max_reductions", 1)),
@@ -747,6 +753,7 @@ class JobManager:
         job_id: str,
         decision: str,
         *,
+        feedback_scope: FeedbackScope = FeedbackScope.PROJECT,
         run_in_background: bool = True,
     ) -> AgentRuntime:
         runtime = self.get(job_id)
@@ -761,10 +768,11 @@ class JobManager:
                 {
                     "job_id": job_id,
                     "decision": decision,
+                    "feedback_scope": feedback_scope.value,
                 },
             )
         else:
-            runtime.confirm(decision)
+            runtime.confirm(decision, feedback_scope=feedback_scope)
         return runtime
 
     def run(
@@ -1087,6 +1095,13 @@ def respond_to_conversation(
             intent["feedback_scope"] = str(
                 latest_parameters.get("feedback_scope")
             )
+    elif (
+        intent.get("action") == "confirm_job"
+        and latest_parameters.get("feedback_scope") is not None
+    ):
+        intent["feedback_scope"] = str(
+            latest_parameters.get("feedback_scope")
+        )
 
     action = intent["action"]
     try:
@@ -1160,6 +1175,9 @@ def respond_to_conversation(
             runtime = manager.confirm(
                 job_id,
                 str(intent.get("decision", "")),
+                feedback_scope=FeedbackScope(
+                    str(intent.get("feedback_scope", "project"))
+                ),
             )
             result_payload = runtime.status()
             assistant_content = (
@@ -1444,7 +1462,11 @@ def confirm_job(
     _require_role(tenant, "operator")
     _require_job_tenant(job_id, tenant)
     try:
-        runtime = manager.confirm(job_id, request.decision)
+        runtime = manager.confirm(
+            job_id,
+            request.decision,
+            feedback_scope=request.feedback_scope,
+        )
     except JobStateError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return JSONResponse(status_code=202, content=runtime.status())

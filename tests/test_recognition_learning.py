@@ -184,3 +184,14 @@ def test_confirmation_records_positive_feedback_and_updates_memory(tmp_path):
     assert context.recognition_memory["feedback_count"] == 1
     hints = recognition_memory_hints(context.recognition_memory)
     assert "ORIGINAL_PANEL" in hints["panel_layers"]
+def test_global_confirmation_does_not_update_project_memory(tmp_path):
+    context = _panel_context(tmp_path)
+
+    feedback, path = record_confirmation_feedback(
+        context,
+        scope=FeedbackScope.GLOBAL,
+    )
+
+    assert feedback.scope == "global"
+    assert (tmp_path / "global_feedback" / path.name).exists()
+    assert not context.recognition_memory_path.exists()

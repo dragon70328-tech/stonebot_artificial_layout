@@ -126,8 +126,9 @@ class FakeManager:
         self.got = job_id
         return FakeRuntime(job_id=job_id, stage="nested_reported")
 
-    def confirm(self, job_id, decision):
+    def confirm(self, job_id, decision, **kwargs):
         self.confirmed = (job_id, decision)
+        self.confirmed_scope = kwargs.get("feedback_scope", "project")
         return FakeRuntime(job_id=job_id, stage="postprocess_confirmed")
 
     def run(self, job_id):

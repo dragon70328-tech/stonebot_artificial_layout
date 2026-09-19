@@ -1474,7 +1474,10 @@
         } else if (action === "confirm") {
           result = await api(`/jobs/${encodeURIComponent(jobId)}/confirm`, {
             method: "POST",
-            body: JSON.stringify({ decision: "confirm" }),
+            body: JSON.stringify({
+              decision: "confirm",
+              feedback_scope: correctionFeedbackScopeEl.value,
+            }),
           });
         } else if (action === "run") {
           result = await api(`/jobs/${encodeURIComponent(jobId)}/run`, {

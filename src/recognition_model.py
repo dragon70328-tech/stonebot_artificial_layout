@@ -224,6 +224,49 @@ def train_recognition_model(
     return model
 
 
+def evaluate_model_promotion(
+    model: dict[str, Any],
+    *,
+    min_samples: int = 20,
+    min_drawings: int = 5,
+    min_accuracy: float = 0.80,
+    min_precision: float = 0.75,
+    min_recall: float = 0.70,
+) -> dict[str, Any]:
+    """Return a deterministic promotion decision for a trained model."""
+    metrics = model.get("metrics") or {}
+    reasons: list[str] = []
+    if int(model.get("sample_count", 0)) < min_samples:
+        reasons.append(f"样本数不足：{model.get('sample_count', 0)} < {min_samples}")
+    if int(model.get("drawing_count", 0)) < min_drawings:
+        reasons.append(
+            f"图纸数不足：{model.get('drawing_count', 0)} < {min_drawings}"
+        )
+    if float(metrics.get("accuracy", 0.0)) < min_accuracy:
+        reasons.append(
+            f"准确率不足：{metrics.get('accuracy', 0.0)} < {min_accuracy}"
+        )
+    if float(metrics.get("precision", 0.0)) < min_precision:
+        reasons.append(
+            f"精确率不足：{metrics.get('precision', 0.0)} < {min_precision}"
+        )
+    if float(metrics.get("recall", 0.0)) < min_recall:
+        reasons.append(
+            f"召回率不足：{metrics.get('recall', 0.0)} < {min_recall}"
+        )
+    return {
+        "approved": not reasons,
+        "reasons": reasons,
+        "thresholds": {
+            "min_samples": min_samples,
+            "min_drawings": min_drawings,
+            "min_accuracy": min_accuracy,
+            "min_precision": min_precision,
+            "min_recall": min_recall,
+        },
+        "metrics": metrics,
+    }
+
 def save_recognition_model(path: str | Path, model: dict[str, Any]) -> None:
     model_path = Path(path)
     model_path.parent.mkdir(parents=True, exist_ok=True)
