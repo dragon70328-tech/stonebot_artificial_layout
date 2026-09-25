@@ -36,6 +36,39 @@ CGR45_LIKE_FINGERPRINT = {
 }
 
 
+CANADA3L_FINGERPRINT = {
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+        "CIRCLE": 72,
+        "DIMENSION": 690,
+        "INSERT": 8,
+        "LINE": 128,
+        "LWPOLYLINE": 365,
+        "MTEXT": 32,
+        "TEXT": 166,
+    },
+    "layer_counts": {
+        "0": 420,
+        "大样": 191,
+        "标注": 690,
+        "框": 8,
+        "编号": 96,
+        "说明": 56,
+    },
+    "linetype_counts": {
+        "ACAD_ISO02W100": 16,
+        "BYLAYER": 1238,
+        "MB": 30,
+        "ZIGZAG": 177,
+    },
+    "has_hatch": False,
+    "has_lwpolyline": True,
+    "has_line": True,
+    "has_circle": True,
+}
+
+
 def _profile(name: str, fingerprint=None) -> DrawingProfile:
     return DrawingProfile(
         name=name,
@@ -81,6 +114,31 @@ def test_cgr45_profile_declares_validated_fingerprint():
 
     assert profile.fingerprint.get("layer_counts")
     assert "path" not in profile.fingerprint, "不得把本地绝对路径写入画像"
+
+
+def test_canada3l_profile_declares_validated_fingerprint():
+    from src.drawing_profile import load_profile
+
+    profile = load_profile(
+        PROJECT_ROOT / "drawing_profiles" / "canada3l.json"
+    )
+
+    assert profile.fingerprint == CANADA3L_FINGERPRINT
+    assert "path" not in profile.fingerprint
+
+
+def test_canada3l_fingerprint_wins_over_cgr45_like_profile():
+    from src.drawing_profile import load_profile
+
+    canada3l = load_profile(
+        PROJECT_ROOT / "drawing_profiles" / "canada3l.json"
+    )
+    cgr45 = load_profile(PROJECT_ROOT / "drawing_profiles" / "cgr45.json")
+
+    ranked = rank_profiles(CANADA3L_FINGERPRINT, [cgr45, canada3l])
+
+    assert ranked[0][0].name == "canada3l"
+    assert ranked[0][1] > ranked[1][1]
 
 
 @pytest.mark.skipif(

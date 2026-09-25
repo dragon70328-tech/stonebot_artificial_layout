@@ -288,6 +288,10 @@ python main.py input.dxf 3200 1600 20 --process waterjet --no-rotation --quick -
 # 冷启动：忽略历史模板/已验证案例/审图缓存，只依赖原始 DXF + 画像配置
 python main.py input.dxf 3200 1800 20 --cold-start --profile quick --report-only
 
+# 显式指定读图画像，并让 3200x1800 大板按 30mm 长宽让尺参与实际排板
+python main.py input.dxf 3200 1800 20 --cold-start --drawing-profile canada3l \
+    --profile min_sheets --budget 60 --sheet-oversize 30,30 --no-confirm
+
 # 显式复用已验证模板布局（默认关闭，默认只用算法排板）
 python main.py input.dxf 3200 1800 20 --use-template --no-confirm
 ```

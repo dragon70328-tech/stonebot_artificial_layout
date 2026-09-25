@@ -33,6 +33,13 @@ def test_resolve_drawing_profile_matches_dongguan_layers(tmp_path):
     assert profile.name == "dongguan_outlets"
 
 
+def test_resolve_requested_drawing_profile_is_case_insensitive():
+    profile = app.resolve_requested_drawing_profile("CANADA3L")
+
+    assert profile is not None
+    assert profile.name == "canada3l"
+
+
 def test_run_uses_profile_read_path_when_drawing_profile_matched(tmp_path):
     path = tmp_path / "profile_panel.dxf"
     doc = ezdxf.new("R2010")

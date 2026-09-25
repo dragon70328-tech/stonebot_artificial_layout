@@ -59,5 +59,36 @@
       "reason": "图层 0 的开放 LWPOLYLINE 为辅助线，不参与面板提取"
     }
   ],
-  "notes": "加拿大3L 试排：识别 96 件面板、144 个孔洞、96 个编号。编号格式为 分区-序号，如 302-A；未启用材料分组。"
+  "notes": "加拿大3L 试排：识别 96 件面板、144 个孔洞、96 个编号。编号格式为 分区-序号，如 302-A；未启用材料分组。",
+  "fingerprint": {
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+      "TEXT": 166,
+      "LWPOLYLINE": 365,
+      "CIRCLE": 72,
+      "INSERT": 8,
+      "MTEXT": 32,
+      "LINE": 128,
+      "DIMENSION": 690
+    },
+    "layer_counts": {
+      "0": 420,
+      "框": 8,
+      "说明": 56,
+      "标注": 690,
+      "大样": 191,
+      "编号": 96
+    },
+    "linetype_counts": {
+      "BYLAYER": 1238,
+      "ACAD_ISO02W100": 16,
+      "ZIGZAG": 177,
+      "MB": 30
+    },
+    "has_hatch": false,
+    "has_lwpolyline": true,
+    "has_line": true,
+    "has_circle": true
+  }
 }

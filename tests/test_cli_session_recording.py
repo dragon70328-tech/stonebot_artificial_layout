@@ -102,6 +102,29 @@ def test_cli_run_records_completed_workflow_session(tmp_path):
     assert nested_refs[0]["digest"] == digest
 
 
+def test_cli_sheet_oversize_expands_actual_nesting_space(tmp_path):
+    dxf_path = tmp_path / "session_oversize.dxf"
+    _make_dxf(dxf_path)
+
+    outcome = _run(dxf_path, tmp_path, sheet_oversize=(20, 10))
+
+    assert not outcome["geometry_errors"]
+    payload, _out_dir = _latest_session_payload("session_oversize", tmp_path)
+    report_refs = [
+        ref for ref in payload["artifacts"].values()
+        if "_report_" in ref["path"] and ref["path"].endswith(".json")
+    ]
+    assert len(report_refs) == 1
+    report = json.loads(
+        Path(report_refs[0]["path"]).read_text(encoding="utf-8")
+    )
+    assert report["sheets"][0]["width"] == 1020
+    assert report["sheets"][0]["height"] == 810
+    assert report["total_sheet_area"] == (
+        report["total_sheets"] * 1020 * 810
+    )
+
+
 def test_cli_check_only_stops_at_postprocess_confirmed(tmp_path):
     dxf_path = tmp_path / "session_check.dxf"
     _make_dxf(dxf_path)

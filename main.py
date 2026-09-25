@@ -105,6 +105,8 @@ def parse_args():
                    choices=list(PROFILES.keys()),
                    help="约束模板：" + " / ".join(
                        f"{k}={v}" for k, v in PROFILE_HELP.items()))
+    p.add_argument("--drawing-profile", type=str, default=None,
+                   help="\u5f3a\u5236\u6307\u5b9a\u8bfb\u56fe\u753b\u50cf\u540d\u79f0\uff0c\u5982 canada3l")
     p.add_argument("--config", type=str, default=None,
                    help="项目 JSON 配置文件路径（与 CLI 参数组合时 CLI 优先）")
     p.add_argument("--list-profiles", action="store_true",
@@ -193,6 +195,23 @@ def parse_args():
                    help="排除图层，逗号分隔")
 
     return p.parse_args()
+
+
+def resolve_requested_drawing_profile(name: str | None):
+    """Load an explicit drawing profile by name, bypassing auto ranking."""
+    if not name:
+        return None
+    profiles = load_profiles(PROJECT_ROOT / "drawing_profiles")
+    requested = name.casefold()
+    for profile in profiles:
+        if profile.name.casefold() == requested:
+            return profile
+    available = ", ".join(sorted(profile.name for profile in profiles))
+    raise ValueError(
+        f"unknown drawing profile {name!r}; available: {available}"
+    )
+
+
 def resolve_sheet_size(args) -> tuple[float, float]:
     """从 --size / 定位参数 解析大板尺寸"""
     if args.size:
@@ -569,6 +588,8 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     # ── 打印约束摘要 ──
     rot_str = ",".join(str(r) for r in profile.rotation)
     oversize_x, oversize_y = sheet_oversize or (0.0, 0.0)
+    nesting_width_mm = width_mm + oversize_x
+    nesting_height_mm = height_mm + oversize_y
     print(f"约束: rotation=[{rot_str}], gap={profile.min_gap}mm, "
           f"group={profile.group_mode}, slide={profile.slide_to_edge}, "
           f"align={profile.align_edges}, thickness={effective_thickness}mm, "
@@ -713,7 +734,8 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
 
     if nesting is None:
         nesting = nest_groups(
-            parts, groups, width_mm, height_mm, special_w, special_h,
+            parts, groups, nesting_width_mm, nesting_height_mm,
+            special_w, special_h,
             effective_thickness, unit, profile, drawing_profile,
             trials, seed, budget, quick, pairing,
             beam=beam, beam_width=beam_width,
@@ -998,6 +1020,14 @@ def main():
         print(f"错误：文件不存在 - {dxf_path}")
         sys.exit(1)
 
+    try:
+        requested_drawing_profile = resolve_requested_drawing_profile(
+            args.drawing_profile
+        )
+    except ValueError as exc:
+        print(f"\u9519\u8bef\uff1a{exc}")
+        sys.exit(1)
+
     if args.config:
         config = ProjectConfig.from_file(args.config)
         apply_cli_overrides_to_project_config(config, args)
@@ -1020,6 +1050,7 @@ def main():
             accept_issue_ids=split_issue_ids(args.accept_issue),
             ignore_issue_ids=split_issue_ids(args.ignore_issue),
             fixed_issue_ids=split_issue_ids(args.mark_fixed),
+            drawing_profile=requested_drawing_profile,
             use_cache=not args.cold_start,
         )
         return
@@ -1174,6 +1205,7 @@ def main():
         trials=trials, seed=args.seed, budget=budget,
         skip_unnumbered=not args.include_unnumbered,
         layers=layers, exclude_layers=exclude_layers,
+        drawing_profile=requested_drawing_profile,
         profile=profile,
         confirm_sheet_count=not args.no_confirm,
         report_only=args.report_only,

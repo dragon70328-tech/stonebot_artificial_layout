@@ -123,6 +123,7 @@ def run_audit(
     accept_issue_ids: list[str] | None = None,
     ignore_issue_ids: list[str] | None = None,
     fixed_issue_ids: list[str] | None = None,
+    drawing_profile=None,
     use_cache: bool = True,
 ) -> None:
     """只做读图审图，输出问题 JSON 和高亮 DXF，不进入排板。
@@ -135,7 +136,8 @@ def run_audit(
     stem = Path(dxf_path).stem
     out_dir = make_output_dir(dxf_path)
 
-    drawing_profile = resolve_drawing_profile(dxf_path)
+    if drawing_profile is None:
+        drawing_profile = resolve_drawing_profile(dxf_path)
     if drawing_profile is None:
         print("错误：审图模式需要匹配到 drawing_profiles/*.json 图纸画像。")
         sys.exit(1)
