@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import main as app
+import src.cli_audit as audit_cli
 from src.contracts import DrawingIssue as ContractDrawingIssue
 from src.contracts import IssueSeverity, IssueStatus, ReviewState
 from src.drawing_profile import DrawingIssue
@@ -20,8 +21,8 @@ def test_parse_args_audit_flag(monkeypatch):
 
 
 def test_split_issue_ids():
-    assert app._split_issue_ids("1,3, 5") == ["1", "3", "5"]
-    assert app._split_issue_ids(None) == []
+    assert audit_cli.split_issue_ids("1,3, 5") == ["1", "3", "5"]
+    assert audit_cli.split_issue_ids(None) == []
 
 
 def test_apply_issue_statuses():
@@ -39,7 +40,7 @@ def test_apply_issue_statuses():
             message="重复图形",
         ),
     ]
-    updated = app._apply_issue_statuses(
+    updated = audit_cli.apply_issue_statuses(
         issues,
         accept_issue_ids=["1"],
         ignore_issue_ids=[],
@@ -50,9 +51,9 @@ def test_apply_issue_statuses():
 
 
 def test_severity_contract_maps_legacy_values():
-    assert app._severity_contract("error") == IssueSeverity.ERROR
-    assert app._severity_contract("warning") == IssueSeverity.WARNING
-    assert app._severity_contract("info") == IssueSeverity.INFO
+    assert audit_cli.severity_to_contract("error") == IssueSeverity.ERROR
+    assert audit_cli.severity_to_contract("warning") == IssueSeverity.WARNING
+    assert audit_cli.severity_to_contract("info") == IssueSeverity.INFO
 
 
 def test_to_contract_issue_maps_fields():
@@ -66,7 +67,7 @@ def test_to_contract_issue_maps_fields():
         message="图形未闭合",
         suggestion="请闭合",
     )
-    contract = app._to_contract_issue(legacy)
+    contract = audit_cli.to_contract_issue(legacy)
     assert contract.issue_id == "7"
     assert contract.severity == IssueSeverity.WARNING
     assert contract.status == IssueStatus.NEW
@@ -88,24 +89,24 @@ def test_run_audit_writes_contract_json(monkeypatch, tmp_path):
         suggestion="闭合",
     )
     profile = SimpleNamespace(name="test_profile")
-    monkeypatch.setattr(app, "resolve_drawing_profile", lambda path: profile)
-    monkeypatch.setattr(app, "audit_drawing", lambda path, prof: [legacy_issue])
-    monkeypatch.setattr(app, "make_output_dir", lambda path: tmp_path)
-    monkeypatch.setattr(app, "write_issue_evidence_svg", lambda path, issues, out_dir: [])
+    monkeypatch.setattr(audit_cli, "resolve_drawing_profile", lambda path: profile)
+    monkeypatch.setattr(audit_cli, "audit_drawing", lambda path, prof: [legacy_issue])
+    monkeypatch.setattr(audit_cli, "make_output_dir", lambda path: tmp_path)
+    monkeypatch.setattr(audit_cli, "write_issue_evidence_svg", lambda path, issues, out_dir: [])
     overview_paths = []
     monkeypatch.setattr(
-        app,
+        audit_cli,
         "write_dxf_overview_svg",
         lambda source, output, issues=None: overview_paths.append(Path(output)) or Path(output),
     )
     written_paths = []
     monkeypatch.setattr(
-        app,
+        audit_cli,
         "write_audit_dxf",
         lambda source, issues, output: written_paths.append(Path(output)) or Path(output),
     )
 
-    app.run_audit(str(source_dxf), accept_issue_ids=["1"])
+    audit_cli.run_audit(str(source_dxf), accept_issue_ids=["1"])
 
     audit_json = tmp_path / "sample_audit.json"
     assert audit_json.exists()
@@ -176,22 +177,22 @@ def test_run_audit_recheck_marks_fixed_and_new(monkeypatch, tmp_path):
         ),
     ]
     profile = SimpleNamespace(name="test_profile")
-    monkeypatch.setattr(app, "resolve_drawing_profile", lambda path: profile)
-    monkeypatch.setattr(app, "audit_drawing", lambda path, prof: current_issues)
-    monkeypatch.setattr(app, "make_output_dir", lambda path: tmp_path)
-    monkeypatch.setattr(app, "write_issue_evidence_svg", lambda path, issues, out_dir: [])
+    monkeypatch.setattr(audit_cli, "resolve_drawing_profile", lambda path: profile)
+    monkeypatch.setattr(audit_cli, "audit_drawing", lambda path, prof: current_issues)
+    monkeypatch.setattr(audit_cli, "make_output_dir", lambda path: tmp_path)
+    monkeypatch.setattr(audit_cli, "write_issue_evidence_svg", lambda path, issues, out_dir: [])
     monkeypatch.setattr(
-        app,
+        audit_cli,
         "write_dxf_overview_svg",
         lambda source, output, issues=None: Path(output),
     )
     monkeypatch.setattr(
-        app,
+        audit_cli,
         "write_audit_dxf",
         lambda source, issues, output: Path(output),
     )
 
-    app.run_audit(str(source_dxf), previous_state_path=str(previous_state_path))
+    audit_cli.run_audit(str(source_dxf), previous_state_path=str(previous_state_path))
 
     recheck_json = tmp_path / "revised_recheck.json"
     assert recheck_json.exists()

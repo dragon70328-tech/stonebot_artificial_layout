@@ -130,6 +130,10 @@ class JobCreateRequest(BaseModel):
     skip_unnumbered: bool = True
     project_id: str | None = None
 
+    # 模板布局复用与冷启动都是显式选择，默认只用算法 + 现有配置。
+    use_template: bool = False
+    cold_start: bool = False
+
     @model_validator(mode="after")
     def validate_process_parameters(self) -> "JobCreateRequest":
         if self.process == "bridge" and self.kerf_mm <= 0:
@@ -448,6 +452,8 @@ class JobManager:
             ),
             session_id=job_id,
             restore_session=restore_session,
+            use_template=request.use_template,
+            cold_start=request.cold_start,
         )
 
     def _write_manifest(

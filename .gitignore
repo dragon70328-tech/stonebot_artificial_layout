@@ -34,6 +34,9 @@ scripts/dev_env.ps1
 
 output/*.bak
 
+# benchmark 报告（可再生成）
+benchmark_report.json
+
 # timestamped output subdirs
 output/*_*/
 output/.cache/

@@ -155,3 +155,58 @@ def test_agent_runtime_resume_from_non_gate_stage(tmp_path, monkeypatch):
 
     assert result.stage == WorkflowStage.NESTED_REPORTED.value
     assert result.confirmation_required is True
+
+
+class _FailingObjectStore:
+    """Object-store double that always fails."""
+
+    def put_bytes(self, key, data):
+        raise RuntimeError("s3 unavailable")
+
+    def get_bytes(self, key):
+        raise KeyError(key)
+
+    def exists(self, key):
+        return False
+
+    def delete(self, key):
+        return None
+
+
+def test_agent_runtime_surfaces_object_store_failures(tmp_path, monkeypatch):
+    runtime = _make_runtime(tmp_path, monkeypatch)
+    artifact_path = tmp_path / "numbered.dxf"
+    artifact_path.write_text("fake dxf", encoding="utf-8")
+    runtime.context.numbered_dxf_path = artifact_path
+    runtime.object_store = _FailingObjectStore()
+
+    runtime._record_artifacts()
+
+    ref = runtime.session.artifacts["numbered_dxf"]
+    assert "object_key" not in ref
+    assert ref["object_store_error"] == "RuntimeError: s3 unavailable"
+    assert runtime.status()["artifact_sync_errors"] == [
+        {
+            "artifact": "numbered_dxf",
+            "object_key": "jobs/runtime-1/artifacts/numbered_dxf/numbered.dxf",
+            "error": "RuntimeError: s3 unavailable",
+        }
+    ]
+
+
+def test_agent_runtime_clears_sync_errors_after_recovery(tmp_path, monkeypatch):
+    runtime = _make_runtime(tmp_path, monkeypatch)
+    artifact_path = tmp_path / "numbered.dxf"
+    artifact_path.write_text("fake dxf", encoding="utf-8")
+    runtime.context.numbered_dxf_path = artifact_path
+    runtime.object_store = _FailingObjectStore()
+    runtime._record_artifacts()
+    assert runtime.status()["artifact_sync_errors"]
+
+    runtime.object_store = LocalObjectStore(tmp_path / "objects")
+    runtime._record_artifacts()
+
+    assert runtime.status()["artifact_sync_errors"] == []
+    ref = runtime.session.artifacts["numbered_dxf"]
+    assert "object_store_error" not in ref
+    assert ref["object_key"].startswith("jobs/runtime-1/artifacts/")

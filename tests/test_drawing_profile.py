@@ -977,3 +977,106 @@ def test_read_dxf_with_profile_network_mode_filters_gap_and_keeps_curve_split(tm
     assert len(parts) == 2
     assert all(part["area"] == 5000 for part in parts)
     assert all(part["original_number"] is None for part in parts)
+
+
+def _hierarchy_profile(**overrides) -> DrawingProfile:
+    base = dict(
+        name="hierarchy_holes",
+        version="1.0.0",
+        panel_layer="PANEL",
+        use_hatch=False,
+        number_layers=["NUM"],
+        build_hierarchy=True,
+        exclude_entity_types=[],
+        exclude_linetypes=[],
+        closed_tolerance=0.01,
+    )
+    base.update(overrides)
+    return DrawingProfile(**base)
+
+
+def test_nested_polyline_hole_is_recorded_not_dropped(tmp_path):
+    """外围轮廓内的闭合多段线孔洞必须进 holes，不能被静默丢弃。
+
+    回归 CGR45：153 个画成闭合多段线的盆孔曾因 hierarchy 子级索引取错
+    （拿 accepted_candidates 去索引按面积排序的 child 序号）、又用分类器
+    role == "hole" 二次过滤而整体丢失。
+    """
+    path = tmp_path / "polyline_hole.dxf"
+
+    def entities(msp):
+        msp.add_lwpolyline(
+            [(0, 0), (400, 0), (400, 300), (0, 300)],
+            close=True,
+            dxfattribs={"layer": "PANEL"},
+        )
+        msp.add_lwpolyline(
+            [(100, 100), (200, 100), (200, 180), (100, 180)],
+            close=True,
+            dxfattribs={"layer": "PANEL"},
+        )
+        msp.add_circle((320, 60), radius=20, dxfattribs={"layer": "PANEL"})
+
+    _write_dxf(path, entities)
+
+    parts, _ = read_dxf_with_profile(path, _hierarchy_profile())
+
+    assert len(parts) == 1
+    holes = parts[0]["holes"]
+    assert len(holes) == 2, "圆形孔与多段线孔都必须记录"
+    assert len(parts[0]["hole_handles"]) == 2
+    outer_area = parts[0]["outer_polygon"].area
+    assert parts[0]["polygon"].area == pytest.approx(
+        outer_area - sum(hole.area for hole in holes), rel=1e-6
+    )
+
+
+def test_nested_contours_are_conserved_between_panels_and_holes(tmp_path):
+    """封闭候选的守恒不变量：每个候选要么是面板、要么是某个面板的孔洞。"""
+    path = tmp_path / "conservation.dxf"
+
+    def entities(msp):
+        for col in range(3):
+            x = col * 600
+            msp.add_lwpolyline(
+                [(x, 0), (x + 400, 0), (x + 400, 300), (x, 300)],
+                close=True,
+                dxfattribs={"layer": "PANEL"},
+            )
+            msp.add_lwpolyline(
+                [(x + 50, 50), (x + 150, 50), (x + 150, 150), (x + 50, 150)],
+                close=True,
+                dxfattribs={"layer": "PANEL"},
+            )
+            msp.add_circle((x + 320, 60), radius=20, dxfattribs={"layer": "PANEL"})
+
+    _write_dxf(path, entities)
+
+    parts, _ = read_dxf_with_profile(path, _hierarchy_profile())
+
+    closed_candidates = 9  # 3 面板 + 3 多段线孔 + 3 圆孔
+    assert len(parts) == 3
+    assert len(parts) + sum(len(p["holes"]) for p in parts) == closed_candidates
+
+
+CGR45_FIXTURE = (
+    Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "dxf" / "CGR45final.dxf"
+)
+
+
+@pytest.mark.skipif(
+    not CGR45_FIXTURE.exists(),
+    reason="需要 tests/fixtures/dxf/CGR45final.dxf 金标准样本",
+)
+def test_cgr45_golden_counts_match_profile_expectations():
+    """CGR45 金标准：识别数与画像期望一致（203 面板 / 306 孔洞 / 203 编号）。"""
+    profile = load_profile(
+        Path(__file__).resolve().parents[1] / "drawing_profiles" / "cgr45.json"
+    )
+    parts, _ = read_dxf_with_profile(CGR45_FIXTURE, profile)
+
+    assert len(parts) == profile.expected_counts["panels"]
+    assert sum(len(p["holes"]) for p in parts) == profile.expected_counts["holes"]
+    assert sum(1 for p in parts if p.get("original_number")) == (
+        profile.expected_counts["numbers"]
+    )

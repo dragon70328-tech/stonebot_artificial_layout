@@ -29,6 +29,8 @@ GAP_TOL = 1e-3
 _OVERLAP_PATTERN = "T********"
 # 每个旋转角下，通过碰撞检测的候选点上限（评分再从中择优）
 _MAX_VALID_PER_ROT = 8
+# LNS 中改用束搜索求解的子问题件数上限（更大子集仍走贪心）
+_LNS_BEAM_MAX_PARTS = 40
 
 
 # ---------------------------------------------------------------------------
@@ -556,9 +558,18 @@ def _lns_improve(sheets_pl: list, sheet_w: float, sheet_h: float,
                  rotations: tuple = _DEFAULT_ROTATIONS,
                  first_part_left_edge: bool = False,
                  min_gap: float = 0.0,
-                 warm_start: list | None = None) -> list:
+                 warm_start: list | None = None,
+                 sub_beam_width: int | None = 150) -> list:
     """大邻域搜索：反复拆除利用率偏低的若干张板并重排，
-    同数重排提升填充集中度（中性移动），偶尔直接压缩板数。"""
+    同数重排提升填充集中度（中性移动），偶尔直接压缩板数。
+
+    子问题求解器（sub_beam_width 非 None 且子集不超过 _LNS_BEAM_MAX_PARTS
+    件时）用逐板束搜索 beam_layout：贪心 _nest_single 只能按固定排序
+    一趟摆放，几乎找不到跨板重排机会（CGR45 上 LNS 曾 180s 零收益）；
+    束搜索对小子集能做接近最优的分组，是压缩板数的实际杠杆。
+    束搜索结果是确定性的，按子集签名缓存避免重复求解。"""
+    from src.beam_nesting import beam_layout
+
     rng = random.Random(seed)
     sheet_area = sheet_w * sheet_h
 
@@ -567,11 +578,12 @@ def _lns_improve(sheets_pl: list, sheet_w: float, sheet_h: float,
     best, best_key = cur, cur_key
     t0 = time.time()
     it = 0
+    beam_cache: dict = {}
 
     while time.time() - t0 < budget_s:
         it += 1
         n = len(cur)
-        k = min(rng.choice((2, 3, 3, 4, 4, 5, 6)), n)
+        k = min(rng.choice((2, 3, 3, 4, 4, 5, 6, 8)), n)
         # 偏向选取利用率低的板：最差板 + 从较差的一半中随机
         order = sorted(range(n), key=lambda i: _sheet_used_area(cur[i]))
         pool = order[:max(k * 2, 6)]
@@ -580,24 +592,41 @@ def _lns_improve(sheets_pl: list, sheet_w: float, sheet_h: float,
         sub = [pl.part for i in sel for pl in cur[i]]
         sub_area = sum(p.area for p in sub)
 
-        sort_name = rng.choice(("area", "short", "long", "jitter"))
-        mode = rng.choice(("skyline", "col", "contact"))
-        sort_key = _make_sort_key(sort_name, rng.randrange(1000))
-
-        # 10% 概率尝试压缩板数（面积可行时）
         res = None
-        if rng.random() < 0.3 and sub_area <= (k - 1) * sheet_area:
-            res = _nest_single(sub, sheet_w, sheet_h, sort_key, mode,
-                               cache, max_sheets=k - 1,
-                               rotations=rotations,
-                               first_part_left_edge=first_part_left_edge,
-                               min_gap=min_gap)
-        if res is None:
-            res = _nest_single(sub, sheet_w, sheet_h, sort_key, mode,
-                               cache, max_sheets=k,
-                               rotations=rotations,
-                               first_part_left_edge=first_part_left_edge,
-                               min_gap=min_gap)
+        use_beam = sub_beam_width and len(sub) <= _LNS_BEAM_MAX_PARTS
+        if use_beam:
+            sig = tuple(sorted(id(p) for p in sub))
+            got = beam_cache.get(sig, False)
+            if got is False:
+                sub = sorted(sub, key=lambda p: p.number)
+                try:
+                    got = beam_layout(
+                        sub, sheet_w, sheet_h, cache,
+                        beam_width=sub_beam_width, rotations=rotations,
+                        min_gap=min_gap)
+                except ValueError:
+                    got = None
+                beam_cache[sig] = got
+            if got is not None and len(got) <= k:
+                res = got
+        else:
+            sort_name = rng.choice(("area", "short", "long", "jitter"))
+            mode = rng.choice(("skyline", "col", "contact"))
+            sort_key = _make_sort_key(sort_name, rng.randrange(1000))
+
+            # 30% 概率尝试压缩板数（面积可行时）
+            if rng.random() < 0.3 and sub_area <= (k - 1) * sheet_area:
+                res = _nest_single(sub, sheet_w, sheet_h, sort_key, mode,
+                                   cache, max_sheets=k - 1,
+                                   rotations=rotations,
+                                   first_part_left_edge=first_part_left_edge,
+                                   min_gap=min_gap)
+            if res is None:
+                res = _nest_single(sub, sheet_w, sheet_h, sort_key, mode,
+                                   cache, max_sheets=k,
+                                   rotations=rotations,
+                                   first_part_left_edge=first_part_left_edge,
+                                   min_gap=min_gap)
         if res is None:
             continue
 
@@ -785,11 +814,16 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
                first_part_left_edge: bool = False,
                min_gap: float = 0.0,
                min_sheets: int | None = None,
+               beam: bool = True,
+               beam_width: int = 1000,
                progress=None) -> NestingResult:
     """排板主入口：多轮贪心 + 多次试验取最优。
 
     configs：可选，自定义 [(排序键, 评分模式, 种子)] 列表；
     improve_budget：大邻域搜索的时间预算（秒），设 0 可关闭；
+    beam：启用逐板最佳填充束搜索（见 src/beam_nesting.py），
+    与贪心配置同台竞争取最优；first_part_left_edge 约束下自动跳过；
+    beam_width：束搜索每层保留的布局数，越大越优越慢；
     trials：独立试验次数（每次不同随机种子），取最优；
     seed：随机种子基数，保证可复现；
     progress：可选回调 fn(当前轮次, 总轮次, 当前最优板数)。
@@ -825,6 +859,25 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
             cur = i + trial * len(trial_configs)
             if progress:
                 progress(cur, total_cfgs, best_key[0] if best_key else None)
+
+        if beam and not first_part_left_edge:
+            from src.beam_nesting import beam_layout
+            beam_pl = beam_layout(
+                parts, sheet_width, sheet_height, cache,
+                beam_width=beam_width, rotations=rotations,
+                min_gap=min_gap)
+            compact = sum(max((pl.poly.bounds[3] for pl in pls), default=0.0)
+                          for pls in beam_pl)
+            manufacture_score = _placement_manufacturability_score(
+                beam_pl, sheet_width, sheet_height
+            )
+            key = (len(beam_pl), -manufacture_score, compact)
+            if trial_best_key is None or key < trial_best_key:
+                trial_best_key = key
+                best_pl = beam_pl
+            if progress:
+                progress(total_cfgs, total_cfgs,
+                         best_key[0] if best_key else None)
 
         if improve_budget > 0:
             best_pl = _lns_improve(best_pl, sheet_width, sheet_height, cache,

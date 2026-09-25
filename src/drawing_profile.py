@@ -90,6 +90,9 @@ class DrawingProfile:
     network_snap_tolerance: float = 1.5
     notes: str = ""
     expected_counts: dict[str, int] = field(default_factory=dict)
+    # 已验证图纸指纹（可选）。填写后 _rank 会把指纹相似度当作主排序信号，
+    # 避免"图层规则相同 -> 同分 -> 按文件名字典序"的静默误配。
+    fingerprint: dict[str, Any] = field(default_factory=dict)
     audit_ignore_rules: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
@@ -212,6 +215,69 @@ def analyze_drawing(filepath: str | Path) -> dict[str, Any]:
     }
 
 
+def _fingerprint_jaccard(left: set[str], right: set[str]) -> float:
+    if not left and not right:
+        return 1.0
+    union = left | right
+    if not union:
+        return 0.0
+    return len(left & right) / len(union)
+
+
+def _fingerprint_keys(mapping: dict[str, Any] | None) -> set[str]:
+    return {str(key) for key in (mapping or {})}
+
+
+# 画像指纹相似度达到该阈值才认为"这张画像就是给这张图纸写的"，从而进入
+# 优先层；低于阈值不加分，避免某个画像凭指纹对所有图纸都有额外优势。
+FINGERPRINT_MATCH_THRESHOLD = 60.0
+# 指纹命中层的固定偏移：确保"指纹命中"优先于"仅图层规则命中"。
+FINGERPRINT_TIER_BONUS = 100.0
+
+
+def fingerprint_similarity(
+    fingerprint: dict[str, Any],
+    reference: dict[str, Any],
+) -> float:
+    """两个图纸指纹的相似度（0-100）。
+
+    用于画像排序与已验证案例匹配：只看结构（图层集合、实体类型集合、线型集合
+    与布尔特征），不比较具体数量，因此对同项目不同楼层的图纸仍然稳定。
+    """
+    if not reference:
+        return 0.0
+
+    score = _fingerprint_jaccard(
+        _fingerprint_keys(fingerprint.get("layer_counts")),
+        _fingerprint_keys(reference.get("layer_counts")),
+    ) * 50.0
+    score += _fingerprint_jaccard(
+        _fingerprint_keys(fingerprint.get("entity_counts")),
+        _fingerprint_keys(reference.get("entity_counts")),
+    ) * 20.0
+    score += _fingerprint_jaccard(
+        _fingerprint_keys(fingerprint.get("linetype_counts")),
+        _fingerprint_keys(reference.get("linetype_counts")),
+    ) * 15.0
+
+    # 结构性布尔特征必须"不一致就扣分"，不能只是不加分：
+    # 集合型 Jaccard 对同族图纸过于宽松——CGR45（有 CIRCLE 孔洞）与
+    # countertop2（无孔洞）的图层/实体集合大面积重合，只靠集合相似度会得到
+    # 64.8 分，从而让 cgr45 画像抢走 countertop2 的图纸。
+    # 有无 CIRCLE（盆孔/龙头孔）是工艺上最有区分度的结构特征：CGR45 类台面
+    # 图纸有 153 个圆孔，countertop2 类平面板一个都没有，因此不一致时重罚，
+    # 保证两类画像不会互相抢占（否则相似度只差 0.2 分，阈值形同虚设）。
+    score += 5.0 if fingerprint.get("has_circle") == reference.get("has_circle") else -15.0
+    for key in ("has_lwpolyline", "has_line"):
+        score += 5.0 if fingerprint.get(key) == reference.get(key) else -5.0
+    if fingerprint.get("dxf_version") == reference.get("dxf_version"):
+        score += 5.0
+    if fingerprint.get("insunits") == reference.get("insunits"):
+        score += 5.0
+
+    return max(0.0, min(100.0, score))
+
+
 def rank_profiles(
     fingerprint: dict[str, Any],
     profiles: list[DrawingProfile],
@@ -258,6 +324,17 @@ def rank_profiles(
         for entity_type in profile.exclude_entity_types:
             if entity_counts.get(entity_type, 0) == 0:
                 score += 2.0
+
+        # 画像自带已验证指纹且相似度达标时进入优先层：仅靠"图层名命中"会让
+        # 同一类图纸（0 层 + 编号层 + 建层级）同分，并列后按文件名字典序选一个
+        # （CGR45 曾被误配成 canada3l）。低于阈值则完全不加分，否则该画像会对
+        # 所有结构相近的图纸都产生虚假优势（countertop2 曾被误配成 cgr45）。
+        if profile.fingerprint:
+            similarity = fingerprint_similarity(
+                fingerprint, profile.fingerprint
+            )
+            if similarity >= FINGERPRINT_MATCH_THRESHOLD:
+                score += FINGERPRINT_TIER_BONUS + similarity * 0.5
 
         results.append((profile, score))
 
@@ -1137,20 +1214,18 @@ def _extract_profile_panels(
                 if source_classification["role"] != "panel":
                     continue
 
-                child_candidates = [
-                    accepted_candidates[child_index]
-                    for child_index in item["children"]
-                ]
-                hole_candidates = [
-                    candidate
-                    for candidate in child_candidates
-                    if candidate["classification"]["role"] == "hole"
+                # hierarchy 的 children 是"按面积降序"排列后的序号，必须用
+                # hierarchy[...] 取值。被父轮廓直接包含的子轮廓在几何上就是
+                # 孔洞，不能再要求分类器也标成 hole（图层弱化后分类器常把它
+                # 标成 panel）。旧代码用 accepted_candidates[child_index] 取错
+                # 元素、又用 role == "hole" 过滤一次，导致被包含的闭合多段线
+                # 孔洞被静默丢弃 —— CGR45 曾丢 153 个盆孔。
+                hole_items = [
+                    hierarchy[child_index] for child_index in item["children"]
                 ]
                 outer = item["poly"]
-                holes = [candidate["polygon"] for candidate in hole_candidates]
-                hole_handles = [
-                    candidate.get("handle") for candidate in hole_candidates
-                ]
+                holes = [child["poly"] for child in hole_items]
+                hole_handles = [child.get("handle") for child in hole_items]
                 combined = outer
                 if holes:
                     combined = outer.difference(unary_union(holes))

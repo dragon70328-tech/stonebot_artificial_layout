@@ -3,7 +3,6 @@
 """DXF 自动排板系统 - 主入口（支持 CLI 参数 + 交互模式）"""
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -12,7 +11,6 @@ import time
 import re
 from datetime import datetime
 from pathlib import Path
-from collections import Counter
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -38,28 +36,11 @@ from src.project_config import (
 )
 from src.drawing_profile import (
     analyze_drawing,
-    audit_drawing,
     load_profiles,
     rank_profiles,
     read_dxf_with_profile,
-    write_audit_dxf,
 )
 from src.case_library import load_cases, load_case_profile, match_case
-from src.audit_cache import (
-    DEFAULT_CACHE_DIR,
-    audit_cache_key,
-    load_cached_issues,
-    save_cached_issues,
-)
-from src.visual_evidence import write_issue_evidence_svg
-from src.visual_renderer import write_dxf_overview_svg
-from src.contracts import (
-    DrawingIssue as ContractDrawingIssue,
-    IssueSeverity,
-    IssueStatus,
-    RecheckSummary,
-    ReviewState,
-)
 from src.recognized_contract import parts_data_to_recognized_drawing
 from src.workflow import (
     PreparedDrawing,
@@ -83,6 +64,10 @@ from src.template_nesting import match_template, nest_from_template
 from src.artifact_store import ArtifactStore
 from src.workflow_session import WorkflowSession, WorkflowStage
 from src.agent_cli import run_agent_mode
+from src.cli_audit import run_audit, split_issue_ids
+from src.cli_paths import make_output_dir
+
+
 # ═══════════════════════════════════════════════════════════════
 #  CLI 参数
 # ═══════════════════════════════════════════════════════════════
@@ -108,6 +93,10 @@ def parse_args():
                    help="排板质量档位：fast=快速预览，balanced=折中，best=高质量")
     p.add_argument("--quick", action="store_true",
                    help="快速模式：使用 4 组贪心配置，适合先看板数")
+    p.add_argument("--no-beam", action="store_true",
+                   help="关闭逐板最佳填充束搜索，只用多轮贪心配置")
+    p.add_argument("--beam-width", type=int, default=None,
+                   help="束搜索每层保留的布局数（默认 full=1000 / quick=400）")
     p.add_argument("--imperial", action="store_true",
                    help="英制模式（默认公制）")
 
@@ -151,6 +140,10 @@ def parse_args():
                    help="排板完成后不询问板数，直接开始后处理")
     p.add_argument("--no-auto-review", action="store_true",
                    help="排板后不自动回看跨板减板机会")
+    p.add_argument("--use-template", action="store_true",
+                   help="允许复用已验证模板布局（默认关闭，只用算法排板）")
+    p.add_argument("--cold-start", action="store_true",
+                   help="冷启动：忽略模板/已验证案例/审图缓存，仅用原始 DXF + 配置")
     p.add_argument("--review-budget", type=float, default=120.0,
                    help="自动回看的总时间上限（秒，默认 120）")
     p.add_argument("--report-only", action="store_true",
@@ -200,279 +193,6 @@ def parse_args():
                    help="排除图层，逗号分隔")
 
     return p.parse_args()
-
-
-# ═══════════════════════════════════════════════════════════════
-#  辅助
-# ═══════════════════════════════════════════════════════════════
-
-def make_output_dir(dxf_path: str, *, root: Path | None = None) -> Path:
-    """按 时间戳_文件名 创建输出子目录"""
-    stem = Path(dxf_path).stem
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base_dir = root if root is not None else PROJECT_ROOT / "output"
-    out_dir = base_dir / f"{ts}_{stem}"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir
-
-
-def _severity_contract(value: str) -> IssueSeverity:
-    return {
-        "error": IssueSeverity.ERROR,
-        "warning": IssueSeverity.WARNING,
-        "info": IssueSeverity.INFO,
-    }.get(value, IssueSeverity.WARNING)
-
-
-def _to_contract_issue(issue) -> ContractDrawingIssue:
-    """把 drawing_profile.DrawingIssue 转成读图数据契约。"""
-    return ContractDrawingIssue(
-        issue_id=str(issue.issue_id),
-        severity=_severity_contract(issue.severity),
-        issue_type=issue.type,
-        entity_handle=issue.entity_handle,
-        layer=issue.layer,
-        coordinates=issue.coordinates,
-        message=issue.message,
-        suggestion=issue.suggestion,
-        status=IssueStatus.NEW,
-    )
-
-
-def _file_sha256(path: str) -> str:
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-
-def _issues_match(
-    previous: ContractDrawingIssue,
-    current: ContractDrawingIssue,
-    coordinate_tolerance: float = 10.0,
-) -> bool:
-    """按实体句柄、坐标或图层/消息判断是否为同一问题。"""
-    if previous.issue_type != current.issue_type:
-        return False
-    if previous.entity_handle and current.entity_handle:
-        return previous.entity_handle == current.entity_handle
-    if previous.coordinates and current.coordinates:
-        return (
-            math.hypot(
-                previous.coordinates[0] - current.coordinates[0],
-                previous.coordinates[1] - current.coordinates[1],
-            )
-            <= coordinate_tolerance
-        )
-    return previous.layer == current.layer and previous.message == current.message
-
-
-def _split_issue_ids(value: str | None) -> list[str]:
-    if not value:
-        return []
-    return [item.strip() for item in value.split(",") if item.strip()]
-
-
-def _apply_issue_statuses(
-    issues: list[ContractDrawingIssue],
-    accept_issue_ids: list[str],
-    ignore_issue_ids: list[str],
-    fixed_issue_ids: list[str],
-) -> list[ContractDrawingIssue]:
-    """把用户指定的状态写入当前问题列表。"""
-    status_by_id: dict[str, IssueStatus] = {}
-    for issue_id in accept_issue_ids:
-        status_by_id[issue_id] = IssueStatus.ACCEPTED
-    for issue_id in ignore_issue_ids:
-        status_by_id[issue_id] = IssueStatus.IGNORED
-    for issue_id in fixed_issue_ids:
-        status_by_id[issue_id] = IssueStatus.FIXED
-    if not status_by_id:
-        return issues
-
-    updated: list[ContractDrawingIssue] = []
-    for issue in issues:
-        status = status_by_id.get(issue.issue_id)
-        if status is None:
-            updated.append(issue)
-        else:
-            updated.append(issue.model_copy(update={"status": status}))
-    return updated
-
-
-def run_audit(
-    dxf_path: str,
-    previous_state_path: str | None = None,
-    accept_issue_ids: list[str] | None = None,
-    ignore_issue_ids: list[str] | None = None,
-    fixed_issue_ids: list[str] | None = None,
-) -> None:
-    """只做读图审图，输出问题 JSON 和高亮 DXF，不进入排板。"""
-    if Path(dxf_path).suffix.lower() != ".dxf":
-        print(f"错误：仅支持 DXF 输入，收到 - {dxf_path}")
-        sys.exit(1)
-    stem = Path(dxf_path).stem
-    out_dir = make_output_dir(dxf_path)
-
-    drawing_profile = resolve_drawing_profile(dxf_path)
-    if drawing_profile is None:
-        print("错误：审图模式需要匹配到 drawing_profiles/*.json 图纸画像。")
-        sys.exit(1)
-
-    print(f"matched drawing profile: {drawing_profile.name}")
-    current_hash = _file_sha256(dxf_path)
-    cache_key = audit_cache_key(current_hash, drawing_profile)
-    issues = load_cached_issues(DEFAULT_CACHE_DIR, cache_key)
-    if issues is None:
-        print("开始审图...")
-        issues = audit_drawing(dxf_path, drawing_profile)
-        save_cached_issues(DEFAULT_CACHE_DIR, cache_key, issues)
-    else:
-        print(f"使用审计缓存: {cache_key[:24]}...")
-    contract_issues = [_to_contract_issue(issue) for issue in issues]
-
-    previous_state = None
-    recheck = None
-    if previous_state_path:
-        previous_path = Path(previous_state_path)
-        if not previous_path.exists():
-            print(f"错误：找不到上次审图状态文件 - {previous_state_path}")
-            sys.exit(1)
-        previous_state = ReviewState.from_json(
-            previous_path.read_text(encoding="utf-8")
-        )
-        if previous_state.file_sha256 == current_hash:
-            print("提示：当前文件与上次审图文件哈希相同，复检差异可能为空。")
-
-    audit_json = out_dir / f"{stem}_audit.json"
-    audit_dxf = out_dir / f"{stem}_audit.dxf"
-    state_json = out_dir / f"{stem}_review_state.json"
-    recheck_json = out_dir / f"{stem}_recheck.json"
-
-    if previous_state is not None:
-        matched_new_indexes: set[int] = set()
-        recheck_fixed_issue_ids: list[str] = []
-        still_open_issue_ids: list[str] = []
-        for old_issue in previous_state.issues:
-            matched = False
-            for index, current_issue in enumerate(contract_issues):
-                if index in matched_new_indexes:
-                    continue
-                if _issues_match(old_issue, current_issue):
-                    contract_issues[index] = current_issue.model_copy(
-                        update={"status": old_issue.status}
-                    )
-                    still_open_issue_ids.append(old_issue.issue_id)
-                    matched_new_indexes.add(index)
-                    matched = True
-                    break
-            if not matched:
-                recheck_fixed_issue_ids.append(old_issue.issue_id)
-        new_issue_ids = [
-            issue.issue_id
-            for index, issue in enumerate(contract_issues)
-            if index not in matched_new_indexes
-        ]
-        recheck = RecheckSummary(
-            parent_review_id=previous_state.review_id,
-            child_review_id=f"review_{current_hash[:16]}",
-            fixed_issue_ids=recheck_fixed_issue_ids,
-            still_open_issue_ids=still_open_issue_ids,
-            new_issue_ids=new_issue_ids,
-        )
-
-    contract_issues = _apply_issue_statuses(
-        contract_issues,
-        accept_issue_ids=accept_issue_ids or [],
-        ignore_issue_ids=ignore_issue_ids or [],
-        fixed_issue_ids=fixed_issue_ids or [],
-    )
-
-    if len(contract_issues) <= MAX_EVIDENCE_ISSUES:
-        evidence_results = write_issue_evidence_svg(
-            dxf_path, contract_issues, out_dir
-        )
-    else:
-        print(
-            f"警告：问题数量 {len(contract_issues)} 超过 "
-            f"{MAX_EVIDENCE_ISSUES}，跳过逐问题 SVG，仅生成整图检查图。"
-        )
-        evidence_results = []
-    if evidence_results:
-        evidence_by_issue_id = {
-            item["issue_id"]: item for item in evidence_results
-        }
-        contract_issues = [
-            issue.model_copy(
-                update={
-                    "evidence_artifact_id": evidence_by_issue_id.get(
-                        issue.issue_id, {}
-                    ).get("artifact_id"),
-                    "evidence_digest": evidence_by_issue_id.get(
-                        issue.issue_id, {}
-                    ).get("digest"),
-                }
-            )
-            if issue.issue_id in evidence_by_issue_id
-            else issue
-            for issue in contract_issues
-        ]
-
-    summary = Counter(issue.issue_type for issue in contract_issues)
-    payload = {
-        "schema_version": contract_issues[0].schema_version if contract_issues else "0.1.0",
-        "source": str(Path(dxf_path).resolve()),
-        "file_sha256": current_hash,
-        "issue_count": len(contract_issues),
-        "summary": dict(summary),
-        "issues": [issue.model_dump(mode="json") for issue in contract_issues],
-    }
-    if recheck is not None:
-        payload["recheck"] = recheck.model_dump(mode="json")
-    audit_json.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    write_audit_dxf(dxf_path, issues, audit_dxf)
-    overview_svg = out_dir / f"{stem}_overview.svg"
-    try:
-        write_dxf_overview_svg(dxf_path, overview_svg, issues=issues)
-    except Exception as exc:
-        print(f"警告：生成整图检查 SVG 失败 - {exc}")
-        overview_svg = None
-
-    review_state = ReviewState(
-        review_id=recheck.child_review_id if recheck else f"review_{current_hash[:16]}",
-        drawing_path=str(Path(dxf_path).resolve()),
-        file_sha256=current_hash,
-        profile_name=drawing_profile.name,
-        parent_review_id=previous_state.review_id if previous_state else None,
-        issues=contract_issues,
-    )
-    state_json.write_text(review_state.to_json(), encoding="utf-8")
-    if recheck is not None:
-        recheck_json.write_text(recheck.to_json(), encoding="utf-8")
-
-    print(f"审图完成：发现 {len(contract_issues)} 个问题")
-    for issue_type, count in sorted(summary.items()):
-        print(f"  {issue_type}: {count}")
-    for issue in issues[:10]:
-        print(
-            f"  ! [{issue.severity}] {issue.type} "
-            f"({issue.coordinates[0]:.1f}, {issue.coordinates[1]:.1f}) "
-            f"{issue.message}"
-        )
-    print(f"JSON: {audit_json}")
-    print(f"高亮 DXF: {audit_dxf}")
-    if overview_svg is not None:
-        print(f"检查图: {overview_svg}")
-    print(f"状态: {state_json}")
-    if recheck is not None:
-        print(
-            f"复检: 修复 {len(recheck.fixed_issue_ids)}，"
-            f"仍存在 {len(recheck.still_open_issue_ids)}，"
-            f"新增 {len(recheck.new_issue_ids)}"
-        )
-        print(f"复检 JSON: {recheck_json}")
-
-
 def resolve_sheet_size(args) -> tuple[float, float]:
     """从 --size / 定位参数 解析大板尺寸"""
     if args.size:
@@ -507,9 +227,6 @@ def print_thicknesses():
     """打印标准厚度"""
     labels = ", ".join(f"{t:.0f}mm" for t in STANDARD_THICKNESSES)
     print(f"\n标准厚度：{labels}")
-
-
-MAX_EVIDENCE_ISSUES = 100
 
 
 def resolve_processing_class(value: str | None) -> str | None:
@@ -812,10 +529,24 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         sheet_oversize: tuple[float, float] | None = None,
         output_root: Path | None = None,
         auto_review: bool = True,
-        review_budget_s: float = 120.0) -> None:
-    """核心排板流程"""
+        review_budget_s: float = 120.0,
+        use_template: bool = False,
+        cold_start: bool = False,
+        beam: bool = True,
+        beam_width: int | None = None) -> None:
+    """核心排板流程
+
+    ``use_template`` 默认 False：模板布局复用是显式选择，默认只跑算法，
+    避免"看起来是算法结果、实际是历史布局复刻"。``cold_start`` 进一步
+    忽略已验证案例库与审图缓存，只依赖原始 DXF + 画像配置。
+    """
     if profile is None:
         profile = PROFILE_MIN_SHEETS
+
+    if cold_start:
+        use_template = False
+        print("冷启动模式：忽略历史模板/已验证案例/审图缓存，"
+              "仅用原始 DXF + 画像配置")
 
     # 工作流会话记录层：CLI 是状态机的第一个消费者，仅记录不改变行为
     session = WorkflowSession(
@@ -855,6 +586,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         reader_options=reader_options,
         group_mode=profile.group_mode,
         input_limits=input_limits,
+        use_case_library=not cold_start,
     )
     if prepared.error:
         print(f"错误：{prepared.error}")
@@ -940,8 +672,11 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
 
     template_result = False
     nesting = None
+    layout_source = "algorithm"
     if (
-        groups == [None]
+        use_template
+        and not cold_start
+        and groups == [None]
         and special_w is None
         and not profile.uses_deepnest
     ):
@@ -973,6 +708,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
                     elapsed_seconds=0.0,
                 )
                 template_result = True
+                layout_source = f"template:{template_record.name}"
                 print(f"模板排板命中: {template_record.name}")
 
     if nesting is None:
@@ -980,8 +716,11 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
             parts, groups, width_mm, height_mm, special_w, special_h,
             effective_thickness, unit, profile, drawing_profile,
             trials, seed, budget, quick, pairing,
+            beam=beam, beam_width=beam_width,
         )
     result = nesting.result
+    print(f"布局来源: 模板 {layout_source}" if template_result
+          else "布局来源: 算法排板")
     material_summary = nesting.material_summary
     total_min_sheets = nesting.total_min_sheets
     total_special_parts = nesting.total_special_parts
@@ -997,11 +736,17 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
             "total_sheets": result.total_sheets,
             "yield_rate": round(result.yield_rate, 2),
             "elapsed_seconds": round(elapsed, 1),
+            "layout_source": layout_source,
         },
     )
     if report_only:
         print("已按 --report-only 停止：未执行后处理和输出文件。")
-        return {"report_only": True}
+        return {
+            "report_only": True,
+            "layout_source": layout_source,
+            "total_sheets": result.total_sheets,
+            "yield_rate": round(result.yield_rate, 2),
+        }
     if confirm_sheet_count and sys.stdin.isatty():
         ans = input("是否接受该板数并开始后处理推板？[y/N]: ").strip().lower()
         if ans not in ("y", "yes"):
@@ -1089,6 +834,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         return {
             "geometry_errors": errors,
             "check_path": str(check_path),
+            "layout_source": layout_source,
         }
 
     session.transition(
@@ -1108,6 +854,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
             "geometry_errors": errors,
             "postprocess_warnings": postprocess_warnings,
             "check_path": str(check_path),
+            "layout_source": layout_source,
         }
 
     # ── 输出 ──
@@ -1157,6 +904,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         "geometry_errors": errors,
         "postprocess_warnings": postprocess_warnings,
         "check_path": str(check_path),
+        "layout_source": layout_source,
     }
 
 
@@ -1269,9 +1017,10 @@ def main():
         run_audit(
             dxf_path,
             previous_state_path=args.previous_state,
-            accept_issue_ids=_split_issue_ids(args.accept_issue),
-            ignore_issue_ids=_split_issue_ids(args.ignore_issue),
-            fixed_issue_ids=_split_issue_ids(args.mark_fixed),
+            accept_issue_ids=split_issue_ids(args.accept_issue),
+            ignore_issue_ids=split_issue_ids(args.ignore_issue),
+            fixed_issue_ids=split_issue_ids(args.mark_fixed),
+            use_cache=not args.cold_start,
         )
         return
 
@@ -1436,6 +1185,10 @@ def main():
         sheet_oversize=sheet_oversize,
         auto_review=not args.no_auto_review,
         review_budget_s=args.review_budget,
+        use_template=args.use_template,
+        cold_start=args.cold_start,
+        beam=not args.no_beam,
+        beam_width=args.beam_width,
     )
     if args.check_only:
         sys.exit(check_only_exit_code(outcome))

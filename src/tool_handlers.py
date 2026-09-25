@@ -56,7 +56,9 @@ def _analyze_drawing(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
 
 def _match_profile(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
     path = _set_input_path(ctx, args)
-    ctx.drawing_profile = resolve_drawing_profile(path)
+    ctx.drawing_profile = resolve_drawing_profile(
+        path, use_case_library=ctx.use_case_library
+    )
     return {
         "matched": ctx.drawing_profile is not None,
         "profile": (
@@ -190,7 +192,7 @@ def _nest_parts(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
         groups = [None]
 
     template_record = None
-    if groups == [None] and not profile.uses_deepnest:
+    if ctx.use_template and groups == [None] and not profile.uses_deepnest:
         template_record = match_template(
             ctx.dxf_path,
             ctx.width_mm,

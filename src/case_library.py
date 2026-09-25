@@ -13,7 +13,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .drawing_profile import DrawingProfile, load_profile
+from .drawing_profile import (
+    DrawingProfile,
+    fingerprint_similarity,
+    load_profile,
+)
 
 
 @dataclass
@@ -66,50 +70,13 @@ def load_cases(directory: str | Path) -> list[CaseRecord]:
     return [load_case(path) for path in sorted(directory.glob("*.json"))]
 
 
-def _jaccard(left: set[str], right: set[str]) -> float:
-    if not left and not right:
-        return 1.0
-    union = left | right
-    if not union:
-        return 0.0
-    return len(left & right) / len(union)
-
-
-def _set_from_mapping(mapping: dict[str, Any] | None) -> set[str]:
-    return {str(key) for key in (mapping or {})}
-
-
 def case_similarity(fingerprint: dict[str, Any], case: CaseRecord) -> float:
-    """Return a 0-100 similarity score between two drawing fingerprints."""
-    case_fingerprint = case.fingerprint
+    """Return a 0-100 similarity score between two drawing fingerprints.
 
-    layer_score = _jaccard(
-        _set_from_mapping(fingerprint.get("layer_counts")),
-        _set_from_mapping(case_fingerprint.get("layer_counts")),
-    )
-    entity_score = _jaccard(
-        _set_from_mapping(fingerprint.get("entity_counts")),
-        _set_from_mapping(case_fingerprint.get("entity_counts")),
-    )
-    linetype_score = _jaccard(
-        _set_from_mapping(fingerprint.get("linetype_counts")),
-        _set_from_mapping(case_fingerprint.get("linetype_counts")),
-    )
-
-    score = layer_score * 50.0
-    score += entity_score * 20.0
-    score += linetype_score * 15.0
-
-    for key in ("has_circle", "has_lwpolyline", "has_line"):
-        if fingerprint.get(key) == case_fingerprint.get(key):
-            score += 5.0
-
-    if fingerprint.get("dxf_version") == case_fingerprint.get("dxf_version"):
-        score += 5.0
-    if fingerprint.get("insunits") == case_fingerprint.get("insunits"):
-        score += 5.0
-
-    return min(100.0, score)
+    具体评分规则由 ``drawing_profile.fingerprint_similarity`` 统一维护，
+    避免画像排序与案例匹配两处各写一份。
+    """
+    return fingerprint_similarity(fingerprint, case.fingerprint)
 
 
 def match_case(

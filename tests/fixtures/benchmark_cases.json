@@ -1,0 +1,144 @@
+{
+  "schema_version": "0.1.0",
+  "notes": "金标准回归用例。期望值来自 drawing_profiles/*.json 的 expected_counts 或 2026-09-23 实测基线（notes 中标注）。样本放在 tests/fixtures/dxf/，不读 output/（该目录随时可被清理）。排板用例的 sheet 是**大板标称尺寸**；让尺（sheet_oversize）与刀缝（kerf_mm）是独立字段，不要并入 sheet。",
+  "cases": [
+    {
+      "name": "cgr45_read",
+      "kind": "read",
+      "input": "tests/fixtures/dxf/CGR45final.dxf",
+      "profile": "cgr45",
+      "expected": {
+        "panels": 203,
+        "holes": 306,
+        "numbers": 203
+      },
+      "notes": "CGR45 冷启动读图金标准；2026-09-23 修复前 holes 曾回归到 153（被包含的闭合多段线孔洞被静默丢弃）"
+    },
+    {
+      "name": "countertop2_read",
+      "kind": "read",
+      "input": "tests/fixtures/dxf/countertop2.dxf",
+      "profile": "countertop2",
+      "expected": {
+        "panels": 100,
+        "holes": 0,
+        "numbers": 100
+      },
+      "notes": "2026-09-23 实测基线（画像未声明 expected_counts，未经人工复核）"
+    },
+    {
+      "name": "mercury_numbered_read",
+      "kind": "read",
+      "input": "tests/fixtures/dxf/mercury_numbered_原位.dxf",
+      "profile": "mercury",
+      "expected": {
+        "panels": 311,
+        "holes": 0,
+        "numbers": 0
+      },
+      "notes": "样本是原位编号 DXF（非原始图纸），只作为排板输入与当前读图基线；画像声明的 1258 件对应原始图纸，不能用于此样本",
+      "check_determinism": true
+    },
+    {
+      "name": "cgr45_nest_bridge",
+      "kind": "nesting",
+      "input": "tests/fixtures/dxf/CGR45final.dxf",
+      "sheet": [
+        3200,
+        1800
+      ],
+      "nesting_profile": "quick",
+      "quick": true,
+      "budget": 0.0,
+      "trials": 1,
+      "seed": 0,
+      "slow": true,
+      "limits": {
+        "max_sheets": 51,
+        "min_yield": 70.0,
+        "max_seconds": 600.0
+      },
+      "notes": "台面板主路径（桥切/圆盘锯）。2026-09-25 新基线：51 张 / 71.52% / ~107s（quick 含 beam_width=400 逐板束搜索，见 src/beam_nesting.py 与 worklog_2026-09-25）；管线开启回看后可再减 1 张到 50 张 / 72.95%，追平历史模板。历史：2026-09-23 基线 52 张 / 70.15% / 23.9s；面积理论下界 37 张。max_sheets=51 表示不得比现状更差。 口径说明：本用例是**标称口径**（kerf=0、无让尺），生产口径请用 kerf_mm + sheet_oversize 字段登记。",
+      "target_scenario": true
+    },
+    {
+      "name": "cgr45_nest_bridge_kerf",
+      "kind": "nesting",
+      "input": "tests/fixtures/dxf/CGR45final.dxf",
+      "sheet": [
+        3200,
+        1800
+      ],
+      "nesting_profile": "quick",
+      "quick": true,
+      "budget": 0.0,
+      "trials": 1,
+      "seed": 0,
+      "thickness": 20.0,
+      "kerf_mm": 5.0,
+      "sheet_oversize": [
+        30,
+        30
+      ],
+      "slow": true,
+      "limits": {
+        "max_sheets": 51,
+        "min_yield": 70.0,
+        "max_seconds": 300.0
+      },
+      "notes": "**桥切生产口径**：标称 3200x1800、刀缝 5mm、让尺 30mm（让尺只用于容纳刀路，不放大零件可用尺寸）。2026-09-25 实测 51 张 / 71.52% / ~108s，与标称口径同板数（让尺正好容纳刀路）。历史：2026-09-23 实测 52 张 / 70.15% / 19.0s。max_sheets=51 表示不得比现状更差。"
+    },
+    {
+      "name": "cgr45_nest_waterjet",
+      "kind": "nesting",
+      "input": "tests/fixtures/dxf/CGR45final.dxf",
+      "sheet": [
+        3200,
+        1800
+      ],
+      "nesting_profile": "waterjet",
+      "quick": true,
+      "budget": 0.0,
+      "trials": 1,
+      "seed": 0,
+      "slow": true,
+      "limits": {
+        "max_sheets": 54,
+        "min_yield": 65.0,
+        "max_seconds": 120.0
+      },
+      "notes": "**非目标场景**：CGR45 是 203 件台面板，产线上走桥切（圆盘锯），不该用水刀/激光。此用例只作为\"水刀引擎处理多边形件\"的行为基线（54 张 / 67.55% / 10.0s），用来防止引擎本身退化，**不能当作水刀工艺能力**。水刀的真实案例是异形件（见 outlets2_nest_waterjet）。",
+      "target_scenario": false,
+      "kerf_mm": 0.0
+    },
+    {
+      "name": "outlets2_nest_waterjet",
+      "kind": "nesting",
+      "input": "tests/fixtures/dxf/dongguan_outlets2_numbered_原位.dxf",
+      "sheet": [
+        3200,
+        1800
+      ],
+      "nesting_profile": "waterjet",
+      "quick": true,
+      "budget": 0.0,
+      "trials": 1,
+      "seed": 0,
+      "slow": true,
+      "pending": true,
+      "target_scenario": true,
+      "limits": {
+        "max_sheets": 53,
+        "min_yield": 65.0,
+        "max_seconds": 900.0
+      },
+      "notes": "**水刀/激光的真实目标场景（待补样本）**：东莞奥特莱斯2，1109 件异形件。大板标称 **3200x1800**，厚 20mm；让尺 30mm 与刀缝 5mm 是**独立工艺参数**，不并入大板尺寸（不要写成 3230x1830）。历史记录 54 张 → 回看 53 张 / 68.86% 是 3200x1600 口径，与 3200x1800 不可直接比较，样本补齐后必须重测基线再填 limits。",
+      "thickness": 20.0,
+      "kerf_mm": 5.0,
+      "sheet_oversize": [
+        30,
+        30
+      ]
+    }
+  ]
+}

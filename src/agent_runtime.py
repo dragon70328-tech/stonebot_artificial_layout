@@ -69,6 +69,8 @@ class AgentRuntime:
         global_feedback_dir: Path | None = None,
         session_id: str | None = None,
         restore_session: WorkflowSession | None = None,
+        use_template: bool = False,
+        cold_start: bool = False,
     ) -> None:
         self.provider_name = provider_name
         self.dxf_path = Path(dxf_path)
@@ -126,6 +128,8 @@ class AgentRuntime:
             recognition_model=self.recognition_model,
             recognition_model_path=self.recognition_model_path,
             global_feedback_dir=self.global_feedback_dir,
+            use_template=use_template and not cold_start,
+            use_case_library=not cold_start,
         )
 
         self.session_id = (
@@ -166,6 +170,10 @@ class AgentRuntime:
             )
         self.last_result: AgentLoopResult | None = None
         self.last_error: str | None = None
+        # Latest artifact-sync failures, exposed through status(). The list is
+        # rebuilt on every _record_artifacts() call so it always describes the
+        # most recent attempt instead of accumulating stale errors.
+        self.artifact_sync_errors: list[dict[str, Any]] = []
 
     def _make_output_dir(self) -> Path:
         stem = self.dxf_path.stem
@@ -360,6 +368,7 @@ class AgentRuntime:
         self.store.save(self.session)
 
     def _record_artifacts(self) -> None:
+        self.artifact_sync_errors = []
         candidates = {
             "numbered_dxf": self.context.numbered_dxf_path,
             "nested_dxf": self.context.nested_dxf_path,
@@ -393,17 +402,27 @@ class AgentRuntime:
             )
             artifact = ref.to_dict()
             if self.object_store is not None:
+                object_key = (
+                    f"{self.artifact_object_prefix}/{key}/{Path(path).name}"
+                )
                 try:
-                    object_key = (
-                        f"{self.artifact_object_prefix}/{key}/{Path(path).name}"
-                    )
                     object_ref = self.object_store.put_bytes(
                         object_key,
                         Path(path).read_bytes(),
                     )
                     artifact["object_key"] = object_ref["key"]
-                except Exception:  # noqa: BLE001 - local path remains fallback
-                    pass
+                except Exception as exc:  # noqa: BLE001 - local path is fallback
+                    # The local artifact stays usable, but the failure must be
+                    # observable instead of silently swallowed.
+                    message = f"{type(exc).__name__}: {exc}"
+                    artifact["object_store_error"] = message
+                    self.artifact_sync_errors.append(
+                        {
+                            "artifact": key,
+                            "object_key": object_key,
+                            "error": message,
+                        }
+                    )
             self.session.artifacts[key] = artifact
 
     def status(self) -> dict[str, Any]:
@@ -420,6 +439,7 @@ class AgentRuntime:
             ),
             "artifacts": snapshot["artifacts"],
             "session_artifacts": self.session.artifacts,
+            "artifact_sync_errors": list(self.artifact_sync_errors),
             "correction_context": build_correction_context(self.context),
             "error": self.last_error,
             "session": self.session.to_dict(),

@@ -1,0 +1,40 @@
+{
+  "note": "从 output/ 与 _archive/ 抢救的幸存样本；output/<时间戳>_*/ 目录不在 git 中，已被清理过一次。",
+  "files": [
+    {
+      "file": "CGR45final.dxf",
+      "sha256": "be46958f652788d692d65d3f10cb38d6a21ebd583321d2544a289b076c16ec02",
+      "bytes": 7275503,
+      "role": "raw upload (编号/孔洞识别输入)",
+      "source": "output/api_jobs/object_store/tenants/default/projects/uploads/inputs/CGR45final.dxf",
+      "drawing_profile": "cgr45.json",
+      "expected_counts": {
+        "panels": 203,
+        "holes": 306,
+        "numbers": 203
+      }
+    },
+    {
+      "file": "countertop2.dxf",
+      "sha256": "898edef031e1ef07140a65cfd23b05100a61bbe9751363e688a7b502b4b73bab",
+      "bytes": 2140163,
+      "role": "raw upload (无孔洞台面)",
+      "source": "output/api_jobs/object_store/tenants/default/projects/uploads/inputs/countertop2.dxf",
+      "drawing_profile": "countertop2.json",
+      "expected_counts": null
+    },
+    {
+      "file": "mercury_numbered_原位.dxf",
+      "sha256": "e412d8d67c20e96e9ef2d43e00c68bc32f622d8ecbb06f9ae6ea17a144ab9a39",
+      "bytes": 1066091,
+      "role": "原位编号 DXF (排板输入)",
+      "source": "_archive/output_loose/水星项目户型及排板_numbered_原位.dxf",
+      "drawing_profile": "mercury.json",
+      "expected_counts": {
+        "panels": 1258,
+        "holes": 0,
+        "numbers": 1258
+      }
+    }
+  ]
+}

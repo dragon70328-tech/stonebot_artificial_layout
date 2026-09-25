@@ -1,133 +1,174 @@
-﻿# Stonebot SaaS 搭建记录
+# Stonebot SaaS 搭建与运行
 
-> 最后更新: 2026-08-03 18:30
+> 最后更新: 2026-09-23
+
+本文件描述 SaaS 形态的**当前**搭建与运行方式。文末保留 2026-08-03 的早期
+规划记录，但其中“SaaS 代码尚未开始编写”“宝塔面板找不到添加站点入口”等
+结论已被实现取代，不要再据此排期。
+
+架构目标与五个支柱见 `docs/saas-architecture-goal.md`；读图子系统见
+`docs/drawing-intake-subsystem.md`；模型运维见
+`docs/recognition-model-operations.md`。
 
 ---
 
-## 目标
+## 1. 当前形态
 
-将现有的本地命令行排板系统，改造为可多用户在线使用的 SaaS 平台。
-
----
-
-## 技术架构方案
-
-| 层 | 技术选型 |
+| 层 | 实现 |
 |---|---|
-| 前端 | 待定（HTML/React/Vue） |
-| 后端 API | FastAPI |
-| 异步任务 | Celery + Redis |
-| 数据库 | PostgreSQL |
-| 部署 | 腾讯云，Nginx 反向代理，systemd |
-
-**SaaS 化阶段：**
-
-| 阶段 | 内容 | 状态 |
-|------|------|------|
-| MVP | FastAPI + 简单上传/下载界面 | 待开始 |
-| 多用户 | 认证 + 任务队列 + 数据库 | 待开始 |
-| SaaS | 支付 + 多租户 + 正式上线 | 待开始 |
+| 后端 API | FastAPI，`src/http_api.py`，uvicorn 单进程 |
+| 任务调度 | `src/task_queue.py`（文件 / SQLite）+ `src/worker.py`，可拆独立 worker 进程 |
+| 工作流 | `src/workflow_session.py` 状态机 + `src/agent_runtime.py` + `src/orchestrator.py` |
+| 数据 | 文件存储（`STONEBOT_DATA_ROOT`），可切 SQLite 统一状态库 |
+| 对象存储 | 本地目录，或 S3 / MinIO / LocalStack（`src/object_store.py`） |
+| 多租户 | `src/tenant_store.py` + API Key（`X-API-Key` / `X-Tenant-Id`） |
+| 前端 | 静态门户 `portal/`，由 API 直接挂载：`/` 识图排板、`/admin` 模型运维 |
+| 部署 | `Dockerfile` + `docker-compose.yml`（api + worker 两个服务） |
+| CI | GitHub Actions 跑 `python -X utf8 -m pytest -q -m "not slow"` |
 
 ---
 
-## 服务器信息
+## 2. 本地启动
 
-| 项目 | 详情 |
-|------|------|
+### 2.1 依赖
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+Python 3.10+（CI 使用 3.11）。
+
+### 2.2 直接启动 API
+
+```bash
+python -X utf8 -m uvicorn src.http_api:app --host 127.0.0.1 --port 8002
+```
+
+- `http://127.0.0.1:8002/` 识图排板页
+- `http://127.0.0.1:8002/admin/` 识别模型运维页
+- `http://127.0.0.1:8002/docs` OpenAPI 文档
+- `http://127.0.0.1:8002/health` 健康检查（返回数据根目录）
+
+### 2.3 带 LLM 对话（可选）
+
+```powershell
+# 1. 复制 scripts/dev_env.example.ps1 为 scripts/dev_env.ps1 并填入密钥
+# 2. 启动（默认 DeepSeek 兼容端点）
+scripts\run_dev.ps1
+```
+
+`OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` 见 `src/openai_llm_client.py`。
+不配置 LLM 时，`--agent-provider queue`（默认）走确定性计划，功能不受影响。
+
+### 2.4 Docker Compose
+
+```bash
+docker compose up --build
+```
+
+- `api` 服务：`STONEBOT_WORKER_ENABLED=0`，只处理 HTTP；
+- `worker` 服务：`python scripts/api_worker.py`，执行排板等长任务；
+- 两者共享 `/data` 卷，并必须使用同一个 SQLite 任务库。
+
+独立部署 worker 时必须满足：
+
+```text
+STONEBOT_TASK_STORE=sqlite     # 文件队列无法跨进程
+STONEBOT_DATA_ROOT=<同一目录>
+STONEBOT_WORKER_ID=<每个 worker 唯一>
+```
+
+---
+
+## 3. 环境变量
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `STONEBOT_DATA_ROOT` | `output/api_jobs` | 任务、租户、会话、对象存储根目录 |
+| `STONEBOT_TASK_STORE` | `file` | 任务队列后端，跨进程必须为 `sqlite` |
+| `STONEBOT_JOB_STORE` | `file` | 任务清单持久化，可选 `sqlite` |
+| `STONEBOT_SESSION_STORE` | `file` | 工作流会话持久化，可选 `sqlite` |
+| `STONEBOT_TENANT_STORE` | `file` | 租户/项目目录持久化，可选 `sqlite` |
+| `STONEBOT_STATE_DB` | 未设置 | 设为 `unified` 时上述存储共用一个 `state.sqlite3` |
+| `STONEBOT_WORKER_ENABLED` | `1` | 当前进程是否内嵌 worker |
+| `STONEBOT_WORKER_ID` | 自动 | worker 标识 |
+| `STONEBOT_OBJECT_STORE` | `local` | `local` / `s3` / `minio` / `localstack` |
+| `STONEBOT_S3_BUCKET` | 未设置 | S3 桶名（选择 S3 模式时必填） |
+| `STONEBOT_S3_ENDPOINT_URL` / `STONEBOT_S3_REGION` / `STONEBOT_S3_PREFIX` | 未设置 | S3 连接参数 |
+| `STONEBOT_S3_ACCESS_KEY_ID` / `STONEBOT_S3_SECRET_ACCESS_KEY` | 未设置 | S3 凭据 |
+| `STONEBOT_TOOL_TIMEOUT_S` | `1800` | 单个工具调用超时 |
+| `STONEBOT_TENANT_API_KEYS` | 未设置 | 多租户凭据 JSON（见下节） |
+| `STONEBOT_API_KEY` | 未设置 | 单租户简写，等价于 `default` 租户的 key |
+| `STONEBOT_LOG_LEVEL` | `INFO` | 日志级别 |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | 未设置 | LLM 对话式规划 |
+
+---
+
+## 4. 认证与租户边界
+
+- **未配置任何 key**：单机开发模式，请求归属 `default` 租户且拥有 `admin` 角色，
+  不做鉴权。**不要以此模式对公网开放。**
+- **配置 key 后**：请求必须携带 `X-API-Key` 与 `X-Tenant-Id`，两者不匹配返回 401；
+  跨租户访问任务返回 403。
+
+```bash
+export STONEBOT_TENANT_API_KEYS='{
+  "tenant-a": {"key": "sk-tenant-a", "roles": ["operator"]},
+  "ops": {"key": "sk-ops", "roles": ["admin"], "expires_at": 1790000000}
+}'
+```
+
+角色说明：`admin` 可访问 `/admin/*` 模型运维接口，也隐含其他所有角色权限；
+`operator` 可执行任务创建、确认与纠正。
+
+---
+
+## 5. 识别模型运维
+
+策略与命令见 `docs/recognition-model-operations.md`，运行时目录：
+
+```text
+<STONEBOT_DATA_ROOT>/recognition_models/
+  current.json              # 当前启用的全局模型
+  versions/                 # 训练版本
+  global_feedback/<tenant>/ # 用户同意全局学习的脱敏反馈
+  monitoring/latest.json    # 漂移监控报告
+  operations/audit.jsonl    # 管理审计日志
+```
+
+管理接口：`GET /admin/recognition-model/status`、
+`POST /admin/recognition-model/operations`、
+`POST /admin/recognition-model/rollback`。
+
+---
+
+## 6. 服务器与反向代理（需人工核对）
+
+早期记录保留如下，但**域名、DNS、服务器状态未在本仓库得到验证**，部署前
+必须与运维核对：
+
+| 项目 | 早期记录 |
+|---|---|
 | 云服务商 | 腾讯云 |
 | 操作系统 | OpenCloudOS 9.4 |
 | 管理面板 | 宝塔面板（端口 23524） |
 | Web 服务器 | Nginx 1.26.3 |
-| Docker | 未安装（暂不需要） |
+| 端口占用 | 80 / 888 Nginx，8000 旧版 stonebot，23524 宝塔 |
+| 旧项目 | `/opt/stonebot/`，端口 8000，保持不动 |
 
-**端口占用：**
-
-| 端口 | 用途 |
-|------|------|
-| 80 | Nginx |
-| 888 | Nginx |
-| 8000 | 现有 stonebot 项目（Python） |
-| 23524 | 宝塔面板 |
-
-**现有项目：**
-
-- 路径：`/opt/stonebot/`
-- 运行方式：Python 进程，端口 8000
-- 保留不动，与新 SaaS 共存
+新服务建议用独立子域反代到本服务端口，示例见 `deploy/nginx-portal.conf.example`
+（该示例假设门户静态目录 `/var/www/stonebot-portal`，`/nesting/` 反代到 8002）。
+若直接由 FastAPI 提供门户，则可只配置一条 `proxy_pass`，无需单独静态根目录。
 
 ---
 
-## 共用服务器方案
+## 7. 历史记录（2026-08-03，已被取代）
 
-```
-域名
-├── stonebot.yourdomain.com  → 8000（旧版，保留）
-└── nesting.yourdomain.com  → 8001（新版 SaaS）
-```
+原文结论：
 
-两个项目通过 Nginx 子域名区分，互不影响。
+- “SaaS 代码尚未开始编写” —— 已不成立，见第 1 节与 `docs/saas-architecture-goal.md`。
+- “宝塔面板未找到添加站点入口” —— 已不作为阻塞项，当前部署走 Docker/uvicorn。
+- “域名待确认，DNS 待解析” —— 仍需人工确认，见第 6 节。
 
----
-
-## 网站配置步骤
-
-### DNS 解析
-
-在腾讯云 DNS 控制台添加 A 记录：
-
-```
-主机记录: nesting
-记录类型: A
-记录值:   服务器 IP
-```
-
-### 方式一：宝塔面板
-
-1. 网站 → 添加站点 → 域名填 `nesting.你的域名.com`，根目录 `/opt/stonebot_saas`，PHP 选纯静态
-2. 设置 → 反向代理 → 目标 URL: `http://127.0.0.1:8001`
-
-> ❗ 待解决：宝塔面板没找到「添加站点」按钮
-
-### 方式二：命令行（备用）
-
-```bash
-mkdir -p /opt/stonebot_saas
-
-cat > /etc/nginx/conf.d/nesting.conf << 'EOF'
-server {
-    listen 80;
-    server_name nesting.你的域名.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:8001;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-EOF
-
-nginx -t && nginx -s reload
-```
-
----
-
-## 当前阻塞
-
-- 宝塔面板未找到添加站点入口（待用户确认版本或改用命令行）
-- 域名待确认，DNS 待解析
-- SaaS 代码尚未开始编写
-
----
-
-## 待办
-
-1. 确认域名，添加 DNS 解析
-2. 配置 Nginx 反向代理（宝塔或命令行）
-3. 本地搭建 FastAPI 项目框架
-4. 实现 DXF 上传 → 排板 → 下载核心流程
-5. 部署到服务器 /opt/stonebot_saas/
-6. 添加用户认证
-7. 添加任务队列（处理长时间排板）
-8. 添加数据库（项目历史记录）
+早期技术选型表（前端待定 / Celery + Redis / PostgreSQL）**未采用**：当前后端为
+FastAPI + 文件或 SQLite 存储 + 内置任务队列，未引入 Redis 与 PostgreSQL。

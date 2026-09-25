@@ -1,5 +1,7 @@
 ﻿"""DXF 输出：将排板结果写回 DXF 文件"""
 
+import sys
+
 import ezdxf
 from ezdxf import units
 from ezdxf.enums import TextEntityAlignment
@@ -205,6 +207,44 @@ def write_list_nesting_dxf(
     doc.saveas(output_path)
 
 
+def _create_part_group(doc, part: Part, entities: list) -> str | None:
+    """把单个面板的实体绑成一个 GROUP，返回实际使用的组名。
+
+    ezdxf 的 ``GroupCollection.new()`` 第二个位置参数是 description，
+    旧写法把实体列表放在那里，结果写出的是**空 GROUP**；重复编号还会抛
+    ``DXFValueError`` 并被 ``except Exception: pass`` 静默吞掉。这里改成
+    显式 ``new()`` + ``extend()``，编号重复时自动加后缀，真实失败写 stderr。
+    """
+    if not entities:
+        return None
+
+    base_name = f"PART_{getattr(part, 'number', '') or 'PART'}"
+    name = base_name
+    suffix = 2
+    while True:
+        try:
+            group = doc.groups.new(name)
+            group.extend(entities)
+            return name
+        except ezdxf.DXFValueError:
+            # 组名已被前面的面板占用：保留 GROUP，改用带后缀的名字。
+            if suffix > 1000:
+                print(
+                    f"警告：GROUP 名称 {base_name} 冲突过多，该面板未建组",
+                    file=sys.stderr,
+                )
+                return None
+            name = f"{base_name}_{suffix}"
+            suffix += 1
+        except Exception as exc:  # noqa: BLE001 - 不允许静默失败
+            print(
+                f"警告：创建 GROUP {name} 失败 - "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return None
+
+
 def _write_part_group(msp, part: Part, ox: float, oy: float,
                       layer_outer, layer_holes, layer_numbers, doc):
     """写单个面板：外轮廓 + 孔洞 + 编号 → GROUP"""
@@ -242,13 +282,8 @@ def _write_part_group(msp, part: Part, ox: float, oy: float,
     )
     group_entities.append(label)
 
-    # 创建 GROUP
-    if group_entities:
-        group_name = f"PART_{part.number}"
-        try:
-            doc.groups.new(group_name, group_entities)
-        except Exception:
-            pass
+    # 创建 GROUP（每个面板一个，实体逐个绑定）
+    _create_part_group(doc, part, group_entities)
 
 
 def _label_point(part: Part) -> tuple[float, float]:
@@ -336,10 +371,6 @@ def write_numbered_parts_dxf(parts: list, output_path: str,
         )
         group_entities.append(label)
 
-        if group_entities:
-            try:
-                doc.groups.new(f"PART_{part.number}", group_entities)
-            except Exception:
-                pass
+        _create_part_group(doc, part, group_entities)
 
     doc.saveas(output_path)

@@ -26,5 +26,32 @@
   "small_area_threshold": 100000.0,
   "material_group_enabled": false,
   "first_part_left_edge": false,
-  "notes": "countertop2 试点样本；100 个面板编号，无孔洞。"
+  "notes": "countertop2 试点样本；100 个面板编号，无孔洞。",
+  "fingerprint": {
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+      "TEXT": 153,
+      "LWPOLYLINE": 199,
+      "DIMENSION": 434,
+      "LINE": 19,
+      "MTEXT": 6
+    },
+    "layer_counts": {
+      "0": 154,
+      "毫米": 217,
+      "大样": 99,
+      "英寸": 217,
+      "D- text": 24,
+      "编号": 100
+    },
+    "linetype_counts": {
+      "BYLAYER": 706,
+      "ZIGZAG": 105
+    },
+    "has_hatch": false,
+    "has_lwpolyline": true,
+    "has_line": true,
+    "has_circle": false
+  }
 }

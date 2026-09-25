@@ -6,9 +6,37 @@
 
 当前实现是自写简化版：
 - arbitrary_rotation=False：使用传入的离散 rotations。
-- arbitrary_rotation=True：按 1 度步长枚举 0~359 度。
+- arbitrary_rotation=True：默认用**边对齐角度**（让零件最长直边与板边平行），
+  而不是等步长铺满 360°；等步长网格仅在调用方显式要求时使用。
 - 候选位置来自大板边界和已放面板包围盒边缘。
 - 每个候选位置做 -x / -y 滑动压实，取最左下位置。
+
+关于放置准则的实测结论（同一 CGR45final 案例，2026-09-23）：
+
+- 打分准则 bottom_left / skyline / column / contact：**都是 54 张**；
+- `_MAX_VALID_PER_ANGLE` 取 4 / 8 / 16：**都是 54 张**；
+- 候选顺序 legacy / sorted（按准则排序后截断）：**都是 54 张**；
+- 追加凹角锚定候选（`use_reflex=True`）：**54 张**，只是更慢（+8s）；
+- 多排序 trials（4 轮）：54 张；
+- 低填充板重排（`low_fill_rework=True`）：54 张，且更慢。
+
+即：该案例的板数由**贪心的"当前板放不下就换板、永不回头"结构**决定，
+不是由上面任何一个参数决定。要再降板数需要改动核心循环（桥切引擎那样
+批量构建候选多边形 + 最后统一滑动的实现，或真正的 LNS 跨板重排）。
+这些开关保留为显式实验入口，默认使用 legacy 口径。
+
+关于角度的实测结论（CGR45final，203 件，3200x1800，2026-09-23）：
+
+| 角度集 | 板数 | 出材率 | 耗时 |
+|---|---:|---:|---:|
+| 4 角 (0/90/180/270) | 54 | 67.55% | 8.7s |
+| 24 角 (15° 网格) | 61 | 59.80% | 35.4s |
+| 72 角 (5° 网格) | 61 | 59.80% | 104.3s |
+| 边对齐，最长 8 边（当前默认） | 54 | 67.55% | 11.4s |
+
+即：细化角度不但没有更密，反而更差（贪心近视：更多旋转让它先把零件放歪、
+堵住后续空间），5° 相对 15° 更是纯浪费（板数相同、多 69s）。因此默认
+改为边对齐角度集；`rotation_step` 只在 `angle_mode="grid"/"hybrid"` 时生效。
 """
 
 import math
@@ -21,12 +49,22 @@ from shapely.geometry import Point
 from shapely.strtree import STRtree
 
 from src.models import Part, Sheet, NestingResult
-from src.nesting import validate_nesting
+from src.nesting import _reflex_vertices, validate_nesting
 
 EPS = 1e-6
 _OVERLAP_PATTERN = "T********"
 _MAX_VALID_PER_ANGLE = 4
 _ARBITRARY_ROTATION_STEP = 5.0
+# 参与边对齐计算的直边数量上限（按边长降序取最长边）。
+# 实测（CGR45final，203 件）：上限 8 与 2/4 同为 54 张板，上限 16 反而退化到 55 张
+# 且更慢——过短的边带来的方向是噪声，会把零件摆歪并堵住后续空间。
+_MAX_EDGE_ANGLES = 8
+# 曲线件判定：最长若干条边占外轮廓周长的比例低于该值时，认为存在真实圆弧
+# （近似圆/样条扁平化），此时追加粗网格兜底——边对齐角度对圆弧没有意义。
+# 注意不能用"边方向数"判定：CAD 导出的矩形常带几十个冗余顶点/微段，
+# 方向数很多但长边占比接近 1.0，属于多边形而不是曲线件。
+_EDGE_COVERAGE_MIN = 0.6
+_EDGE_GRID_STEP = 45.0
 
 
 def _edge_segments(poly):
@@ -109,13 +147,89 @@ class _Placement:
     poly: shapely.Polygon
 
 
-def angle_candidates(rotations: tuple, arbitrary_rotation: bool,
-                     step: float = _ARBITRARY_ROTATION_STEP) -> list:
-    """返回待尝试的旋转角度。"""
-    if not arbitrary_rotation:
-        return list(rotations)
+def _edge_direction_angles(part, limit: int | None = None) -> list[float]:
+    """零件最长若干条直边的方向角（0-180 度，去重）。
+
+    ``limit`` 为 None 时读取模块级 ``_MAX_EDGE_ANGLES``（便于调参与实验）。
+    """
+    limit = _MAX_EDGE_ANGLES if limit is None else limit
+    outer = part.outer_polygon
+    segments = _edge_segments(outer)
+    ranked = sorted(segments, key=_edge_length, reverse=True)
+    angles: list[float] = []
+    for edge in ranked[:limit]:
+        if _edge_length(edge) <= EPS:
+            continue
+        (x0, y0), (x1, y1) = edge
+        angle = math.degrees(math.atan2(y1 - y0, x1 - x0)) % 180.0
+        if all(abs(angle - existing) > 0.01 for existing in angles):
+            angles.append(round(angle, 4))
+    return angles
+
+
+def _edge_coverage(part, top: int | None = None) -> float:
+    """最长 top 条边占外轮廓周长的比例（1.0 = 周长全部由长边构成）。"""
+    top = _MAX_EDGE_ANGLES if top is None else top
+    segments = _edge_segments(part.outer_polygon)
+    lengths = sorted((_edge_length(edge) for edge in segments), reverse=True)
+    total = sum(lengths)
+    if total <= EPS:
+        return 0.0
+    return sum(lengths[:top]) / total
+
+
+def edge_aligned_angles(part) -> list[float]:
+    """让零件最长直边与板边（0°/90°）平行的旋转角。
+
+    零件边方向为 ``d`` 时，旋转 ``-d`` 使该边水平，旋转 ``90-d`` 使其竖直；
+    两种情况都取，保证零件可以"正着"或"转 90°"摆放。同时始终包含
+    0/90/180/270，兼容以轴对齐矩形为主的图纸。
+    """
+    angles = {0.0, 90.0, 180.0, 270.0}
+    for direction in _edge_direction_angles(part):
+        angles.add(round((-direction) % 360.0, 4))
+        angles.add(round((90.0 - direction) % 360.0, 4))
+    return sorted(angles)
+
+
+def _grid_angles(step: float) -> list[float]:
+    if not step or step <= 0:
+        return []
     count = int(round(360.0 / step))
     return [round(i * step, 4) for i in range(count)]
+
+
+def angle_candidates(rotations: tuple, arbitrary_rotation: bool,
+                     step: float = _ARBITRARY_ROTATION_STEP,
+                     part=None, angle_mode: str = "edge") -> list:
+    """返回待尝试的旋转角度。
+
+    ``angle_mode``：
+
+    - ``edge``（默认）：边对齐角度 + 0/90/180/270；零件直边方向过多
+      （近似圆、样条扁平化）时追加一层 45° 粗网格兜底；
+    - ``grid``：旧的等步长枚举（``step`` 度），保留给需要全角度扫描的场景；
+    - ``hybrid``：边对齐角度 ∪ ``step`` 网格。
+
+    未传 ``part`` 时保持旧行为（``grid``），避免破坏既有调用方与测试。
+    """
+    if not arbitrary_rotation:
+        return list(rotations)
+
+    if part is None:
+        return _grid_angles(step)
+
+    if angle_mode == "grid":
+        return _grid_angles(step)
+    if angle_mode == "hybrid":
+        return sorted({angle % 360.0 for angle in
+                       edge_aligned_angles(part) + _grid_angles(step)})
+
+    angles = set(edge_aligned_angles(part))
+    if _edge_coverage(part) < _EDGE_COVERAGE_MIN:
+        angles.update(_grid_angles(_EDGE_GRID_STEP))
+    angles.update(_grid_angles(step) if step and step >= _EDGE_GRID_STEP else [])
+    return sorted(angle % 360.0 for angle in angles)
 
 
 def _rotation_forms(part: Part, angles: list, cache: dict) -> list:
@@ -142,6 +256,63 @@ def _collides(cand, tree: STRtree | None, geoms: list) -> bool:
         if shapely.relate_pattern(cand, geoms[idx], _OVERLAP_PATTERN):
             return True
     return False
+
+
+def _contact_len(cb: tuple, boxes: list, sheet_w: float, sheet_h: float,
+                 tol: float = 1.0) -> float:
+    """候选包围盒与板边/已放零件包围盒的贴合边总长（越大越紧凑）。
+
+    与桥切引擎 ``nesting._contact_len`` 同一语义，便于两种工艺共用一套
+    "贴紧度"直觉。
+    """
+    x0, y0, x1, y1 = cb
+    total = 0.0
+    if x0 <= tol:
+        total += y1 - y0
+    if y0 <= tol:
+        total += x1 - x0
+    if sheet_w - x1 <= tol:
+        total += y1 - y0
+    if sheet_h - y1 <= tol:
+        total += x1 - x0
+    for (px0, py0, px1, py1) in boxes:
+        if abs(py1 - y0) <= tol:
+            total += max(0.0, min(x1, px1) - max(x0, px0))
+        if abs(py0 - y1) <= tol:
+            total += max(0.0, min(x1, px1) - max(x0, px0))
+        if abs(px1 - x0) <= tol:
+            total += max(0.0, min(y1, py1) - max(y0, py0))
+        if abs(px0 - x1) <= tol:
+            total += max(0.0, min(y1, py1) - max(y0, py0))
+    return total
+
+
+def _placement_score(mode: str, bounds: tuple, boxes: list,
+                     placed_boxes: list, sheet_w: float,
+                     sheet_h: float) -> tuple:
+    """候选放置的评分（越小越优）。
+
+    - ``bottom_left``（旧行为）：直接取放置后的左下角，容易把零件塞进角落却
+      留下无法利用的碎片；
+    - ``skyline``：先压低"放置后该处轮廓高度"（顶边），再取左边——标准
+      Bottom-Left 的 skyline 版本；
+    - ``contact``：先最大化贴合边长度（与板边、已放零件的共边），再压低顶边。
+      桥切引擎已验证该准则更利于形成可切割的直线共边。
+    """
+    x0, y0, x1, y1 = bounds
+    if mode == "skyline":
+        return (y1, x0)
+    if mode == "column":
+        # 与桥切引擎 "col" 配置同构：优先让零件右边靠左，形成竖向列，
+        # 再压低底边。竖向列在长条/窄件为主的图纸上能显著减少板数。
+        return (x1, y0)
+    if mode == "contact":
+        return (
+            -_contact_len(bounds, boxes, sheet_w, sheet_h),
+            y1,
+            x0,
+        )
+    return (y0, x0)
 
 
 def _bbox_overlaps_any(cb: tuple, boxes: list) -> bool:
@@ -171,6 +342,58 @@ def _candidate_axes(geoms: list, part_w: float, part_h: float,
     xs = sorted(x for x in xs if x >= -EPS and x + part_w <= sheet_w + EPS)
     ys = sorted(y for y in ys if y >= -EPS and y + part_h <= sheet_h + EPS)
     return xs, ys
+
+
+def _candidate_order_key(mode: str, x: float, y: float,
+                         part_w: float, part_h: float) -> tuple:
+    """候选遍历顺序的粗排序键（与桥切引擎 ``_primary_key`` 同构）。
+
+    先按该键排序再截断 ``_MAX_VALID_PER_ANGLE``，否则截断只会保留"最左下"
+    的几个候选，真正能贴紧的位置根本不会被考察。
+    """
+    if mode == "column":
+        return (x + part_w, y)
+    return (y + part_h, x)
+
+
+def _candidate_positions(geoms: list, sheet_w: float, sheet_h: float,
+                         part_w: float, part_h: float,
+                         *, order: str = "legacy",
+                         score_mode: str = "bottom_left",
+                         use_reflex: bool = False) -> list:
+    """候选左下角位置。
+
+    ``order="legacy"`` 保持旧行为（y 升序 × x 升序）；``"sorted"`` 先按放置
+    准则排序再截断，与桥切引擎一致。``use_reflex`` 追加"候选包围盒四角对准
+    已放零件凹角"的锚点，用于嵌入 L 形缺口。
+    """
+    xs, ys = _candidate_axes(geoms, part_w, part_h, sheet_w, sheet_h)
+    points = {(x, y) for y in ys for x in xs}
+
+    if use_reflex:
+        for geom in geoms:
+            for (vx, vy) in _reflex_vertices(geom):
+                points.add((vx, vy))
+                points.add((vx - part_w, vy))
+                points.add((vx, vy - part_h))
+                points.add((vx - part_w, vy - part_h))
+
+    inside = [
+        (x, y)
+        for (x, y) in points
+        if x >= -EPS and y >= -EPS
+        and x + part_w <= sheet_w + EPS
+        and y + part_h <= sheet_h + EPS
+    ]
+    if order == "sorted":
+        inside.sort(
+            key=lambda pt: _candidate_order_key(
+                score_mode, pt[0], pt[1], part_w, part_h
+            )
+        )
+    else:
+        inside.sort(key=lambda pt: (pt[1], pt[0]))
+    return inside
 
 
 def _slide_down_left(rotated, rb, x: float, y: float,
@@ -205,10 +428,18 @@ def _find_placement(part: Part, geoms: list, tree: STRtree | None,
                     sheet_w: float, sheet_h: float,
                     cache: dict, rotations: tuple,
                     arbitrary_rotation: bool,
-                    rotation_step: float = _ARBITRARY_ROTATION_STEP) -> _Placement | None:
+                    rotation_step: float = _ARBITRARY_ROTATION_STEP,
+                    angle_mode: str = "edge",
+                    score_mode: str = "bottom_left",
+                    candidate_order: str = "legacy",
+                    use_reflex: bool = False) -> _Placement | None:
     """为单个零件找一个最左下的可行放置。"""
-    angles = angle_candidates(rotations, arbitrary_rotation, rotation_step)
+    angles = angle_candidates(
+        rotations, arbitrary_rotation, rotation_step,
+        part=part, angle_mode=angle_mode,
+    )
     boxes = [g.bounds for g in geoms]
+    placed_boxes = boxes
     best = None
 
     for angle, rotated, rb in _rotation_forms(part, angles, cache):
@@ -217,34 +448,41 @@ def _find_placement(part: Part, geoms: list, tree: STRtree | None,
         if part_w > sheet_w + EPS or part_h > sheet_h + EPS:
             continue
 
-        xs, ys = _candidate_axes(geoms, part_w, part_h, sheet_w, sheet_h)
+        positions = _candidate_positions(
+            geoms, sheet_w, sheet_h, part_w, part_h,
+            order=candidate_order, score_mode=score_mode,
+            use_reflex=use_reflex,
+        )
         valid_count = 0
 
-        for y in ys:
-            for x in xs:
-                cb = (x, y, x + part_w, y + part_h)
-                if _bbox_overlaps_any(cb, boxes):
-                    cand = affinity.translate(rotated,
-                                              xoff=x - rb[0],
-                                              yoff=y - rb[1])
-                    if _collides(cand, tree, geoms):
-                        continue
+        for (x, y) in positions:
+            cb = (x, y, x + part_w, y + part_h)
+            if _bbox_overlaps_any(cb, boxes):
+                cand = affinity.translate(rotated,
+                                          xoff=x - rb[0],
+                                          yoff=y - rb[1])
+                if _collides(cand, tree, geoms):
+                    continue
 
-                placed = _slide_down_left(rotated, rb, x, y, tree, geoms,
-                                          sheet_w, sheet_h)
-                b = placed.bounds
-                score = (b[1], b[0])
-                if best is None or score < best[0]:
-                    best = (score, angle, placed)
+            placed = _slide_down_left(rotated, rb, x, y, tree, geoms,
+                                      sheet_w, sheet_h)
+            b = placed.bounds
+            score = _placement_score(
+                score_mode, b, boxes, placed_boxes, sheet_w, sheet_h
+            )
+            if best is None or score < best[0]:
+                best = (score, angle, placed)
 
-                valid_count += 1
-                if valid_count >= _MAX_VALID_PER_ANGLE:
-                    break
+            valid_count += 1
             if valid_count >= _MAX_VALID_PER_ANGLE:
                 break
 
-        if best is not None and best[0][0] <= EPS and best[0][1] <= EPS:
-            break
+        # 已找到贴 (0,0) 的放置就不必再试更多角度（评分准则不同，判断放在
+        # 实际包围盒上，避免把新评分元组当成坐标比较）。
+        if best is not None:
+            bb = best[2].bounds
+            if bb[0] <= EPS and bb[1] <= EPS:
+                break
 
     if best is None:
         return None
@@ -271,7 +509,11 @@ def _greedy_pass(parts: list, sheet_w: float, sheet_h: float,
                  cache: dict, rotations: tuple,
                  arbitrary_rotation: bool, sort_key,
                  first_part_left_edge: bool = False,
-                 rotation_step: float = _ARBITRARY_ROTATION_STEP) -> list:
+                 rotation_step: float = _ARBITRARY_ROTATION_STEP,
+                 angle_mode: str = "edge",
+                 score_mode: str = "bottom_left",
+                 candidate_order: str = "legacy",
+                 use_reflex: bool = False) -> list:
     """一轮 Bottom-Left Fill：逐张开板，无法放入当前板的进入下一张。"""
     remaining = sorted(parts, key=sort_key)
     sheets_pl = []
@@ -288,13 +530,19 @@ def _greedy_pass(parts: list, sheet_w: float, sheet_h: float,
                     part, sheet_w, sheet_h, rotations, arbitrary_rotation
                 )
                 if placement is None:
-                    placement = _find_placement(part, geoms, tree, sheet_w, sheet_h,
-                                                cache, rotations, arbitrary_rotation,
-                                                rotation_step)
+                    placement = _find_placement(
+                        part, geoms, tree, sheet_w, sheet_h,
+                        cache, rotations, arbitrary_rotation,
+                        rotation_step, angle_mode, score_mode,
+                        candidate_order, use_reflex,
+                    )
             else:
-                placement = _find_placement(part, geoms, tree, sheet_w, sheet_h,
-                                            cache, rotations, arbitrary_rotation,
-                                            rotation_step)
+                placement = _find_placement(
+                    part, geoms, tree, sheet_w, sheet_h,
+                    cache, rotations, arbitrary_rotation,
+                    rotation_step, angle_mode, score_mode,
+                    candidate_order, use_reflex,
+                )
             if placement is None:
                 nxt.append(part)
                 continue
@@ -310,6 +558,82 @@ def _greedy_pass(parts: list, sheet_w: float, sheet_h: float,
         sheets_pl.append(cur)
         remaining = nxt
 
+    return sheets_pl
+
+
+def _sheet_used_area(placements: list) -> float:
+    return sum(pl.part.area for pl in placements)
+
+
+def _improve_low_fill_sheets(
+    sheets_pl: list,
+    sheet_w: float,
+    sheet_h: float,
+    cache: dict,
+    rotations: tuple,
+    arbitrary_rotation: bool,
+    sort_key,
+    *,
+    first_part_left_edge: bool = False,
+    rotation_step: float = _ARBITRARY_ROTATION_STEP,
+    angle_mode: str = "edge",
+    score_mode: str = "bottom_left",
+    candidate_order: str = "legacy",
+    use_reflex: bool = False,
+    threshold: float = 0.6,
+    seed: int = 0,
+) -> list:
+    """低填充板重排（改进计划 Step 2）。
+
+    纯贪心"当前板放不下就开新板、永不回头"，会留下 sheet 7 那种"2 件占一板"
+    的碎片板。这里把填充率低于 ``threshold`` 的板合成一个池子，**用多种排序
+    各排一遍取最优**（池子小，多跑几轮很便宜），并且只在板数减少时接受，
+    因此永远不会让结果变差。
+
+    注意：用同一个排序键重排必然复现原结果，所以必须换排序/换策略才有意义。
+    """
+    sheet_area = sheet_w * sheet_h
+    if sheet_area <= 0:
+        return sheets_pl
+    low_indices = {
+        index
+        for index, placements in enumerate(sheets_pl)
+        if _sheet_used_area(placements) < threshold * sheet_area
+    }
+    if len(low_indices) < 2:
+        return sheets_pl
+
+    kept = [
+        placements
+        for index, placements in enumerate(sheets_pl)
+        if index not in low_indices
+    ]
+    pool = [
+        pl.part
+        for index, placements in enumerate(sheets_pl)
+        if index in low_indices
+        for pl in placements
+    ]
+    best_retry = None
+    best_retry_key = None
+    for name in ("area", "short", "long", "jitter"):
+        retry = _greedy_pass(
+            pool, sheet_w, sheet_h, cache, rotations, arbitrary_rotation,
+            _make_sort_key(name, seed),
+            first_part_left_edge=first_part_left_edge,
+            rotation_step=rotation_step,
+            angle_mode=angle_mode,
+            score_mode=score_mode,
+            candidate_order=candidate_order,
+            use_reflex=use_reflex,
+        )
+        key = (len(retry), _compactness(retry))
+        if best_retry_key is None or key < best_retry_key:
+            best_retry_key = key
+            best_retry = retry
+
+    if best_retry is not None and len(kept) + len(best_retry) < len(sheets_pl):
+        return kept + best_retry
     return sheets_pl
 
 
@@ -381,8 +705,19 @@ def nest_parts_deepnest(parts: list, sheet_width: float, sheet_height: float,
                         arbitrary_rotation: bool = False,
                         first_part_left_edge: bool = False,
                         rotation_step: float = _ARBITRARY_ROTATION_STEP,
+                        angle_mode: str = "edge",
+                        score_mode: str = "bottom_left",
+                        candidate_order: str = "legacy",
+                        use_reflex: bool = False,
+                        low_fill_rework: bool = False,
+                        low_fill_threshold: float = 0.6,
                         progress=None) -> NestingResult:
-    """DeepNest 风格排板入口。"""
+    """DeepNest 风格排板入口。
+
+    注意：``improve_budget`` 与 ``configs`` 目前仅为了与桥切引擎保持同构的
+    调用签名而保留，**尚未实现 LNS 搜索**（水刀侧的时间预算暂不生效）；
+    当前的质量提升来自 ``low_fill_rework`` 的低填充板重排。
+    """
     if not parts:
         raise ValueError("DeepNest 排板需要至少一个零件")
 
@@ -397,7 +732,24 @@ def nest_parts_deepnest(parts: list, sheet_width: float, sheet_height: float,
         sheets_pl = _greedy_pass(parts, sheet_width, sheet_height, cache,
                                  rotations, arbitrary_rotation, sort_key,
                                  first_part_left_edge=first_part_left_edge,
-                                 rotation_step=rotation_step)
+                                 rotation_step=rotation_step,
+                                 angle_mode=angle_mode,
+                                 score_mode=score_mode,
+                                 candidate_order=candidate_order,
+                                 use_reflex=use_reflex)
+        if low_fill_rework:
+            sheets_pl = _improve_low_fill_sheets(
+                sheets_pl, sheet_width, sheet_height, cache,
+                rotations, arbitrary_rotation, sort_key,
+                first_part_left_edge=first_part_left_edge,
+                rotation_step=rotation_step,
+                angle_mode=angle_mode,
+                score_mode=score_mode,
+                candidate_order=candidate_order,
+                use_reflex=use_reflex,
+                threshold=low_fill_threshold,
+                seed=seed + trial,
+            )
         key = (len(sheets_pl), _compactness(sheets_pl))
         if best_key is None or key < best_key:
             best_key = key

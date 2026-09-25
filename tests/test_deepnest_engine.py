@@ -90,3 +90,124 @@ def test_deepnest_first_part_left_edge_applies_to_every_sheet():
         assert miny == 0.0
         assert round(maxx - minx, 1) == 400.0
         assert round(maxy - miny, 1) == 800.0
+
+
+def _rotated_rect_part(number: str, angle: float) -> Part:
+    from shapely import affinity
+
+    poly = affinity.rotate(box(0.0, 0.0, 400.0, 200.0), angle, origin=(0.0, 0.0))
+    return Part(
+        id=abs(hash(number)) % 1_000_000,
+        number=number,
+        polygon=poly,
+        outer_polygon=poly,
+        holes=[],
+        original_number=number,
+        area=poly.area,
+        label_position=(200.0, 100.0),
+    )
+
+
+def test_edge_aligned_angles_for_axis_aligned_rectangle():
+    from src.deepnest_engine import edge_aligned_angles
+
+    angles = edge_aligned_angles(make_part("R", 400.0, 200.0))
+
+    assert angles == [0.0, 90.0, 180.0, 270.0]
+
+
+def test_edge_aligned_angles_follow_part_orientation():
+    from src.deepnest_engine import edge_aligned_angles
+
+    angles = edge_aligned_angles(_rotated_rect_part("R30", 30.0))
+
+    # 30° 与 120° 两条边方向 -> 旋转 330°/60° 等可把长边摆平
+    assert 60.0 in angles
+    assert 330.0 in angles
+    assert 240.0 in angles
+    assert len(angles) < 10
+
+
+def test_edge_aligned_angles_ignore_redundant_vertices():
+    """CAD 冗余顶点（微段）不应被当成独立方向。"""
+    from src.deepnest_engine import angle_candidates
+
+    ring = [(0.0, 0.0), (400.0, 0.0), (400.0, 100.0), (400.0, 200.0),
+            (0.0, 200.0), (0.0, 100.0)]
+    from shapely.geometry import Polygon
+
+    poly = Polygon(ring)
+    part = Part(
+        id=7, number="noisy", polygon=poly, outer_polygon=poly,
+        holes=[], area=poly.area, label_position=(200.0, 100.0),
+    )
+    angles = angle_candidates((0, 90, 180, 270), True, 15.0, part=part)
+
+    assert angles == [0.0, 90.0, 180.0, 270.0]
+
+
+def test_angle_candidates_add_grid_fallback_for_curved_part():
+    from shapely.geometry import Point
+
+    from src.deepnest_engine import edge_aligned_angles
+
+    circle = Point(0.0, 0.0).buffer(100.0, quad_segs=8)
+    part = Part(
+        id=9, number="circle", polygon=circle, outer_polygon=circle,
+        holes=[], area=circle.area, label_position=(0.0, 0.0),
+    )
+
+    angles = angle_candidates((0, 90, 180, 270), True, 15.0, part=part)
+
+    assert 45.0 in angles, "曲线件必须保留全角度兜底采样"
+    assert len(angles) > len(edge_aligned_angles(part))
+
+
+def test_angle_candidates_grid_mode_matches_legacy_step():
+    angles = angle_candidates((0, 90), True, 15.0, part=make_part("G", 100.0, 50.0),
+                              angle_mode="grid")
+
+    assert len(angles) == 24
+    assert 15.0 in angles
+
+
+def test_low_fill_rework_never_increases_sheet_count():
+    """低填充重排只在板数减少时接受，因此结果不可能变差。"""
+    parts = [make_part(f"A{i}", 700.0, 300.0) for i in range(6)]
+    kwargs = dict(
+        rotations=(0, 90, 180, 270),
+        arbitrary_rotation=False,
+        trials=1,
+        seed=0,
+    )
+
+    baseline = nest_parts_deepnest(parts, 1000.0, 1000.0, 20.0,
+                                   low_fill_rework=False, **kwargs)
+    reworked = nest_parts_deepnest(parts, 1000.0, 1000.0, 20.0,
+                                   low_fill_rework=True, **kwargs)
+
+    assert reworked.total_sheets <= baseline.total_sheets
+    assert validate_nesting(reworked, 1000.0, 1000.0) == []
+
+
+def test_placement_score_modes_are_available_and_distinct():
+    from src.deepnest_engine import _placement_score
+
+    bounds = (0.0, 0.0, 100.0, 50.0)
+    boxes = [(0.0, 0.0, 100.0, 0.0)]
+
+    assert _placement_score("bottom_left", bounds, boxes, boxes, 1000.0, 1000.0) == (0.0, 0.0)
+    assert _placement_score("skyline", bounds, boxes, boxes, 1000.0, 1000.0) == (50.0, 0.0)
+    assert _placement_score("column", bounds, boxes, boxes, 1000.0, 1000.0) == (100.0, 0.0)
+    contact = _placement_score("contact", bounds, boxes, boxes, 1000.0, 1000.0)
+    assert contact[0] <= 0  # 负的接触长度（越小越优）
+
+
+def test_low_fill_rework_respects_explicit_disable():
+    import inspect
+
+    from src.deepnest_engine import nest_parts_deepnest
+
+    signature = inspect.signature(nest_parts_deepnest)
+    assert signature.parameters["low_fill_rework"].default is False
+    assert signature.parameters["angle_mode"].default == "edge"

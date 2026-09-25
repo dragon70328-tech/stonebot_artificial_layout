@@ -44,5 +44,31 @@
       "action": "ignore",
       "reason": "两点开放 LWPOLYLINE 为残留辅助线，不参与面板提取"
     }
-  ]
+  ],
+  "fingerprint": {
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+      "TEXT": 263,
+      "LWPOLYLINE": 709,
+      "DIMENSION": 1266,
+      "LINE": 77,
+      "CIRCLE": 153
+    },
+    "layer_counts": {
+      "0": 1725,
+      "大样": 429,
+      "尺寸标注": 111,
+      "编号": 203
+    },
+    "linetype_counts": {
+      "BYLAYER": 2039,
+      "ZIGZAG": 383,
+      "MOBIAN": 46
+    },
+    "has_hatch": false,
+    "has_lwpolyline": true,
+    "has_line": true,
+    "has_circle": true
+  }
 }

@@ -44,6 +44,10 @@ class JobContext:
     nesting_outcome: Any | None = None
     result: NestingResult | None = None
     template_result: bool = False
+    # 模板命中必须显式开启：默认只用算法排板，避免复用历史布局。
+    use_template: bool = False
+    # 冷启动关闭 validated_cases 匹配，只用原始图纸 + 画像配置。
+    use_case_library: bool = True
     manufacturing_metrics: dict[str, Any] = field(default_factory=dict)
     validation_errors: list[str] = field(default_factory=list)
     correction_revision: int = 0

@@ -16,32 +16,90 @@ Python 工具完成，工作流状态机统一调度。详见 `docs/saas-archite
 ## Project Structure
 ```
 stonebot_artificial_layout/
-  AGENTS.md             # 本文件
-  main.py               # CLI 入口（命令行排板）
+  AGENTS.md             # 本文件（业务与工艺约束）
+  main.py               # CLI 入口：排板 / --audit 审图 / --list-nest 清单排板 / --agent
   requirements.txt      # Python 依赖
-  _archive/             # 归档遗留脚本、环境文件、备份与散落输出
+  Dockerfile            # api 镜像（uvicorn src.http_api:app）
+  docker-compose.yml    # api + worker 两个服务，共享 /data
+  .github/workflows/    # CI：pytest -q -m "not slow"
+  portal/               # 静态前端：modules.json 注册、nesting/ 识图排板页、admin/ 模型运维页
+  deploy/               # nginx 反代示例、识别模型定时运维模板
+  scripts/              # 开发启动、识别模型训练/监控/归档、备份、复核脚本
   src/
-    dxf_reader.py       # DXF 读取：提取封闭图形、构建层级、匹配编号
-    dxf_writer.py       # DXF 写入：排板结果、编号检查文件
-    models.py           # 数据模型：Part / Sheet / NestingResult
-    contracts.py        # 读图数据契约（Pydantic，审图/复检状态）
-    nesting.py          # 排板引擎：多轮贪心 BFD + LNS 优化
-    list_nesting.py     # 清单排板：Excel/PDF 矩形规格件，配对贪心 + skyline
-    deepnest_engine.py  # 水刀/激光 DeepNest/BLF 排板引擎
-    pairing.py          # 相同形状 180° 共边配对预排（可选增强）
-    drawing_profile.py  # 图纸画像匹配、结构化读图与编号识别
+    # ── 适配层 adapter ──
+    dxf_reader.py       # DXF 读取：封闭图形候选、层级（孔洞）、编号文本
+    dxf_writer.py       # DXF 写入：排板结果、编号检查、GROUP、清单排板图
+    drawing_preview.py  # 原位 DXF 在线预览（可点击实体 + target_id）
     visual_evidence.py  # 审图问题视觉证据（SVG 高亮）
-    numbering.py        # 编号管理
-    postprocess.py       # 后处理：四边压实、边缘对齐、间距强制；不改角度与板归属
-    constraints.py      # 本体约束：工艺规则、材料规格、排板策略
-    units.py            # 单位制切换
-  drawing_profiles/     # 项目级图纸画像 JSON
-  sample/               # 输入样本 DXF
-  output/               # 输出目录
-  tests/                # 测试
-  docs/                 # 文档
-  _analysis/            # 工作日志（worklog）
+    visual_renderer.py  # 整图 SVG 渲染
+    # ── 领域/契约 domain ──
+    models.py           # Part / Sheet / NestingResult
+    constraints.py      # NestingProfile、预置模板、标准板规格
+    nesting_contracts.py # SheetSpec / ProcessPolicy / NestingRequest / NestingRevision
+    contracts.py        # 读图数据契约（Pydantic，审图/复检状态），SCHEMA_VERSION
+    correction_contracts.py / recognized_contract.py / recognition_contracts.py
+    project_config.py   # ProjectConfig（sheet/profile/optimizer/reader）
+    drawing_profile.py  # 图纸画像匹配、结构化读图、编号归属、审图
+    entity_classifier.py # 图层弱化的多证据实体分类（panel/hole/unknown）
+    # ── 应用/排板 application ──
+    nesting.py          # 桥切引擎：多轮贪心 BFD + LNS
+    beam_nesting.py     # 桥切第二布局路径：逐板最佳填充束搜索（尺寸档/缺口回收/多板尾解）
+    deepnest_engine.py  # 水刀/激光引擎：BLF + 滑动压实
+    pairing.py          # 相同形状 180° 共边配对
+    list_parsing.py     # 清单解析适配层（.xlsx/.pdf -> ListItem）
+    list_nesting.py     # 清单排板：配对贪心 + skyline + 窄条填充 + 多尺寸选板
+    strip_packing.py    # 剩余窄条精确 packer（清单排板 v3）
+    template_nesting.py # 已验证模板复用（哈希匹配）
+    postprocess.py      # 后处理：推边/对齐/间距、刀缝材料校验
+    nesting_reviewer.py # 排板回看减板
+    workflow.py         # 读图->分组->排板->后处理准备（确定性执行主体）
+    # ── 调度/Agent ──
+    workflow_session.py # WorkflowStage 状态机（含 backtrack）
+    agent_runtime.py    # 非阻塞运行时（CLI 与 HTTP 共用）
+    agent_loop.py / agent_cli.py / orchestrator.py / worker.py
+    tool_schemas.py     # 工具白名单注册表（阶段、schema、是否生产写入）
+    tool_handlers.py    # 确定性工具实现（只改 JobContext）
+    ai_planning.py / llm_plan_provider.py / openai_llm_client.py / llm_client.py
+    # ── SaaS 基础设施 infrastructure ──
+    http_api.py         # FastAPI：/conversations /jobs /admin 路由 + 门户挂载
+    job_context.py      # 单任务内存状态（含契约与产物引用）
+    job_repository.py / session_store.py / tenant_store.py / state_db.py
+    task_queue.py / task_events.py / object_store.py / artifact_store.py
+    conversation_planner.py / conversation_store.py
+    job 相关：admin_ops.py / admin_audit.py / audit_cache.py / case_library.py
+    # ── 识别学习闭环 ──
+    recognition_memory.py / recognition_feedback.py / recognition_model.py
+    recognition_operations.py / recognition_training_policy.py / recognition_retention.py
+    # ── CLI 支撑 ──
+    cli_audit.py        # 审图 CLI（从 main.py 抽出）
+    cli_paths.py        # 输出目录约定（时间戳_文件名）
+    numbering.py / units.py / input_guard.py / active_learning.py
+  drawing_profiles/     # 项目级图纸画像 JSON（validated_cases/、validated_templates/）
+  output/               # 运行产物（时间戳目录 + api_jobs；.gitignore 只保留三类文件）
+  tests/                # 测试（pytest，CI 排除 slow 标记）
+  docs/                 # 设计与改进计划文档，见下表
+  _analysis/            # 工作日志（worklog_YYYY-MM-DD.md）与一次性分析脚本
+  _archive/             # 归档遗留脚本与散落输出（含 legacy/intake_dwg_pdf/）
 ```
+
+> 注意：不存在 `sample/` 输入样本目录；回归样本以 `drawing_profiles/validated_cases/`
+> 与 `output/` 中已生成的 DXF 为准。
+
+## 文档索引
+
+| 文档 | 内容 |
+|---|---|
+| `docs/saas-architecture-goal.md` | SaaS 长期目标与五个支柱（判断代码改动的标准） |
+| `docs/saas-setup.md` | 当前搭建/运行/环境变量/租户认证 |
+| `docs/drawing-intake-subsystem.md` | 读图子系统设计（DXF 唯一输入） |
+| `docs/process-aware-nesting-improvement-plan.md` | 统一工艺排板改进计划（契约、刀缝、版本重排） |
+| `docs/ai-workflow-improvement-plan.md` | 对话式排板工作流 |
+| `docs/constraint-externalization.md` | 约束外置到 JSON/YAML |
+| `docs/agentization-improvement-plan.md` | Agent 化路线（本体 -> Harness -> Skill -> Loop -> 生产边界） |
+| `docs/irregular-nesting-improvement-plan.md` | 不规则图形排板质量改进（当前排板重点） |
+| `docs/recognition-model-operations.md` | 识别模型训练/监控/回滚/保留 |
+| `docs/modularization-plan.md` | 大文件拆分计划与安全规则 |
+| `docs/drawing-profile-*.md` | 具体项目画像说明 |
 
 ## 工作步骤
 
@@ -114,6 +172,16 @@ stonebot_artificial_layout/
 
 后处理由独立的 PostProcessor 在校验前执行（可选），与排板算法解耦。
 
+布局来源必须是显式的（2026-09-23 起）：
+
+- 模板布局复用（`--use-template`）默认**关闭**，默认只用算法排板；
+  模板匹配键是「源 DXF sha256 + 大板尺寸」，命中即复刻历史布局并跳过算法，
+  因此绝不能作为默认路径（`docs/process-aware-nesting-improvement-plan.md`）。
+- `--cold-start` 进一步忽略 `drawing_profiles/validated_cases` 案例库与
+  `output/.cache/audit` 审图缓存，只依赖原始 DXF + 画像配置。
+- 报告、CLI 输出与工作流会话都要标注 `layout_source`
+  （`algorithm` 或 `template:<名称>`），避免把历史复刻当成算法能力。
+
 加工方式由 `--process` 或 `NestingProfile.processing_class` 决定：
 
 - `bridge`：走 `src/nesting.py`，多轮贪心 BFD + 大邻域搜索（LNS）
@@ -129,13 +197,18 @@ stonebot_artificial_layout/
 桥切机原算法：
 
 1. 创建 Part 对象：outer_polygon 用于碰撞，holes 跟随变换
-2. 多轮配置：sort（short/area/long/jitter）× mode（skyline/column/contact）× seed
-3. improve_budget：120~180 秒大邻域搜索
+2. 两条布局路径同台竞争（取板数最少，其次制造评分/紧凑度）：
+   - 多轮贪心配置：sort（short/area/long/jitter）× mode（skyline/column/contact）× seed
+   - 逐板束搜索（`beam_nesting.py`，默认开启）：每开一张新板用束搜索找
+     "当前库存能摆出的最满布局"，强项是跨尺寸档的分组配方；
+     `--no-beam` 关闭，`--beam-width` 调宽度（默认 full=1000 / quick=400）；
+     `first_part_left_edge` 约束下自动跳过
+3. improve_budget：120~180 秒大邻域搜索（LNS 子问题求解器已换为束搜索，
+   子集 ≤40 件时启用，修复了旧版对 CGR45 零收益的问题）
 4. 每轮按排列键贪心放置，旋转角度由 NestingProfile.rotation 控制
-5. 取最优（先比板数，再比紧凑度）
-6. 精确校验：边界 + DE-9IM 重叠检测
-7. 排板结束后先报告使用大板数量，用户确认后再执行后处理推板；`--no-confirm` 可跳过确认
-8. 若指定 `--kerf`，排板后按每张板的贯穿通切刀数校验实际材料长度，
+5. 精确校验：边界 + DE-9IM 重叠检测
+6. 排板结束后先报告使用大板数量，用户确认后再执行后处理推板；`--no-confirm` 可跳过确认
+7. 若指定 `--kerf`，排板后按每张板的贯穿通切刀数校验实际材料长度，
    材料长度 = 零件外包络跨度 + 通切刀数 × kerf，必须 ≤ 标称尺寸 + 让尺
 
 ### Step 6: 生成排板 DXF
@@ -211,6 +284,12 @@ python main.py input.dxf 3200 1600 20 --process waterjet --no-rotation --pairing
 
 # 水刀 DeepNest，禁止旋转且不配对
 python main.py input.dxf 3200 1600 20 --process waterjet --no-rotation --quick --budget 0 --no-confirm
+
+# 冷启动：忽略历史模板/已验证案例/审图缓存，只依赖原始 DXF + 画像配置
+python main.py input.dxf 3200 1800 20 --cold-start --profile quick --report-only
+
+# 显式复用已验证模板布局（默认关闭，默认只用算法排板）
+python main.py input.dxf 3200 1800 20 --use-template --no-confirm
 ```
 
 ## 关键经验
@@ -237,6 +316,117 @@ ZIGZAG 线型的大样图标记必须排除，否则会被误识别为规格板�
 ### 禁止旋转时首件左贴边可能不满足
 `first_part_left_edge` 要求首件最长直边贴大板左边缘；若 `--no-rotation`
 且原图最长边不是竖直方向，系统会回退为普通左下放置，此时不能保证该规则。
+
+### 水刀/激光引擎的角度策略：边对齐，不要等步长铺满 360°
+`src/deepnest_engine.py` 默认 `angle_mode="edge"`：候选旋转角来自"让零件最长
+直边与板边平行"（并始终包含 0/90/180/270），不再是等步长枚举。CGR45final
+（203 件，3200x1800）实测：
+
+| 角度集 | 板数 | 出材率 | 耗时 |
+|---|---:|---:|---:|
+| 4 角 (0/90/180/270) | 54 | 67.55% | 8.7s |
+| 24 角 (15° 网格，旧 quick) | 61 | 59.80% | 35.4s |
+| 72 角 (5° 网格，旧 full) | 61 | 59.80% | 104.3s |
+| **边对齐，最长 8 边（现默认）** | **54** | **67.55%** | **10.0s** |
+
+结论：**细化角度不但没有更密，反而更差**（贪心近视——更多旋转让它先把零件
+放歪、堵住后续空间），5° 相对 15° 更是纯浪费（板数相同、多 69s）。
+多轮排序也不是杠杆：4 角 1 轮 54 张 / 4 轮同样 54 张。
+
+实现要点：
+
+- 参与边对齐的直边按长度降序取前 `_MAX_EDGE_ANGLES=8` 条——上限 16 会退化到
+  55 张且更慢，过短边带来的方向是噪声；
+- 曲线兜底用「最长 8 条边占外轮廓周长的比例」判定（`_EDGE_COVERAGE_MIN=0.6`），
+  **不能**用「边方向数」判定：CAD 导出的矩形常带几十个冗余顶点/微段，方向数
+  很多但长边占比接近 1.0，属于多边形而非曲线件（CGR45 有 37 件如此，误判会
+  多花 1 张板）；
+- `angle_mode="grid"` 保留旧的等步长枚举（需要全角度扫描时显式使用），
+  `"hybrid"` 为边对齐 ∪ 网格；`rotation_step` 只在 grid/hybrid 下生效；
+- 未传 `part` 时 `angle_candidates()` 保持旧的网格行为，兼容既有调用方。
+
+### 口径必须写清：大板标称尺寸 ≠ 让尺 ≠ 刀缝
+登记/对比排板结果时（benchmark、worklog、报告）必须区分三者：
+
+- `sheet`：大板**标称**尺寸，如 3200x1800；
+- `sheet_oversize`：让尺（如 30,30；让尺只用于容纳刀路，不放大零件可用尺寸）；
+- `kerf_mm`：刀缝（桥切常为 5mm）。
+
+不要把"3200x1800 + 让尺 30"写成 3230x1830 当成板尺寸。历史数字必须带口径才
+可比（例：东莞奥特莱斯2 的 53 张 / 68.86% 是 **3200x1600** 口径，与 3200x1800
+不可直接比较）。
+
+### 桥切排板质量的杠杆在"分组"，不在放置准则（2026-09-25 束搜索改造）
+
+CGR45 的诊断结论：算法 52 张的填充分布**均匀**（53~79%，无一张差板），
+模板 50 张分布形状相同、只是整体高 ~3pp——差距在"哪些零件共享一张板"
+（跨尺寸档互锁配方，如 `1892x978 横 + 978x1791 竖 + 1819x648 横`），
+所以拆板重排（LNS/回看）的小邻域在结构上补不上，此前所有 2→1 / 3→2
+穷举失败都是这个原因。
+
+解法（`src/beam_nesting.py`，桥切第二布局路径，默认开启）：
+
+- 每开一张新板用束搜索找"当前库存能摆出的最满布局"：状态 = 各尺寸档
+  剩余 + 空闲矩形 + 已放，扩展 = 空闲矩形 × 尺寸档 × 取向，按 bbox 已用
+  面积保留前 beam_width 个布局；
+- **尺寸档必须带形状签名**：同 bbox 但缺口方向不同的镜像 L 件必须分档，
+  否则按代表件算出的缺口空区套到镜像件上会造成重叠（已有回归测试）；
+- L 形件 bbox 内、多边形外的矩形缺口**回收为空闲矩形**，小件可直接
+  放进缺口；合法性由"空闲矩形减法"构造保证，精校验在主流程兜底；
+- 难排件两遍法（尾板件加权先排，两遍取较优）+ 多板耦合尾解
+  （库存 ≤24 件时剩余件同时排进 K 张板，消灭尾部卡死）；
+- LNS 子问题求解器同步换为束搜索（子集 ≤40 件，签名缓存），修复旧版
+  "贪心子求解器找不到跨板重排机会"导致的零收益。
+
+CGR45 @ 3200x1800 冷启动：贪心 52 → **束搜索 51 → 回看 50 / 72.95%
+（纯算法追平已验证模板）**。已验证无效的方向：按剩余面积摊匀的
+自适应 cap、"可用空闲面积"评分（56 张，更差）、最差板子集压缩穷举
+（最差 3→2 到 6→5 需 95%+ 填充，几何不可行；混合选择 0/12）。
+压缩靠"干净尾板 + 多边形精确回看"，不是靠子集重排。
+
+### 加工方式与场景：台面走桥切，异形才走水刀/激光
+**只有不规则的规格板（异形件）才用水刀/激光；台面板以圆盘锯（桥切）为主。**
+
+- 桥切（bridge）是主路径，CGR45（203 件台面板）属于这一类；
+- 水刀/激光只用于异形件（弧边、造型边）；拿台面图纸去比水刀引擎能力是错误对比；
+- 当前 `Part` 模型**没有加工方式字段**，`NestingProfile.processing_class` 是
+  整单唯一开关 → 同一张图里台面 + 异形混排时只能人工拆图，或整单用一种工艺
+  （按件分派是待确认的架构改动）。
+
+### 水刀引擎的时间预算目前不生效（死参数）
+`nest_parts_deepnest(improve_budget=..., configs=...)` 两个参数**从未被使用**，
+而 `workflow.py` 的水刀路径会传 `improve_budget=budget`（CLI 默认 180s）——
+即用户要求的长时搜索被静默丢弃。改动水刀质量时必须先看这一点，不要以为
+拉大 `--budget` 会有收益。
+
+已隔离验证过、对 CGR45 板数**无效**的开关（保留为显式实验入口，默认 legacy）：
+`score_mode`（bottom_left/skyline/column/contact）、`candidate_order`、
+`use_reflex`、`low_fill_rework`。该案例的板数由贪心"换板后不回头"的结构决定；
+要再降板数需要批量候选构建 + 统一滑动，或真正的 LNS 跨板重排。
+
+### 画像排序用指纹分层，不能只看图层名
+`rank_profiles()` 只按"图层名是否命中"打分时，同一类图纸（0 层 + 编号层 +
+建层级）会得到完全相同的分数，并列后按 `load_profiles` 的字典序取第一个，
+结果 CGR45 被误配成 canada3l 画像。现在的规则：
+
+- 画像带 `fingerprint` 且与图纸指纹相似度 ≥ `FINGERPRINT_MATCH_THRESHOLD`（60）
+  时进入优先层；低于阈值**完全不加分**（否则该画像会对所有结构相近的图纸
+  产生虚假优势）；
+- 结构性布尔特征不一致必须**扣分**：`has_circle` 不一致 −15（有无盆孔/
+  龙头孔是工艺上区分度最大的特征），`has_lwpolyline` / `has_line` 不一致 −5。
+  只做集合 Jaccard 时 CGR45 与 countertop2 的相似度仍有 64.8，会互相抢占；
+- 排名出现同分时**必须打印并列告警**，不能静默按文件名选；
+- 画像 `fingerprint` 与图纸指纹同源（`drawing_profiles/validated_cases/*.json`），
+  回填前要用 sha256 核对该案例对应的就是这份图纸（mercury 的案例指纹对应原始
+  图纸，与编号后样本不一致，不回填）。
+
+### 层级归并的 children 索引必须用 hierarchy 取值
+`_build_part_hierarchy()` 返回的 `children` 是**按面积降序排列后的序号**，
+取子级必须 `hierarchy[child_index]["poly"]`（对照 `dxf_reader.read_dxf` 的正确
+写法）；并且被父轮廓直接包含的子轮廓在几何上就是孔洞，**不能再用分类器的
+`role == "hole"` 二次过滤**。两者叠加会让孔洞被静默丢弃：CGR45 曾把 153 个
+画成闭合多段线的盆孔整体丢掉（识别结果 holes 153/306，出材率被高估、
+排板 DXF 漏孔）。画像 `expected_counts` 必须进入自动化断言。
 
 ### CIRCLE 实体单独处理
 CIRCLE 永远是孔洞（水龙头/盆孔），不能作为外轮廓，但必须包含在层级检测中。

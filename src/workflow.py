@@ -57,13 +57,23 @@ class PreparedDrawing:
     error: str | None = None
 
 
-def resolve_drawing_profile(dxf_path: str):
-    """Match a validated case first, then fall back to profile ranking."""
+def resolve_drawing_profile(dxf_path: str, *, use_case_library: bool = True):
+    """Match a validated case first, then fall back to profile ranking.
+
+    ``use_case_library=False``（冷启动）跳过 validated_cases 匹配：只用
+    原始图纸指纹做画像排序，不引用任何历史验证结论。
+    """
     try:
         fingerprint = analyze_drawing(dxf_path)
         profiles = load_profiles(PROJECT_ROOT / "drawing_profiles")
-        cases = load_cases(PROJECT_ROOT / "drawing_profiles" / "validated_cases")
-        case_match = match_case(fingerprint, cases, min_score=MIN_CASE_SCORE)
+        case_match = None
+        if use_case_library:
+            cases = load_cases(
+                PROJECT_ROOT / "drawing_profiles" / "validated_cases"
+            )
+            case_match = match_case(
+                fingerprint, cases, min_score=MIN_CASE_SCORE
+            )
         if case_match is not None:
             case, case_score = case_match
             profile = load_case_profile(case, profiles)
@@ -78,6 +88,23 @@ def resolve_drawing_profile(dxf_path: str):
         return None
     if not ranked:
         return None
+
+    # 并列（同分）意味着图层规则无法区分这几张画像，旧行为是静默按 load_profiles
+    # 的字典序取第一个（CGR45 曾被误配成 canada3l）。这里显式告警，让用户知道
+    # 匹配结果不确定，并提示用画像指纹或 --layers 消除歧义。
+    top_score = ranked[0][1]
+    if top_score > 0 and len(ranked) > 1:
+        tied = [
+            candidate.name
+            for candidate, candidate_score in ranked
+            if abs(candidate_score - top_score) < 1e-9
+        ]
+        if len(tied) > 1:
+            print(
+                f"警告：画像匹配并列（{top_score:.1f} 分）：{', '.join(tied)}；"
+                "按排序取第一个，建议用 --layers 指定图层或补充画像指纹"
+            )
+
     profile, score = ranked[0]
     if score < MIN_PROFILE_SCORE:
         return None
@@ -153,12 +180,15 @@ def prepare_drawing(
     reader_options: dict[str, Any] | None = None,
     group_mode: str | None = None,
     input_limits: DXFInputLimits | None = None,
+    use_case_library: bool = True,
 ) -> PreparedDrawing:
     """Resolve a profile, read DXF, number parts, and apply material grouping."""
     print(f"读取 DXF: {dxf_path}")
 
     if drawing_profile is None:
-        drawing_profile = resolve_drawing_profile(dxf_path)
+        drawing_profile = resolve_drawing_profile(
+            dxf_path, use_case_library=use_case_library
+        )
     reader_options = reader_options or {}
 
     if drawing_profile is not None:
@@ -522,7 +552,8 @@ def _split_normal_parts_by_group(normal_parts, group_mode):
 
 def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
                     effective_thickness, unit, profile, drawing_profile,
-                    trials, seed, budget, quick, pairing=False):
+                    trials, seed, budget, quick, pairing=False,
+                    beam=True, beam_width=None):
     """Nest one material group and return result plus group stats."""
     normal_parts = []
     special_parts = []
@@ -606,6 +637,8 @@ def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
                 first_part_left_edge=first_left,
                 min_gap=profile.min_gap,
                 min_sheets=group_min_sheets,
+                beam=beam,
+                beam_width=beam_width or (400 if quick else 1000),
                 configs=QUICK_CONFIGS if quick else None))
     if special_parts:
         results.append(nest_special_parts(
@@ -646,7 +679,8 @@ class GroupNestingOutcome:
 
 def nest_groups(parts, groups, width_mm, height_mm, special_w, special_h,
                 effective_thickness, unit, profile, drawing_profile,
-                trials, seed, budget, quick, pairing=False) -> GroupNestingOutcome:
+                trials, seed, budget, quick, pairing=False,
+                beam=True, beam_width=None) -> GroupNestingOutcome:
     """Nest every material group and combine into a single NestingResult."""
     t0 = time.time()
     group_results = []
@@ -667,6 +701,7 @@ def nest_groups(parts, groups, width_mm, height_mm, special_w, special_h,
                 group_parts, width_mm, height_mm, special_w, special_h,
                 effective_thickness, unit, profile, drawing_profile,
                 trials, seed, budget, quick, pairing,
+                beam=beam, beam_width=beam_width,
             )
         )
         group_results.append(group_result)
