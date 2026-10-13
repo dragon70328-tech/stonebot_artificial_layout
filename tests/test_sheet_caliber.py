@@ -5,6 +5,7 @@
 """
 
 import main as app
+from src.nesting_contracts import SheetSpec
 
 
 def test_usable_excludes_oversize_by_default():
@@ -59,3 +60,48 @@ def test_both_oversize_flags_do_not_double_count():
     assert (caliber.oversize_w_mm, caliber.oversize_h_mm) == (30, 30)
     assert (caliber.allowance_w_mm, caliber.allowance_h_mm) == (30, 30)
     assert caliber.physical_w_mm == 3230
+
+
+def test_cli_caliber_agrees_with_api_sheet_spec():
+    """同一句口径说明，CLI 与 API 契约（SheetSpec）必须得出同样数字。
+
+    CLI: 大板 3200x1600、让尺各 30（每维度总量）、可利用尺寸不含让尺
+    API: nominal 3200x1600、usable 3200x1600、oversize total 30
+    """
+    caliber = app.resolve_sheet_caliber(3200, 1600, sheet_oversize=(30, 30))
+    spec = SheetSpec(
+        nominal_width_mm=3200,
+        nominal_height_mm=1600,
+        usable_width_mm=3200,
+        usable_height_mm=1600,
+        oversize_enabled=True,
+        oversize_mode="total",
+        oversize_width_mm=30,
+        oversize_height_mm=30,
+    )
+
+    assert spec.usable_width_mm == caliber.usable_w_mm
+    # 契约里"实物尺寸"叫 effective_*（= 可利用 + 让尺）
+    assert spec.effective_width_mm == caliber.physical_w_mm == 3230
+    assert spec.effective_height_mm == caliber.physical_h_mm == 1630
+    assert spec.oversize_added_width_mm == caliber.allowance_w_mm == 30
+
+
+def test_cli_caliber_agrees_with_api_when_usable_includes_oversize():
+    """声明"可利用尺寸包括让尺"时，契约里把 usable 直接写成 3230（无额外让尺）。"""
+    caliber = app.resolve_sheet_caliber(
+        3200,
+        1600,
+        sheet_oversize=(30, 30),
+        usable_includes_oversize=True,
+    )
+    spec = SheetSpec(
+        nominal_width_mm=3200,
+        nominal_height_mm=1600,
+        usable_width_mm=3230,
+        usable_height_mm=1630,
+    )
+
+    assert spec.usable_width_mm == caliber.usable_w_mm == 3230
+    assert spec.effective_width_mm == caliber.physical_w_mm == 3230
+    assert spec.oversize_added_width_mm == caliber.allowance_w_mm == 0

@@ -20,6 +20,8 @@ from src.dxf_reader import extract_closed_entity_candidates, read_dxf
 from src.dxf_writer import write_nested_dxf, write_numbered_parts_dxf
 from src.job_context import JobContext
 from src.numbering import assign_numbers
+from src.nesting_contracts import CuttingProcess
+from src.postprocess import estimate_kerf_material, validate_kerf_material
 from src.recognized_contract import parts_data_to_recognized_drawing
 from src.template_nesting import match_template, nest_from_template
 from src.units import UNIT_LABELS
@@ -173,8 +175,15 @@ def _nest_parts(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
     if not ctx.parts:
         raise ValueError("nest_parts requires assign_numbers first")
     profile = ctx.nesting_profile or PROFILE_MIN_SHEETS
-    ctx.width_mm = float(args["sheet_width"])
-    ctx.height_mm = float(args["sheet_height"])
+    # 排板空间 = 可利用尺寸。契约（SheetSpec.usable_*）是权威来源；工具参数
+    # 只作为没有契约时的回退（旧路径）。
+    spec = ctx.sheet_spec
+    if spec is not None:
+        ctx.width_mm = float(spec.usable_width_mm)
+        ctx.height_mm = float(spec.usable_height_mm)
+    else:
+        ctx.width_mm = float(args["sheet_width"])
+        ctx.height_mm = float(args["sheet_height"])
     ctx.thickness_mm = float(args.get("thickness", ctx.thickness_mm))
     ctx.trials = int(args.get("trials", ctx.trials))
     ctx.seed = int(args.get("seed", ctx.seed))
@@ -273,20 +282,72 @@ def _postprocess(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
         }
     else:
         ctx.manufacturing_metrics = postprocess_result(ctx.result, profile)
+    # 几何校验 + 桥切刀缝材料校验（口径与 CLI 相同：允许 = 可利用 + 让尺）。
+    # ctx.validation_errors 是"阻塞出图"的总集，write_dxf 会据此拒绝写文件。
     ctx.validation_errors = validate_mixed_nesting(
         ctx.result, min_gap=profile.min_gap
     )
+    kerf_errors = _kerf_material_errors(ctx)
+    ctx.validation_errors.extend(kerf_errors)
     return {
         "geometry_errors": len(ctx.validation_errors),
+        "kerf_material_errors": len(kerf_errors),
         "manufacturability": ctx.manufacturing_metrics,
     }
+
+
+def _kerf_material_params(ctx: JobContext):
+    """返回 (kerf_mm, allowance_x, allowance_y)；不适用时为 None。
+
+    口径（与 CLI 的 `resolve_sheet_caliber` 一致）：刀缝校验允许尺寸 = 实物
+    尺寸 = 可利用尺寸 + 让尺（让尺只计一次）。契约里可利用尺寸是
+    `SheetSpec.usable_*`，让尺是 `SheetSpec.oversize_added_*`。
+    水刀/激光按口径"刀缝可不计"，不走这项校验。
+    """
+    policy = ctx.process_policy
+    spec = ctx.sheet_spec
+    if policy is None or ctx.result is None:
+        return None
+    if policy.process != CuttingProcess.BRIDGE:
+        return None
+    kerf_mm = float(policy.kerf_mm or 0.0)
+    if kerf_mm <= 0:
+        return None
+    if spec is None:
+        return (kerf_mm, 0.0, 0.0)
+    return (
+        kerf_mm,
+        float(spec.nominal_width_mm + spec.oversize_added_width_mm
+              - spec.usable_width_mm),
+        float(spec.nominal_height_mm + spec.oversize_added_height_mm
+              - spec.usable_height_mm),
+    )
+
+
+def _kerf_material_errors(ctx: JobContext) -> list[str]:
+    """桥切刀缝材料校验；同时把指标写进 ctx 供报告使用。"""
+    params = _kerf_material_params(ctx)
+    if params is None:
+        ctx.kerf_metrics = None
+        return []
+    kerf_mm, allowance_x, allowance_y = params
+    ctx.kerf_metrics = estimate_kerf_material(ctx.result.sheets, kerf_mm)
+    return validate_kerf_material(
+        ctx.result.sheets,
+        kerf_mm,
+        allowance_x_mm=allowance_x,
+        allowance_y_mm=allowance_y,
+    )
 
 
 def _write_dxf(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
     if ctx.result is None:
         raise ValueError("write_dxf requires postprocess first")
     if ctx.validation_errors:
-        raise ValueError("geometry validation failed; final DXF is blocked")
+        raise ValueError(
+            "validation failed (geometry/kerf, "
+            f"{len(ctx.validation_errors)} 处); final DXF is blocked"
+        )
     path = str(Path(args["path"]))
     write_nested_dxf(ctx.result, path, unit_system=ctx.unit.value)
     ctx.nested_dxf_path = Path(path)
@@ -298,11 +359,26 @@ def _write_report(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("write_report requires nest_parts first")
     path = str(Path(args["path"]))
     outcome = ctx.nesting_outcome
+    spec = ctx.sheet_spec
+    if spec is not None:
+        # 口径三层：标称 / 让尺（标称之外的实物余量）/ 可利用尺寸。
+        nominal_size = (spec.nominal_width_mm, spec.nominal_height_mm)
+        usable_size = (spec.usable_width_mm, spec.usable_height_mm)
+        sheet_oversize = (
+            spec.oversize_added_width_mm,
+            spec.oversize_added_height_mm,
+        )
+        usable_includes_oversize = usable_size[0] > spec.nominal_width_mm
+    else:
+        nominal_size = (ctx.width_mm, ctx.height_mm)
+        usable_size = (ctx.width_mm, ctx.height_mm)
+        sheet_oversize = None
+        usable_includes_oversize = False
     report = build_report(
         ctx.result,
         ctx.nesting_profile or PROFILE_MIN_SHEETS,
-        ctx.width_mm,
-        ctx.height_mm,
+        nominal_size[0],
+        nominal_size[1],
         None,
         None,
         ctx.thickness_mm,
@@ -317,6 +393,10 @@ def _write_report(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
         ctx.seed,
         ctx.budget,
         ctx.skip_unnumbered,
+        kerf_metrics=ctx.kerf_metrics,
+        sheet_oversize=sheet_oversize,
+        usable_size=usable_size,
+        usable_includes_oversize=usable_includes_oversize,
     )
     Path(path).write_text(
         json.dumps(report, ensure_ascii=False, indent=2),

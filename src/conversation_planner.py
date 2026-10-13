@@ -24,6 +24,12 @@ Allowed actions:
 Do not execute code. Do not invent a dxf_path if the user did not upload one.
 Use the current conversation job when no job_id is supplied.
 For bridge cutting, kerf_mm is mandatory and must be greater than zero.
+Board caliber: width_mm/height_mm are the nominal board size. Parts are packed
+into usable_width_mm/usable_height_mm (default = nominal). The oversize
+(oversize_enabled/oversize_width_mm/oversize_height_mm, oversize_mode total or
+per_side) is the physical allowance beyond the usable area and exists to absorb
+the bridge kerf, so a bridge job is blocked when the layout plus kerf exceeds
+usable + oversize. Waterjet/laser kerf is not counted.
 """
 
 

@@ -135,7 +135,10 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         name="nest_parts",
         stage=WorkflowStage.NUMBERING_CONFIRMED,
         advances_to=WorkflowStage.NESTED_REPORTED,
-        description="Run the deterministic nesting engine.",
+        description=(
+            "Run the deterministic nesting engine. 排板空间取契约的可利用尺寸"
+            "（SheetSpec.usable_*）；sheet_width/sheet_height 只在没有契约时回退使用。"
+        ),
         fields={
             "sheet_width": "number",
             "sheet_height": "number",

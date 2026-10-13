@@ -50,6 +50,7 @@ class JobContext:
     use_case_library: bool = True
     manufacturing_metrics: dict[str, Any] = field(default_factory=dict)
     validation_errors: list[str] = field(default_factory=list)
+    kerf_metrics: dict[str, Any] | None = None
     correction_revision: int = 0
     correction_history: list[dict[str, Any]] = field(default_factory=list)
     recognition_feedback: list[dict[str, Any]] = field(default_factory=list)
@@ -138,6 +139,7 @@ class JobContext:
                         outcome.elapsed_seconds, 1
                     ),
                     "template": self.template_result,
+                    "kerf_material": self.kerf_metrics,
                 }
                 if result is not None and outcome is not None
                 else None

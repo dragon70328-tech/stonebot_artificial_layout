@@ -382,8 +382,14 @@ ZIGZAG 线型的大样图标记必须排除，否则会被误识别为规格板�
 - 排板空间 = 可利用尺寸；
 - 刀缝校验允许 = 实物尺寸 = 可利用尺寸 + 让尺（让尺只计一次）；
 - DXF 外框 = 可利用尺寸（默认即标称 3200x1600）；
-- 报告 `sheet_dimensions` 同时写 `width/height`（标称）、`sheet_oversize_x/y`、
-  `usable_width/height` 与 `usable_includes_oversize`。
+- 报告 `sheet_dimensions` 必须能还原口径：`width/height`（标称）、
+  `sheet_oversize_x/y`（让尺）、`usable_width/height`（可利用）、
+  `usable_includes_oversize`、`physical_width/height`（实物 = 标称 + 让尺）、
+  `kerf_allowance_x/y_mm`（= 实物 − 可利用）。
+- API/agent 路径（`src/tool_handlers.py`）：排板空间取契约的 `SheetSpec.usable_*`
+  （工具参数 `sheet_width/sheet_height` 只在没有契约时回退）；桥切刀缝材料校验
+  在 `postprocess` 阶段执行，失败写进 `ctx.validation_errors` → `write_dxf`
+  拒绝出图；水刀/激光跳过（刀缝可不计）。
 
 **清单排板（`--list-nest`）是已确认的例外：可利用尺寸包括让尺**（可用尺寸 =
 标称 + 让尺，`--oversize` 就是这个让尺）。结论文本会打印

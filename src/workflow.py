@@ -761,9 +761,18 @@ def build_check_payload(result, profile, drawing_profile, width_mm, height_mm,
                         usable_size: tuple[float, float] | None = None,
                         usable_includes_oversize: bool = False,
                         ) -> tuple[dict, list, dict]:
-    """Build the pre-DXF check payload; returns (payload, warnings, waterjet_metrics)."""
+    """Build the pre-DXF check payload; returns (payload, warnings, waterjet_metrics).
+
+    口径：width/height 是标称尺寸，sheet_oversize 是标称之外的让尺，
+    可利用尺寸是零件实际能占的范围；**实物尺寸 = 标称 + 让尺**，
+    刀缝材料校验允许实物尺寸（= 可利用 + allowance）。
+    """
     oversize_x, oversize_y = sheet_oversize or (0.0, 0.0)
     usable_w, usable_h = usable_size or (width_mm, height_mm)
+    physical_w = width_mm + oversize_x
+    physical_h = height_mm + oversize_y
+    allowance_w = physical_w - usable_w
+    allowance_h = physical_h - usable_h
     postprocess_warnings = diagnose_postprocess(
         result.sheets,
         slide_expected=profile.slide_to_edge,
@@ -799,6 +808,10 @@ def build_check_payload(result, profile, drawing_profile, width_mm, height_mm,
             "usable_width": usable_w,
             "usable_height": usable_h,
             "usable_includes_oversize": usable_includes_oversize,
+            "physical_width": physical_w,
+            "physical_height": physical_h,
+            "kerf_allowance_x_mm": allowance_w,
+            "kerf_allowance_y_mm": allowance_h,
             "special_width": special_w,
             "special_height": special_h,
             "thickness": effective_thickness,
@@ -825,9 +838,17 @@ def build_report(result, profile, width_mm, height_mm, special_w, special_h,
                  sheet_oversize: tuple[float, float] | None = None,
                  usable_size: tuple[float, float] | None = None,
                  usable_includes_oversize: bool = False) -> dict:
-    """Build the final nesting report payload."""
+    """Build the final nesting report payload.
+
+    口径同 `build_check_payload`：标称 + 让尺 = 实物；可利用尺寸由调用方给出，
+    刀缝校验允许量 = 实物 − 可利用。
+    """
     oversize_x, oversize_y = sheet_oversize or (0.0, 0.0)
     usable_w, usable_h = usable_size or (width_mm, height_mm)
+    physical_w = width_mm + oversize_x
+    physical_h = height_mm + oversize_y
+    allowance_w = physical_w - usable_w
+    allowance_h = physical_h - usable_h
     return {
         "sheet_dimensions": {
             "width": width_mm, "height": height_mm,
@@ -835,6 +856,9 @@ def build_report(result, profile, width_mm, height_mm, special_w, special_h,
             "sheet_oversize_y": oversize_y,
             "usable_width": usable_w, "usable_height": usable_h,
             "usable_includes_oversize": usable_includes_oversize,
+            "physical_width": physical_w, "physical_height": physical_h,
+            "kerf_allowance_x_mm": allowance_w,
+            "kerf_allowance_y_mm": allowance_h,
             "special_width": special_w, "special_height": special_h,
             "thickness": effective_thickness, "unit": unit_label,
         },
