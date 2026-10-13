@@ -62,6 +62,10 @@ class DrawingProfile:
     assignment_mode: str = "point_then_bbox"
     room_number_format: str = "{unit}-{room}-{index:02d}"
     room_max_distance: float = 5000.0
+    # 区域轮廓（房间/户型/大区域）的最小边阈值 mm：封闭图形**最小外接边**
+    # 达到该值的视为区域轮廓，不作为规格板；它们仍参与编号归属
+    # （`assignment_mode="containing_region"`）。0 = 不启用。
+    region_min_side_mm: float = 0.0
     number_fallback_radius: float = 0.0
     bbox_overlap_threshold: float = 0.5
     build_hierarchy: bool = True
@@ -1092,7 +1096,7 @@ def _has_hatch_entities(
     return False
 
 
-def _extract_profile_panels(
+def _extract_profile_panels_impl(
     doc: ezdxf.document.Drawing,
     profile: DrawingProfile,
     panel_layer_override: list[str] | None = None,
@@ -1321,6 +1325,49 @@ def _extract_profile_panels(
     _assign_classified_holes(panels, classified_holes)
     _assign_profile_holes(panels, doc, profile, excluded_layers)
     return panels
+
+
+def _extract_profile_panels(
+    doc: ezdxf.document.Drawing,
+    profile: DrawingProfile,
+    panel_layer_override: list[str] | None = None,
+    exclude_layers: list[str] | None = None,
+    label_boxes: list[Polygon | None] | None = None,
+    recognition_memory: dict[str, Any] | None = None,
+    recognition_model: dict[str, Any] | None = None,
+    classification_sink: list[dict[str, Any]] | None = None,
+    region_sink: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """抽取规格板面板。
+
+    ``profile.region_min_side_mm`` > 0 时，**最小边**达到该阈值的封闭图形按
+    "区域轮廓"（房间/户型/大区域）处理：不作为规格板，但收集进 ``region_sink``
+    供编号归属使用（见 ``assignment_mode="containing_region"``）。
+    """
+    panels = _extract_profile_panels_impl(
+        doc,
+        profile,
+        panel_layer_override=panel_layer_override,
+        exclude_layers=exclude_layers,
+        label_boxes=label_boxes,
+        recognition_memory=recognition_memory,
+        recognition_model=recognition_model,
+        classification_sink=classification_sink,
+    )
+    threshold = float(profile.region_min_side_mm or 0.0)
+    if threshold <= 0:
+        return panels
+    kept: list[dict[str, Any]] = []
+    for panel in panels:
+        minx, miny, maxx, maxy = panel["polygon"].bounds
+        if min(maxx - minx, maxy - miny) >= threshold:
+            if region_sink is not None:
+                region_sink.append(panel)
+            continue
+        kept.append(panel)
+    for index, panel in enumerate(kept):
+        panel["index"] = index
+    return kept
 
 
 def _assign_classified_holes(
@@ -1679,6 +1726,101 @@ def _assign_room_numbers_to_panels(
     return assignments
 
 
+def _assign_numbers_by_containing_region(
+    panels: list[dict[str, Any]],
+    regions: list[dict[str, Any]],
+    texts: list[dict[str, Any]],
+    profile: DrawingProfile,
+) -> dict[int, str]:
+    """按"零件落在哪个区域轮廓内"归属编号（房间/户型平面图）。
+
+    区域轮廓（房间、户型）本身不是规格板，但它们的房号标签决定内部零件的
+    编号：先用标签插入点（或最近标签）给每个区域定型，再按零件代表点把零件
+    归到包含它的最小区域内，最后按区域分组、组内按 (x, y) 排序编号。
+    没有落在任何区域内的零件回退为"最近房号标签"，避免整块丢编号。
+    """
+    region_labels: dict[int, tuple[str, str]] = {}
+    for region in regions:
+        polygon = region["polygon"]
+        best_text = None
+        best_dist = profile.room_max_distance
+        for text in texts:
+            if _room_label_parts(text["text"], profile) is None:
+                continue
+            tx, ty = text["point"]
+            if polygon.contains(Point(tx, ty)):
+                best_text = text
+                break
+            dist = math.hypot(
+                float(polygon.centroid.x) - float(tx),
+                float(polygon.centroid.y) - float(ty),
+            )
+            if dist < best_dist:
+                best_dist = dist
+                best_text = text
+        if best_text is None:
+            continue
+        parts = _room_label_parts(best_text["text"], profile)
+        if parts is None:
+            continue
+        region_labels[region["index"]] = parts
+
+    # 第一步：给每个零件确定归属区域（含/最近标签兜底），不立刻编号，
+    # 这样"区域内的零件"和"兜底零件"会在同一个 (unit, room) 组里连续编号。
+    group_keys: dict[int, tuple[str, str]] = {}
+    for panel in panels:
+        polygon = panel["polygon"]
+        point = polygon.representative_point()
+        owner = None
+        for region in regions:
+            if region["index"] not in region_labels:
+                continue
+            if not region["polygon"].contains(point):
+                continue
+            if owner is None or region["area"] < owner["area"]:
+                owner = region
+        if owner is not None:
+            group_keys[panel["index"]] = region_labels[owner["index"]]
+            continue
+        centroid = polygon.centroid
+        best_text = None
+        best_dist = profile.room_max_distance
+        for text in texts:
+            parts = _room_label_parts(text["text"], profile)
+            if parts is None:
+                continue
+            dist = math.hypot(
+                float(centroid.x) - text["point"][0],
+                float(centroid.y) - text["point"][1],
+            )
+            if dist < best_dist:
+                best_dist = dist
+                best_text = parts
+        if best_text is not None:
+            group_keys[panel["index"]] = best_text
+
+    groups: dict[tuple[str, str], list[tuple[int, float, float]]] = {}
+    for panel in panels:
+        key = group_keys.get(panel["index"])
+        if key is None:
+            continue
+        centroid = panel["polygon"].centroid
+        groups.setdefault(key, []).append(
+            (panel["index"], float(centroid.x), float(centroid.y))
+        )
+
+    assignments: dict[int, str] = {}
+    for (unit, room), items in groups.items():
+        items.sort(key=lambda item: (item[1], item[2]))
+        for index, (panel_index, _, _) in enumerate(items, start=1):
+            assignments[panel_index] = profile.room_number_format.format(
+                unit=unit,
+                room=room,
+                index=index,
+            )
+    return assignments
+
+
 def _assign_numbers_by_panel_layer(
     panels: list[dict[str, Any]],
     profile: DrawingProfile,
@@ -1763,6 +1905,7 @@ def read_dxf_with_profile(
         exclude_layers=exclude_layers,
         recognition_memory=recognition_memory,
     )
+    regions: list[dict[str, Any]] = []
     panels = _extract_profile_panels(
         doc,
         profile,
@@ -1772,6 +1915,7 @@ def read_dxf_with_profile(
         recognition_memory=recognition_memory,
         recognition_model=recognition_model,
         classification_sink=classification_sink,
+        region_sink=regions,
     )
     zone_texts = _collect_zone_texts(
         doc,
@@ -1780,9 +1924,17 @@ def read_dxf_with_profile(
     )
     room_assignments = None
     panel_layer_assignments = None
+    region_assignments = None
     assignments = None
     if profile.assignment_mode == "nearest_room":
         room_assignments = _assign_room_numbers_to_panels(panels, texts, profile)
+    elif profile.assignment_mode == "containing_region":
+        region_assignments = _assign_numbers_by_containing_region(
+            panels,
+            regions,
+            texts,
+            profile,
+        )
     elif profile.assignment_mode == "panel_layer":
         panel_layer_assignments = _assign_numbers_by_panel_layer(
             panels,
@@ -1803,6 +1955,8 @@ def read_dxf_with_profile(
             original_number = None
         elif room_assignments is not None:
             original_number = room_assignments.get(panel["index"])
+        elif region_assignments is not None:
+            original_number = region_assignments.get(panel["index"])
         elif panel_layer_assignments is not None:
             original_number = panel_layer_assignments.get(panel["index"])
         else:
@@ -2525,7 +2679,8 @@ def audit_drawing(
         _add_line_chain_issues(doc, profile, issues)
         _add_invalid_geometry_issues(doc, profile, issues)
 
-    panels = _extract_profile_panels(doc, profile)
+    regions: list[dict[str, Any]] = []
+    panels = _extract_profile_panels(doc, profile, region_sink=regions)
     _add_duplicate_panel_issues(panels, profile, issues)
     _add_small_area_issues(panels, profile, issues)
     _add_hole_outside_panel_issues(doc, profile, panels, issues)
@@ -2547,6 +2702,27 @@ def audit_drawing(
         _add_room_assignment_issues(
             panels,
             room_assignments,
+            profile,
+            issues,
+        )
+    elif profile.assignment_mode == "containing_region":
+        region_assignments = _assign_numbers_by_containing_region(
+            panels,
+            regions,
+            texts,
+            profile,
+        )
+        _add_expected_count_issues(
+            panels,
+            texts,
+            {},
+            profile,
+            issues,
+            actual_numbers=set(region_assignments.values()),
+        )
+        _add_room_assignment_issues(
+            panels,
+            region_assignments,
             profile,
             issues,
         )

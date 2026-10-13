@@ -1,0 +1,40 @@
+{
+  "name": "citizen",
+  "version": "1.0.0",
+  "description": "citizen.dxf：多层平面图（L-XX LEVEL）。所有封闭图形与房间号文字都在图层 0，另有「标注」图层的 DIMENSION。房间/户型轮廓（最小边 ≥1800mm，实测 ≥2500mm）按区域排除、不作为规格板；房间内部的封闭图形才是规格板；编号 = 房号 + 组内序号（如 1007-01）。",
+  "panel_layer": "0",
+  "panel_layers": [
+    "0"
+  ],
+  "hatch_layer": null,
+  "use_hatch": false,
+  "number_layers": [
+    "0"
+  ],
+  "label_pattern": "^(?P<unit>\\d{4})$",
+  "assignment_mode": "containing_region",
+  "room_number_format": "{unit}-{index:02d}",
+  "room_max_distance": 5000.0,
+  "region_min_side_mm": 1800.0,
+  "build_hierarchy": false,
+  "conflict_resolution": "random",
+  "closed_tolerance": 0.01,
+  "exclude_entity_types": [],
+  "exclude_linetypes": [
+    "ZIGZAG",
+    "DASH",
+    "PHANTOM",
+    "MOBIAN"
+  ],
+  "small_area_threshold": 0.0,
+  "text_height": 213.0,
+  "low_confidence_threshold": 0.7,
+  "material_group_enabled": false,
+  "first_part_left_edge": false,
+  "expected_counts": {
+    "panels": 3525,
+    "holes": 0,
+    "numbers": 3525
+  },
+  "notes": "2026-10-13 实测：4162 个封闭图形全在图层 0，其中最小边 >2500mm 的 637 个是房间轮廓（与 637 个 4 位房间号文本一一对应），内部 3525 个才是规格板；1500~2500mm 区间为空，故阈值取 1800mm 有充足余量。low_confidence_threshold 取 0.7：本图所有实体同在图层 0，分类器给出的置信度只有 0.78，按默认 0.8 会给 3525 件全部报 low_confidence_entity（噪音），阈值下调后仍需人工抽查 3525 件。expected_counts 为按该阈值读出的结果，待用户抽查确认。"
+}

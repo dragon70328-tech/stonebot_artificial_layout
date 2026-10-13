@@ -8,7 +8,8 @@
   4) 审图问题清单 + 原位编号 DXF
 
 用法：
-  python -X utf8 _analysis/analyze_drawing.py <dxf路径> [输出目录] [--no-audit] [--cold-start]
+  python -X utf8 _analysis/analyze_drawing.py <dxf路径> [输出目录] \
+      [--no-audit] [--cold-start] [--profile <画像名>]
 
 不指定输出目录时写入 output/{时间戳}_{文件名}/。
 """
@@ -28,6 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import ezdxf  # noqa: E402
 
 from src.drawing_profile import audit_drawing  # noqa: E402
+from src.drawing_profile import load_profiles  # noqa: E402
 from src.dxf_reader import (  # noqa: E402
     _build_part_hierarchy,
     extract_closed_entity_candidates,
@@ -108,6 +110,7 @@ def main() -> int:
     print(SEP)
     prepared = prepare_drawing(
         str(dxf_path),
+        drawing_profile=_explicit_profile(flags),
         skip_unnumbered=False,
         use_case_library="--cold-start" not in flags,
     )
@@ -255,6 +258,18 @@ def main() -> int:
           f"画像管线识别面板 {len(parts)} 件、孔洞 {total_holes} 个；"
           f"耗时 {report['elapsed_seconds']}s（未排板）。")
     return 0
+
+
+def _explicit_profile(flags: set[str]):
+    """支持 --profile=<画像名> 显式指定画像（绕过自动匹配与并列告警）。"""
+    names = [flag.split("=", 1)[1] for flag in flags if flag.startswith("--profile=")]
+    if not names:
+        return None
+    wanted = names[0].casefold()
+    for profile in load_profiles(PROJECT_ROOT / "drawing_profiles"):
+        if profile.name.casefold() == wanted:
+            return profile
+    raise SystemExit(f"错误：找不到画像 {names[0]}")
 
 
 def _write_summary(out_dir: Path, dxf_path: Path, report: dict) -> None:

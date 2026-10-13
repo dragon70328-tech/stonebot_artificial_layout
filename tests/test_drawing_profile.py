@@ -9,6 +9,7 @@ from src.drawing_profile import (
     DrawingProfile,
     DrawingIssue,
     _assign_numbers_by_panel_layer,
+    _assign_numbers_by_containing_region,
     _assign_room_numbers_to_panels,
     _assign_texts_to_panels,
     audit_drawing,
@@ -1080,3 +1081,138 @@ def test_cgr45_golden_counts_match_profile_expectations():
     assert sum(1 for p in parts if p.get("original_number")) == (
         profile.expected_counts["numbers"]
     )
+
+
+def _write_room_plan_dxf(path: Path) -> None:
+    """两张"房间"（大轮廓 + 4 位房号）各含 2 件规格板，全部在图层 0。"""
+    doc = ezdxf.new("R2010")
+    msp = doc.modelspace()
+
+    def rect(x0, y0, x1, y1):
+        msp.add_lwpolyline(
+            [(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)],
+            dxfattribs={"layer": "0"},
+        )
+
+    # 房间 A：4000x3000 轮廓 + 内部两件 600x500
+    rect(0, 0, 4000, 3000)
+    rect(100, 100, 700, 600)
+    rect(1000, 100, 1600, 600)
+    # 房间 B：4000x3000 轮廓 + 内部两件
+    rect(5000, 0, 9000, 3000)
+    rect(5100, 100, 5700, 600)
+    rect(6000, 100, 6600, 600)
+    for text, point in (("1001", (2000, 1500)), ("1002", (7000, 1500))):
+        entity = msp.add_text(text, dxfattribs={"layer": "0"})
+        entity.set_placement(point)
+    doc.saveas(path)
+
+
+def _room_plan_profile(region_min_side_mm: float) -> DrawingProfile:
+    return DrawingProfile(
+        name="room_plan",
+        version="1.0.0",
+        panel_layer="0",
+        panel_layers=["0"],
+        use_hatch=False,
+        number_layers=["0"],
+        label_pattern=r"^(?P<unit>\d{4})$",
+        assignment_mode="containing_region",
+        room_number_format="{unit}-{index:02d}",
+        region_min_side_mm=region_min_side_mm,
+        build_hierarchy=False,
+        closed_tolerance=0.1,
+        exclude_linetypes=[],
+        exclude_entity_types=[],
+    )
+
+
+def test_region_outlines_are_excluded_from_panels(tmp_path):
+    """最小边达阈值的轮廓按"区域"排除，只留房间内的规格板。"""
+    dxf_path = tmp_path / "room_plan.dxf"
+    _write_room_plan_dxf(dxf_path)
+
+    panels, _ = read_dxf_with_profile(
+        dxf_path,
+        _room_plan_profile(region_min_side_mm=1800.0),
+    )
+    without_region_rule, _ = read_dxf_with_profile(
+        dxf_path,
+        _room_plan_profile(region_min_side_mm=0.0),
+    )
+
+    assert len(panels) == 4          # 两个房间轮廓被排除
+    assert len(without_region_rule) == 6  # 未启用区域规则时 6 个都是面板
+
+
+def test_containing_region_numbers_panels_by_room(tmp_path):
+    """编号 = 所在房间的房号 + 组内序号，且跨房间不串号。"""
+    dxf_path = tmp_path / "room_plan.dxf"
+    _write_room_plan_dxf(dxf_path)
+
+    panels, _ = read_dxf_with_profile(
+        dxf_path,
+        _room_plan_profile(region_min_side_mm=1800.0),
+    )
+    numbers = {p["original_number"] for p in panels}
+
+    assert numbers == {"1001-01", "1001-02", "1002-01", "1002-02"}
+    # 房间 A（1001）内的板必须拿 1001-*，房间 B 同理
+    by_number = {
+        p["original_number"]: p["centroid"] for p in panels
+    }
+    assert by_number["1001-01"][0] < 4000
+    assert by_number["1001-02"][0] < 4000
+    assert by_number["1002-01"][0] > 4000
+    assert by_number["1002-02"][0] > 4000
+    # 序号按 x 递增
+    assert by_number["1001-01"][0] < by_number["1001-02"][0]
+
+
+def test_containing_region_assignment_is_deterministic():
+    """同一批面板重复分配必须给出同样编号（集合遍历顺序不得影响结果）。"""
+    from shapely.geometry import Polygon as ShapelyPolygon
+
+    def panel(index, x, y):
+        polygon = ShapelyPolygon([
+            (x, y), (x + 600, y), (x + 600, y + 500), (x, y + 500),
+        ])
+        return {
+            "index": index,
+            "polygon": polygon,
+            "area": polygon.area,
+            "centroid": polygon.centroid,
+        }
+
+    def region(index, x, y, label):
+        polygon = ShapelyPolygon([
+            (x, y), (x + 4000, y), (x + 4000, y + 3000), (x, y + 3000),
+        ])
+        return {
+            "index": index,
+            "polygon": polygon,
+            "area": polygon.area,
+            "centroid": polygon.centroid,
+            "label": label,
+        }
+
+    profile = _room_plan_profile(region_min_side_mm=1800.0)
+    panels = [panel(0, 1000, 100), panel(1, 100, 100), panel(2, 5200, 100)]
+    regions = [region(0, 0, 0, "1001"), region(1, 5000, 0, "1002")]
+    texts = [
+        {"text": "1001", "point": (2000.0, 1500.0)},
+        {"text": "1002", "point": (7000.0, 1500.0)},
+    ]
+
+    forward = _assign_numbers_by_containing_region(panels, regions, texts, profile)
+    reversed_inputs = _assign_numbers_by_containing_region(
+        list(reversed(panels)),
+        list(reversed(regions)),
+        list(reversed(texts)),
+        profile,
+    )
+
+    assert forward == reversed_inputs
+    assert forward[1] == "1001-01"
+    assert forward[0] == "1001-02"
+    assert forward[2] == "1002-01"
