@@ -9,6 +9,7 @@ import os
 import sys
 import time
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -176,13 +177,17 @@ def parse_args():
                    help="锯缝宽度 mm（清单排板或桥切刀路损耗，零件为净尺寸）")
     p.add_argument("--oversize", type=float, default=0.0,
                    help="大板让尺 mm（清单排板；可用尺寸=标称+让尺）")
-    p.add_argument("--kerf-reserve", type=float, default=30.0,
-                   help="大板让尺 mm（默认 30，长宽各加）：零件排板只用标称"
-                        "尺寸，让尺专门留给通切刀缝，只参与刀缝材料校验，"
-                        "不会放大零件可用区，也不改变 DXF 外框（仍画标称）")
+    p.add_argument("--kerf-reserve", type=float, default=0.0,
+                   help="[兼容别名] 等同于 --sheet-oversize（大板让尺 mm）；"
+                        "两个参数同时给出时以 --sheet-oversize 为准。"
+                        "默认 0：让尺必须在口径里说明，不再隐式默认 30")
     p.add_argument("--sheet-oversize", type=str, default=None,
-                   help="桥切大板长/宽让尺 mm，如 30 或 30,30（默认 0；"
-                        "让尺只用于容纳刀路，不放大零件可用尺寸）")
+                   help="大板让尺 mm，如 30 或 30,30（每维度总量 +30，不是"
+                        "每边 +30）。让尺是标称之外的实物余量，只用于消化"
+                        "刀缝：默认不放大零件可利用尺寸，也不参与 DXF 外框")
+    p.add_argument("--usable-includes-oversize", action="store_true",
+                   help="声明本次排板大板可利用尺寸包括让尺（零件可用 "
+                        "标称+让尺）；默认不包括，即可利用尺寸=标称")
     p.add_argument("--previous-state", type=str, default=None,
                    help="上次审图生成的 review_state.json，用于修正重传后的复检")
     p.add_argument("--accept-issue", type=str, default=None,
@@ -235,6 +240,83 @@ def resolve_sheet_size(args) -> tuple[float, float]:
               f"请用 --list-sizes 查看可用规格")
         sys.exit(1)
     return (args.width, args.height)
+
+
+@dataclass(frozen=True)
+class SheetCaliber:
+    """大板口径的三层：标称 / 让尺 / 可利用尺寸（2026-10-13 用户确认）。
+
+    - 标称：用户口中"大板尺寸"（如 3200x1600）；
+    - 让尺：标称之外的实物余量，**每维度总量加一次**（30 = 3230，不是每边
+      +30 的 3260），存在意义只有一条——消化切割刀缝；
+    - 可利用尺寸：零件实际能占的范围，**默认等于标称**（不含让尺）；仅当
+      用户明确声明"本次排板大板可利用尺寸包括让尺"时才等于标称 + 让尺。
+    """
+
+    nominal_w_mm: float
+    nominal_h_mm: float
+    oversize_w_mm: float
+    oversize_h_mm: float
+    usable_w_mm: float
+    usable_h_mm: float
+    usable_includes_oversize: bool = False
+
+    @property
+    def physical_w_mm(self) -> float:
+        """实物尺寸 = 标称 + 让尺。"""
+        return self.nominal_w_mm + self.oversize_w_mm
+
+    @property
+    def physical_h_mm(self) -> float:
+        return self.nominal_h_mm + self.oversize_h_mm
+
+    @property
+    def allowance_w_mm(self) -> float:
+        """刀缝校验允许的额外长度 = 实物 − 可利用（默认即让尺）。"""
+        return self.physical_w_mm - self.usable_w_mm
+
+    @property
+    def allowance_h_mm(self) -> float:
+        return self.physical_h_mm - self.usable_h_mm
+
+
+def resolve_sheet_caliber(
+    width_mm: float,
+    height_mm: float,
+    sheet_oversize: tuple[float, float] | None = None,
+    kerf_reserve_mm: float = 0.0,
+    usable_includes_oversize: bool = False,
+) -> SheetCaliber:
+    """把 CLI 参数解析成显式的大板口径。
+
+    排板空间用**可利用尺寸**；刀缝材料校验允许**实物尺寸**（= 可利用 +
+    allowance），因此让尺只计一次。历史缺陷：让尺既被塞进排板空间、又被
+    加进 allowance（3230 当可利用 + 再放宽 30 = 3260）。
+
+    ``--kerf-reserve`` 是 ``--sheet-oversize`` 的兼容别名（同一个"让尺"
+    概念），两者都给时以 ``--sheet-oversize`` 为准，避免重复计入。
+    """
+    if sheet_oversize is None:
+        oversize_w = oversize_h = float(kerf_reserve_mm or 0.0)
+    else:
+        oversize_w, oversize_h = (
+            float(sheet_oversize[0]),
+            float(sheet_oversize[1]),
+        )
+    if usable_includes_oversize:
+        usable_w = width_mm + oversize_w
+        usable_h = height_mm + oversize_h
+    else:
+        usable_w, usable_h = width_mm, height_mm
+    return SheetCaliber(
+        nominal_w_mm=width_mm,
+        nominal_h_mm=height_mm,
+        oversize_w_mm=oversize_w,
+        oversize_h_mm=oversize_h,
+        usable_w_mm=usable_w,
+        usable_h_mm=usable_h,
+        usable_includes_oversize=usable_includes_oversize,
+    )
 
 
 def print_sizes():
@@ -366,6 +448,7 @@ def run_with_config(dxf_path: str, config, unit: UnitSystem = UnitSystem.METRIC,
         reader_options=reader.to_read_options(),
         kerf_mm=sheet.kerf_mm,
         sheet_oversize=sheet.sheet_oversize,
+        usable_includes_oversize=sheet.usable_includes_oversize,
     )
 
 
@@ -551,6 +634,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         kerf_mm: float = 0.0,
         kerf_reserve_mm: float = 0.0,
         sheet_oversize: tuple[float, float] | None = None,
+        usable_includes_oversize: bool = False,
         output_root: Path | None = None,
         auto_review: bool = True,
         review_budget_s: float = 120.0,
@@ -590,17 +674,20 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         or 20.0
     )
 
-    # ── 打印约束摘要 ──
+    # ── 大板口径 + 打印约束摘要 ──
+    # 排板空间 = 可利用尺寸（默认=标称）；让尺只进刀缝材料校验，且只计一次。
     rot_str = ",".join(str(r) for r in profile.rotation)
-    oversize_x, oversize_y = sheet_oversize or (0.0, 0.0)
-    # 让尺（oversize）是【每张板】的工艺余量，专供刀缝，因此：
-    #   - 排板空间 = 标称尺寸（零件用满标称，不侵占让尺带）
-    #   - 刀缝校验允许 = 标称 + 让尺 + 刀缝预留
-    # 即让尺只进入材料校验，不放大零件的可用区。
-    reserve_x = kerf_reserve_mm if kerf_mm > 0 else 0.0
-    reserve_y = kerf_reserve_mm if kerf_mm > 0 else 0.0
-    nesting_width_mm = width_mm + oversize_x
-    nesting_height_mm = height_mm + oversize_y
+    caliber = resolve_sheet_caliber(
+        width_mm,
+        height_mm,
+        sheet_oversize=sheet_oversize,
+        kerf_reserve_mm=kerf_reserve_mm,
+        usable_includes_oversize=usable_includes_oversize,
+    )
+    nesting_width_mm = caliber.usable_w_mm
+    nesting_height_mm = caliber.usable_h_mm
+    oversize_x = caliber.oversize_w_mm
+    oversize_y = caliber.oversize_h_mm
     if nesting_width_mm <= 0 or nesting_height_mm <= 0:
         print(f"错误：排板空间无效 {nesting_width_mm:.0f}x"
               f"{nesting_height_mm:.0f}mm")
@@ -612,12 +699,23 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
           f"free_rotation={profile.arbitrary_rotation}, "
           f"sheet_oversize={oversize_x:.0f}x{oversize_y:.0f}mm, "
           f"kerf={kerf_mm:.0f}mm")
-    if reserve_x or reserve_y:
-        print(f"让尺口径: 排板空间 {nesting_width_mm:.0f}x"
-              f"{nesting_height_mm:.0f}mm（零件用满标称）；"
-              f"刀缝校验允许 {nesting_width_mm + reserve_x:.0f}x"
-              f"{nesting_height_mm + reserve_y:.0f}mm"
-              f"（标称 + 让尺 {reserve_x:.0f}x{reserve_y:.0f}mm）")
+    print(f"大板口径: 标称 {caliber.nominal_w_mm:.0f}x"
+          f"{caliber.nominal_h_mm:.0f}mm，让尺 {oversize_x:.0f}x"
+          f"{oversize_y:.0f}mm（每维度总量），可利用尺寸 "
+          f"{nesting_width_mm:.0f}x{nesting_height_mm:.0f}mm"
+          f"（{'含' if caliber.usable_includes_oversize else '不含'}让尺），"
+          f"实物 {caliber.physical_w_mm:.0f}x{caliber.physical_h_mm:.0f}mm")
+    if kerf_mm > 0 and not profile.uses_deepnest:
+        print(f"刀缝校验: 允许 {nesting_width_mm + caliber.allowance_w_mm:.0f}x"
+              f"{nesting_height_mm + caliber.allowance_h_mm:.0f}mm"
+              f"（= 可利用尺寸 + 让尺），刀缝 {kerf_mm:.0f}mm；"
+              f"DXF 外框 = 可利用尺寸 {nesting_width_mm:.0f}x"
+              f"{nesting_height_mm:.0f}mm")
+    else:
+        print(f"DXF 外框 = 可利用尺寸 {nesting_width_mm:.0f}x"
+              f"{nesting_height_mm:.0f}mm")
+        if kerf_mm > 0:
+            print(f"刀缝: {kerf_mm:.0f}mm 仅记录，水刀/激光刀缝不计入材料校验")
 
     # ── 读取 DXF / 匹配画像 / 编号 / 材料分组 ──
     prepared = prepare_drawing(
@@ -823,15 +921,15 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         estimate_kerf_material(result.sheets, kerf_mm)
         if kerf_mm > 0 else None
     )
-    # 让尺与刀缝预留都计入可用尺寸：排板可用区 = 本体 + 让尺，
-    # 而预留的刀缝空间在实际下料时仍属于这张大板，因此并入 allowance。
+    # 刀缝校验允许 = 可利用尺寸 + 让尺（= 实物尺寸），让尺只计一次。
+    # 水刀/激光的刀缝按口径"可不计"，因此不做这项校验，只保留指标。
     kerf_material_errors = (
         validate_kerf_material(
             result.sheets, kerf_mm,
-            allowance_x_mm=oversize_x + reserve_x,
-            allowance_y_mm=oversize_y + reserve_y,
+            allowance_x_mm=caliber.allowance_w_mm,
+            allowance_y_mm=caliber.allowance_h_mm,
         )
-        if kerf_mm > 0 else []
+        if kerf_mm > 0 and not profile.uses_deepnest else []
     )
 
     # ── 校验 ──
@@ -850,6 +948,8 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         result, profile, drawing_profile, width_mm, height_mm,
         special_w, special_h, effective_thickness, unit_label,
         errors, manufacturing_metrics, sheet_oversize=(oversize_x, oversize_y),
+        usable_size=(nesting_width_mm, nesting_height_mm),
+        usable_includes_oversize=caliber.usable_includes_oversize,
     )
     check_payload["forced_closure_count"] = len(forced_closure_parts)
     check_payload["forced_closure_parts"] = forced_closure_parts
@@ -912,11 +1012,10 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     out_dxf = str(out_dir / f"{stem}_nested_{suffix}.dxf")
     out_json = str(out_dir / f"{stem}_report_{suffix}.json")
 
-    # 大板外框按【标称尺寸】绘制（用户口径：外框只画 3200x1600）。
-    # 让尺与刀缝预留只用于材料校验，不改变外框尺寸。
+    # 大板外框按【可利用尺寸】绘制（默认 = 标称 3200x1600）。让尺是标称之外
+    # 的实物余量，不进零件可用区；只有声明"可利用尺寸包括让尺"时才画出让尺带。
     write_nested_dxf(result, out_dxf, unit_system=unit.value,
-                     board_size=(width_mm + oversize_x,
-                                 height_mm + oversize_y))
+                     board_size=(nesting_width_mm, nesting_height_mm))
 
     report = build_report(
         result, profile, width_mm, height_mm, special_w, special_h,
@@ -926,6 +1025,8 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         skip_unnumbered,
         kerf_metrics=kerf_metrics,
         sheet_oversize=(oversize_x, oversize_y),
+        usable_size=(nesting_width_mm, nesting_height_mm),
+        usable_includes_oversize=caliber.usable_includes_oversize,
     )
     report["forced_closure_parts"] = forced_closure_parts
     report["auto_review"] = {
@@ -1244,6 +1345,7 @@ def main():
         kerf_mm=args.kerf,
         kerf_reserve_mm=args.kerf_reserve,
         sheet_oversize=sheet_oversize,
+        usable_includes_oversize=args.usable_includes_oversize,
         auto_review=not args.no_auto_review,
         review_budget_s=args.review_budget,
         use_template=args.use_template,

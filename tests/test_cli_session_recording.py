@@ -102,7 +102,19 @@ def test_cli_run_records_completed_workflow_session(tmp_path):
     assert nested_refs[0]["digest"] == digest
 
 
-def test_cli_sheet_oversize_expands_actual_nesting_space(tmp_path):
+def _report_of(payload):
+    report_refs = [
+        ref for ref in payload["artifacts"].values()
+        if "_report_" in ref["path"] and ref["path"].endswith(".json")
+    ]
+    assert len(report_refs) == 1
+    return json.loads(
+        Path(report_refs[0]["path"]).read_text(encoding="utf-8")
+    )
+
+
+def test_cli_sheet_oversize_keeps_usable_space_at_nominal(tmp_path):
+    """让尺是标称之外的实物余量，默认不进零件可利用区。"""
     dxf_path = tmp_path / "session_oversize.dxf"
     _make_dxf(dxf_path)
 
@@ -110,19 +122,101 @@ def test_cli_sheet_oversize_expands_actual_nesting_space(tmp_path):
 
     assert not outcome["geometry_errors"]
     payload, _out_dir = _latest_session_payload("session_oversize", tmp_path)
-    report_refs = [
-        ref for ref in payload["artifacts"].values()
-        if "_report_" in ref["path"] and ref["path"].endswith(".json")
-    ]
-    assert len(report_refs) == 1
-    report = json.loads(
-        Path(report_refs[0]["path"]).read_text(encoding="utf-8")
+    report = _report_of(payload)
+    assert report["sheets"][0]["width"] == 1000
+    assert report["sheets"][0]["height"] == 800
+    dimensions = report["sheet_dimensions"]
+    assert dimensions["width"] == 1000
+    assert dimensions["height"] == 800
+    assert dimensions["usable_width"] == 1000
+    assert dimensions["usable_height"] == 800
+    assert dimensions["usable_includes_oversize"] is False
+    assert dimensions["sheet_oversize_x"] == 20
+    assert dimensions["sheet_oversize_y"] == 10
+
+
+def test_cli_usable_includes_oversize_expands_nesting_space(tmp_path):
+    """显式声明"可利用尺寸包括让尺"时，零件才用上让尺带。"""
+    dxf_path = tmp_path / "session_usable_oversize.dxf"
+    _make_dxf(dxf_path)
+
+    outcome = _run(
+        dxf_path,
+        tmp_path,
+        sheet_oversize=(20, 10),
+        usable_includes_oversize=True,
     )
+
+    assert not outcome["geometry_errors"]
+    payload, _out_dir = _latest_session_payload(
+        "session_usable_oversize", tmp_path
+    )
+    report = _report_of(payload)
     assert report["sheets"][0]["width"] == 1020
     assert report["sheets"][0]["height"] == 810
     assert report["total_sheet_area"] == (
         report["total_sheets"] * 1020 * 810
     )
+    dimensions = report["sheet_dimensions"]
+    assert dimensions["usable_width"] == 1020
+    assert dimensions["usable_height"] == 810
+    assert dimensions["usable_includes_oversize"] is True
+
+
+def test_cli_kerf_check_gets_oversize_allowance_once(tmp_path, monkeypatch):
+    """刀缝校验拿到的 allowance 只应是让尺本身，且让尺不重复计入。
+
+    回归：旧实现把让尺既塞进排板空间（3230 当可利用）、又加进 allowance
+    （再放宽一次），校验被放宽两次。
+    """
+    calls = []
+    real_validate = app.validate_kerf_material
+
+    def spy(sheets, kerf_mm, allowance_x_mm=0.0, allowance_y_mm=0.0):
+        calls.append((kerf_mm, allowance_x_mm, allowance_y_mm))
+        return real_validate(
+            sheets,
+            kerf_mm,
+            allowance_x_mm=allowance_x_mm,
+            allowance_y_mm=allowance_y_mm,
+        )
+
+    monkeypatch.setattr(app, "validate_kerf_material", spy)
+    dxf_path = tmp_path / "session_kerf.dxf"
+    _make_dxf(dxf_path)
+
+    _run(
+        dxf_path,
+        tmp_path,
+        kerf_mm=5,
+        sheet_oversize=(20, 10),
+        kerf_reserve_mm=30,
+    )
+
+    # 让尺 (20,10) 优先于兼容别名 --kerf-reserve，且没有被加两次
+    assert calls == [(5.0, 20.0, 10.0)]
+
+
+def test_cli_waterjet_skips_kerf_material_check(tmp_path, monkeypatch):
+    """水刀刀缝按口径"可不计"：不做刀缝材料校验。"""
+    calls = []
+    monkeypatch.setattr(
+        app,
+        "validate_kerf_material",
+        lambda *args, **kwargs: calls.append(args) or [],
+    )
+    dxf_path = tmp_path / "session_waterjet.dxf"
+    _make_dxf(dxf_path)
+
+    _run(
+        dxf_path,
+        tmp_path,
+        kerf_mm=5,
+        sheet_oversize=(20, 10),
+        profile=app.PROFILES["waterjet"],
+    )
+
+    assert calls == []
 
 
 def test_cli_check_only_stops_at_postprocess_confirmed(tmp_path):

@@ -24,6 +24,8 @@ class SheetConfig:
     kerf_mm: float = 0.0
     sheet_oversize_x: float = 0.0
     sheet_oversize_y: float = 0.0
+    # 让尺默认不进零件可利用区；仅当项目明确声明"可利用尺寸包括让尺"时为 True。
+    usable_includes_oversize: bool = False
 
     @property
     def special_size(self) -> tuple[float, float] | None:
@@ -160,6 +162,9 @@ class ProjectConfig:
                 kerf_mm=float(sheet_data.get("kerf_mm", 0.0)),
                 sheet_oversize_x=float(sheet_data.get("sheet_oversize_x", 0.0)),
                 sheet_oversize_y=float(sheet_data.get("sheet_oversize_y", 0.0)),
+                usable_includes_oversize=bool(
+                    sheet_data.get("usable_includes_oversize", False)
+                ),
             ),
             profile=ProfileConfig(
                 rotation=list(profile_data.get("rotation", [0, 90, 180, 270])),

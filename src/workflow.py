@@ -757,10 +757,13 @@ def postprocess_result(result, profile) -> dict:
 def build_check_payload(result, profile, drawing_profile, width_mm, height_mm,
                         special_w, special_h, effective_thickness, unit_label,
                         errors, manufacturing_metrics,
-                        sheet_oversize: tuple[float, float] | None = None
+                        sheet_oversize: tuple[float, float] | None = None,
+                        usable_size: tuple[float, float] | None = None,
+                        usable_includes_oversize: bool = False,
                         ) -> tuple[dict, list, dict]:
     """Build the pre-DXF check payload; returns (payload, warnings, waterjet_metrics)."""
     oversize_x, oversize_y = sheet_oversize or (0.0, 0.0)
+    usable_w, usable_h = usable_size or (width_mm, height_mm)
     postprocess_warnings = diagnose_postprocess(
         result.sheets,
         slide_expected=profile.slide_to_edge,
@@ -793,6 +796,9 @@ def build_check_payload(result, profile, drawing_profile, width_mm, height_mm,
             "height": height_mm,
             "sheet_oversize_x": oversize_x,
             "sheet_oversize_y": oversize_y,
+            "usable_width": usable_w,
+            "usable_height": usable_h,
+            "usable_includes_oversize": usable_includes_oversize,
             "special_width": special_w,
             "special_height": special_h,
             "thickness": effective_thickness,
@@ -816,14 +822,19 @@ def build_report(result, profile, width_mm, height_mm, special_w, special_h,
                  total_special_pair_min_sheets, material_summary, elapsed,
                  errors, manufacturing_metrics, trials, seed, budget,
                  skip_unnumbered, kerf_metrics=None,
-                 sheet_oversize: tuple[float, float] | None = None) -> dict:
+                 sheet_oversize: tuple[float, float] | None = None,
+                 usable_size: tuple[float, float] | None = None,
+                 usable_includes_oversize: bool = False) -> dict:
     """Build the final nesting report payload."""
     oversize_x, oversize_y = sheet_oversize or (0.0, 0.0)
+    usable_w, usable_h = usable_size or (width_mm, height_mm)
     return {
         "sheet_dimensions": {
             "width": width_mm, "height": height_mm,
             "sheet_oversize_x": oversize_x,
             "sheet_oversize_y": oversize_y,
+            "usable_width": usable_w, "usable_height": usable_h,
+            "usable_includes_oversize": usable_includes_oversize,
             "special_width": special_w, "special_height": special_h,
             "thickness": effective_thickness, "unit": unit_label,
         },

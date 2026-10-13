@@ -358,11 +358,13 @@ def estimate_kerf_material(sheets, kerf_mm):
 
 def validate_kerf_material(sheets, kerf_mm, allowance_x_mm: float = 0.0,
                            allowance_y_mm: float = 0.0) -> list:
-    """校验桥切刀路材料是否超出大板含让尺后的物理尺寸。
+    """校验桥切刀路材料是否超出大板实物尺寸（= 可利用尺寸 + 让尺）。
 
-    零件排板仍只使用标称尺寸，长/宽让尺专门留给刀路损耗。每张板按零件
-    外包络跨度加上该方向的通切刀数乘以 kerf，得到实际需要的材料长度；
-    该长度必须不超过大板标称尺寸加对应方向让尺。
+    ``sheet.width`` / ``sheet.height`` 是**可利用尺寸**（默认等于标称）；
+    ``allowance_*`` 只应是让尺本身——即实物尺寸超出可利用尺寸的部分
+    （声明"可利用尺寸包括让尺"时为 0）。每张板按零件外包络跨度加上该方向
+    的通切刀数乘以 kerf 得到实际需要的材料长度，不得超过 可利用尺寸 +
+    allowance；让尺因此只计一次。
     """
     if kerf_mm <= EPS:
         return []
