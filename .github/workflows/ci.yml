@@ -6,13 +6,21 @@ on:
 
 jobs:
   fast-tests:
-    runs-on: ubuntu-latest
+    # 固定 runner 标签：ubuntu-latest 将在 2026-10-19 迁移到 Ubuntu 26，
+    # 固定后升级是显式动作，不会被动变。
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 = 部署镜像（Dockerfile: python:3.10-slim）与本地验证版本，
+        # 3.11 = docs/saas-setup.md 声明的“Python 3.10+”上界。
+        python-version: ["3.10", "3.11"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install dependencies
         # 用 lock + dev 依赖：pytest / httpx 之前没声明，CI 只靠 runner 预装
@@ -26,7 +34,7 @@ jobs:
 
       - name: Upload benchmark report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: benchmark-report
+          name: benchmark-report-${{ matrix.python-version }}
           path: benchmark_report.json
