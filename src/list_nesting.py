@@ -2434,6 +2434,26 @@ def _deflate_results(group_results: list, kerf_mm: float) -> None:
         )
 
 
+def _caliber_lines(
+    billing_sizes: list[tuple[float, float]],
+    oversize_mm: float,
+    kerf_mm: float,
+) -> str:
+    """打印清单排板的大板口径，避免"让尺 30"这种没有口径说明的写法。
+
+    清单排板的口径是**可利用尺寸包括让尺**（用户 2026-10-13 确认）：
+    可用尺寸 = 标称 + 让尺。
+    """
+    nominal = " / ".join(f"{w:.0f}x{h:.0f}" for w, h in billing_sizes)
+    usable = " / ".join(
+        f"{w + oversize_mm:.0f}x{h + oversize_mm:.0f}" for w, h in billing_sizes
+    )
+    return (
+        f"大板口径: 标称 {nominal}mm，让尺 {oversize_mm:.0f}mm（每维度总量），"
+        f"可利用尺寸 {usable}mm（含让尺），刀缝 {kerf_mm:.0f}mm"
+    )
+
+
 def _billing_summary_lines(group_results: list, oversize_mm: float) -> str:
     """按标称（计价）尺寸统计用板，便于与人工/仁霸口径对比。"""
     counts: Counter = Counter()
@@ -2473,7 +2493,11 @@ def run_list_nesting(
     """清单排板主入口，返回结论文本。
 
     kerf_mm: 锯缝宽度。零件按净尺寸输入，内部放大后排板，输出缩回净尺寸。
-    oversize_mm: 大板让尺。可用尺寸 = 标称 + 让尺；报告同时给出标称口径。
+    oversize_mm: 大板让尺。**清单排板的口径是"可利用尺寸包括让尺"**（用户
+    2026-10-13 确认）：可用尺寸 = 标称 + 让尺；报告同时给出标称计价口径。
+
+    与其他路径的区别：DXF 排板（桥切/水刀）默认"可利用尺寸不包括让尺"，
+    让尺只进刀缝材料校验；清单排板把让尺直接算进可用尺寸。
     """
     items = parse_list_file(file_path)
     billing_sizes = sheet_sizes or [(sheet_width_mm or 0.0, sheet_height_mm or 0.0)]
@@ -2521,4 +2545,5 @@ def run_list_nesting(
     )
     if oversize_mm > 0 or kerf_mm > 0:
         text += _billing_summary_lines(group_results, oversize_mm)
+        text = _caliber_lines(billing_sizes, oversize_mm, kerf_mm) + "\n" + text
     return text

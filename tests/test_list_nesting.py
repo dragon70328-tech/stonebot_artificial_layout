@@ -11,6 +11,7 @@ from src.list_nesting import (
     nest_list_items,
     parse_pdf,
     parse_xlsx,
+    run_list_nesting,
 )
 from src.nesting import validate_nesting
 
@@ -170,3 +171,49 @@ def test_conclusion_text_summary_and_detail():
     detailed = build_conclusion_text(items, results, [(2500, 1400)], show_sheets=True)
     assert "板" in detailed
     assert "使用面积" in detailed
+
+
+def test_list_nesting_usable_size_includes_oversize(tmp_path):
+    """清单排板口径（用户 2026-10-13 确认）：可利用尺寸**包括**让尺。
+
+    与 DXF 排板默认（可利用尺寸不含让尺、让尺只进刀缝校验）不同，这里的
+    可用尺寸 = 标称 + 让尺，结论里必须把这件事写清楚。
+    """
+    path = tmp_path / "list_oversize.xlsx"
+    _write_xlsx(
+        path,
+        [
+            ["材料编号", "位置", "长度(mm)", "宽度(mm)", "数量(件)"],
+            ["ST-101", "D区", 1200, 600, 4],
+        ],
+    )
+
+    text = run_list_nesting(
+        path,
+        sheet_sizes=[(2400, 1200)],
+        oversize_mm=30,
+        kerf_mm=5,
+    )
+
+    assert "大板口径: 标称 2400x1200mm" in text
+    assert "让尺 30mm（每维度总量）" in text
+    assert "可利用尺寸 2430x1230mm（含让尺）" in text
+    assert "刀缝 5mm" in text
+    # 计价口径仍按标称统计
+    assert "标称大板口径" in text
+    assert "2400x1200：" in text
+
+
+def test_list_nesting_without_oversize_has_no_caliber_line(tmp_path):
+    path = tmp_path / "list_plain.xlsx"
+    _write_xlsx(
+        path,
+        [
+            ["材料编号", "位置", "长度(mm)", "宽度(mm)", "数量(件)"],
+            ["ST-101", "D区", 1200, 600, 4],
+        ],
+    )
+
+    text = run_list_nesting(path, sheet_sizes=[(2400, 1200)])
+
+    assert "大板口径" not in text

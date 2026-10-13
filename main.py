@@ -176,7 +176,9 @@ def parse_args():
     p.add_argument("--kerf", type=float, default=0.0,
                    help="锯缝宽度 mm（清单排板或桥切刀路损耗，零件为净尺寸）")
     p.add_argument("--oversize", type=float, default=0.0,
-                   help="大板让尺 mm（清单排板；可用尺寸=标称+让尺）")
+                   help="大板让尺 mm（清单排板）。清单排板的口径是"
+                        "\"可利用尺寸包括让尺\"：可用尺寸=标称+让尺；"
+                        "与 DXF 排板默认（可利用尺寸不含让尺）不同")
     p.add_argument("--kerf-reserve", type=float, default=0.0,
                    help="[兼容别名] 等同于 --sheet-oversize（大板让尺 mm）；"
                         "两个参数同时给出时以 --sheet-oversize 为准。"
