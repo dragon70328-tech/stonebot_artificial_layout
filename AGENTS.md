@@ -575,8 +575,19 @@ python main.py input.xlsx --sizes 2400x1200,2500x1400 --list-nest --kerf 5 --ove
 
 ## 依赖
 
-## 依赖
-- Python 3.10+
-- ezdxf（DXF 读写）
-- shapely（几何计算）
-- numpy
+- Python 3.10+（部署镜像 `python:3.10-slim`；CI 跑 3.10 + 3.11 矩阵）
+- ezdxf（DXF 读写）、shapely（几何计算）、numpy
+- pymupdf（清单 PDF 解析）、fastapi + uvicorn（SaaS API）、pydantic（数据契约）
+
+本地环境 2026-10-13 起固定（此前一直裸用系统 Python，没有虚拟环境）：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+```
+
+三份依赖文件的分工：`requirements.txt` 是**允许的版本区间**（人工维护的唯一来源）；
+`requirements.lock.txt` 是**实测版本快照**（CI 与 Docker 构建用它锁版本）；
+`requirements-dev.txt` = lock + `pytest` + `httpx`。
+**测试依赖也是依赖**：`pytest` / `httpx` 长期漏声明，本地靠机器上恰好装着才绿，
+CI 从第一次跑就是红的；改依赖时三份文件要一起看。
