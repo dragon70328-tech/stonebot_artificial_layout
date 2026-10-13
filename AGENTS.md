@@ -189,6 +189,9 @@ stonebot_artificial_layout/
 - `--pairing`：水刀 DeepNest 分支先做相同形状 180° 共边配对预排
 - `--no-rotation`：强制 `rotation=[0]`、`arbitrary_rotation=False`
 - `--kerf`：桥切刀路材料损耗，不计为零件间隙；零件净尺寸，排板仍按零间隙共边。
+- `--kerf-reserve`：让尺（默认 30mm，长宽各加）。零件排板空间用满**标称**尺寸，
+  让尺不放大零件可用区，只把刀缝材料校验的允许尺寸放宽到 标称 + 让尺。
+  即：排板空间=标称，校验允许=标称+让尺，DXF 外框=标称。
 - `--sheet-oversize`：桥切大板长/宽让尺，如 `30` 或 `30,30`；让尺只用于容纳刀路，
   不放大零件可用的标称尺寸；默认 `0` 时不让尺。
 - `first_part_left_edge=True` 时，每张板首件最长直边贴大板左边缘；
@@ -407,6 +410,15 @@ CGR45 @ 3200x1800 冷启动：贪心 52 → **束搜索 51 → 回看 50 / 72.95
 `score_mode`（bottom_left/skyline/column/contact）、`candidate_order`、
 `use_reflex`、`low_fill_rework`。该案例的板数由贪心"换板后不回头"的结构决定；
 要再降板数需要批量候选构建 + 统一滑动，或真正的 LNS 跨板重排。
+
+### 会话接口取 job_id 的地方必须校验任务归属
+`/conversations/{id}/respond` 的 job 动作允许 planner 在 intent 里显式给 `job_id`，
+所以取 job_id 的 `_resolve_conversation_job()` 必须调用 `_require_job_tenant()`；
+角色按 `_CONVERSATION_ACTION_ROLES` 与同名 REST 端点对齐（变更类动作 = operator，
+`get_job` 与 `GET /jobs/{job_id}` 一样不要求角色）。漏掉这一步时，只要知道别的
+租户的 job_id（形如 `agent-<文件名>-<时间戳>`）就能查询、确认、继续、回看、纠正
+或取消其任务（2026-09-29 全系统核对发现，2026-10-13 修复，回归测试
+`tests/test_conversation_api.py::test_respond_rejects_job_of_another_tenant`）。
 
 ### 画像排序用指纹分层，不能只看图层名
 `rank_profiles()` 只按"图层名是否命中"打分时，同一类图纸（0 层 + 编号层 +

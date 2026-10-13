@@ -337,11 +337,33 @@ def _latest_attachment_path(conversation) -> str | None:
     return None
 
 
-def _resolve_conversation_job(conversation, intent: dict[str, Any]) -> str:
+# 会话动作的角色要求与同名 REST 端点保持一致：变更类动作需要 operator，
+# 纯查询动作（get_job）不额外要求角色。
+_CONVERSATION_ACTION_ROLES: dict[str, str | None] = {
+    "create_job": "operator",
+    "confirm_job": "operator",
+    "run_job": "operator",
+    "cancel_job": "operator",
+    "correct_drawing": "operator",
+    "review_job": "operator",
+    "get_job": None,
+}
+
+
+def _resolve_conversation_job(conversation, intent: dict[str, Any],
+                              auth: TenantAuth) -> str:
+    """解析会话要操作的任务，并校验该任务属于当前租户。
+
+    planner 可以在 intent 里显式给 ``job_id``，因此这里必须按
+    ``/jobs/{job_id}/*`` 同一口径校验归属，否则只要知道别人的 job_id
+    就能借会话接口跨租户查询、确认、回看或取消任务。
+    """
     job_id = intent.get("job_id") or conversation.job_id
     if not job_id:
         raise HTTPException(status_code=400, detail="job_id is required")
-    return str(job_id)
+    job_id = str(job_id)
+    _require_job_tenant(job_id, auth)
+    return job_id
 
 
 def _require_role(auth: TenantAuth, role: str) -> None:
@@ -1129,6 +1151,9 @@ def respond_to_conversation(
         )
 
     action = intent["action"]
+    required_role = _CONVERSATION_ACTION_ROLES.get(action)
+    if required_role:
+        _require_role(tenant, required_role)
     try:
         if action == "create_job":
             dxf_path = intent.get("dxf_path") or _latest_attachment_path(
@@ -1182,7 +1207,7 @@ def respond_to_conversation(
             )
             result_payload = runtime.status()
         elif action == "review_job":
-            job_id = _resolve_conversation_job(conversation, intent)
+            job_id = _resolve_conversation_job(conversation, intent, tenant)
             result_payload = manager.review(
                 job_id,
                 max_reductions=int(intent.get("max_reductions", 1)),
@@ -1192,11 +1217,11 @@ def respond_to_conversation(
                 f"{result_payload.get('reduced_total_sheets')} 张板"
             )
         elif action == "get_job":
-            job_id = _resolve_conversation_job(conversation, intent)
+            job_id = _resolve_conversation_job(conversation, intent, tenant)
             result_payload = manager.get(job_id).status()
             assistant_content = f"当前任务状态：{result_payload.get('stage')}"
         elif action == "confirm_job":
-            job_id = _resolve_conversation_job(conversation, intent)
+            job_id = _resolve_conversation_job(conversation, intent, tenant)
             runtime = manager.confirm(
                 job_id,
                 str(intent.get("decision", "")),
@@ -1210,7 +1235,7 @@ def respond_to_conversation(
                 f"{result_payload.get('stage')}"
             )
         elif action == "run_job":
-            job_id = _resolve_conversation_job(conversation, intent)
+            job_id = _resolve_conversation_job(conversation, intent, tenant)
             runtime = manager.run(job_id)
             result_payload = runtime.status()
             assistant_content = (
@@ -1218,7 +1243,7 @@ def respond_to_conversation(
                 f"{result_payload.get('stage')}"
             )
         elif action == "correct_drawing":
-            job_id = _resolve_conversation_job(conversation, intent)
+            job_id = _resolve_conversation_job(conversation, intent, tenant)
             runtime = manager.get(job_id)
             plan = CorrectionPlanner().plan(
                 str(intent["instruction"]),
@@ -1243,7 +1268,7 @@ def respond_to_conversation(
                 "请继续检查或确认。"
             )
         elif action == "cancel_job":
-            job_id = _resolve_conversation_job(conversation, intent)
+            job_id = _resolve_conversation_job(conversation, intent, tenant)
             runtime = manager.cancel(job_id)
             result_payload = runtime.status()
             assistant_content = f"已取消任务 {job_id}"

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import httpx
@@ -451,3 +452,92 @@ def test_get_conversation_artifacts_uses_active_job(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["job_id"] == "job-conversation"
+
+
+def _multi_tenant_keys(monkeypatch, keys):
+    monkeypatch.setenv("STONEBOT_TENANT_API_KEYS", json.dumps(keys))
+
+
+def test_respond_rejects_job_of_another_tenant(tmp_path, monkeypatch):
+    """回归：会话 respond 曾只信任 intent 里的 job_id，可跨租户操作任务。"""
+    _multi_tenant_keys(
+        monkeypatch,
+        {
+            "default": {"key": "key-default", "roles": ["admin"]},
+            "acme": {"key": "key-acme", "roles": ["admin"]},
+        },
+    )
+    client, planner, manager = _conversation_client(
+        tmp_path,
+        monkeypatch,
+        {"action": "get_job", "job_id": "job-conversation"},
+    )
+    acme_headers = {"X-Tenant-Id": "acme", "X-API-Key": "key-acme"}
+    created = client.post(
+        "/conversations",
+        json={"tenant_id": "acme"},
+        headers=acme_headers,
+    )
+    conversation_id = created.json()["id"]
+
+    response = client.post(
+        f"/conversations/{conversation_id}/respond",
+        headers=acme_headers,
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "tenant mismatch"
+    assert not hasattr(manager, "got")
+
+    # 同一个 intent 由任务所属租户发起时照常执行，确认拒绝的是归属而不是意图。
+    owner_headers = {"X-Tenant-Id": "default", "X-API-Key": "key-default"}
+    owned = client.post(
+        "/conversations",
+        json={"tenant_id": "default"},
+        headers=owner_headers,
+    )
+    executed = client.post(
+        f"/conversations/{owned.json()['id']}/respond",
+        headers=owner_headers,
+    )
+
+    assert executed.status_code == 202
+    assert manager.got == "job-conversation"
+
+
+def test_respond_requires_operator_role_for_job_actions(tmp_path, monkeypatch):
+    """会话里的变更动作按 operator 角色管控，查询动作不额外要求角色。"""
+    _multi_tenant_keys(
+        monkeypatch,
+        {"default": {"key": "key-viewer", "roles": ["viewer"]}},
+    )
+    client, planner, manager = _conversation_client(
+        tmp_path,
+        monkeypatch,
+        {"action": "cancel_job", "job_id": "job-conversation"},
+    )
+    headers = {"X-Tenant-Id": "default", "X-API-Key": "key-viewer"}
+    created = client.post(
+        "/conversations",
+        json={"tenant_id": "default"},
+        headers=headers,
+    )
+    conversation_id = created.json()["id"]
+
+    response = client.post(
+        f"/conversations/{conversation_id}/respond",
+        headers=headers,
+    )
+
+    assert response.status_code == 403
+    assert "operator" in response.json()["detail"]
+    assert not hasattr(manager, "cancelled")
+
+    planner.intent = {"action": "get_job", "job_id": "job-conversation"}
+    read_only = client.post(
+        f"/conversations/{conversation_id}/respond",
+        headers=headers,
+    )
+
+    assert read_only.status_code == 202
+    assert manager.got == "job-conversation"
