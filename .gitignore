@@ -43,3 +43,4 @@ output/.cache/
 
 # local runtime logs
 _analysis/*.log
+output/*.log
