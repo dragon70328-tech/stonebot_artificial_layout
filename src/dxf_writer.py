@@ -1,4 +1,4 @@
-﻿"""DXF 输出：将排板结果写回 DXF 文件"""
+"""DXF 输出：将排板结果写回 DXF 文件"""
 
 import sys
 
@@ -29,7 +29,8 @@ def _largest_polygon(geom):
 
 def write_nested_dxf(result: NestingResult,
                      output_path: str,
-                     unit_system: str = "metric") -> None:
+                     unit_system: str = "metric",
+                     board_size: tuple[float, float] | None = None) -> None:
     """将排板结果写入新的 DXF 文件。
 
     图层：
@@ -39,6 +40,10 @@ def write_nested_dxf(result: NestingResult,
     - NUMBERS：板件编号（居中）
 
     每个面板 + 孔洞 + 编号组成 GROUP。
+
+    ``board_size`` 指定大板**本体**尺寸（长, 宽）。排板时若为刀缝预留收缩了
+    内部可用区，零件仍写在其实际坐标，而外框按本体尺寸绘制；为 None 时用
+    ``sheet.width`` / ``sheet.height``。
     """
     doc = ezdxf.new()
     doc.units = units.MM if unit_system != "imperial" else units.IN
@@ -53,6 +58,7 @@ def write_nested_dxf(result: NestingResult,
     for name in (layer_border, layer_outer, layer_holes, layer_numbers):
         doc.layers.add(name)
 
+    board_w, board_h = board_size if board_size else (None, None)
     COLS = 6
     GAP = 200
     for i, sheet in enumerate(result.sheets):
@@ -62,21 +68,26 @@ def write_nested_dxf(result: NestingResult,
         oy = row * (sheet.height + GAP)
         _write_sheet_block(doc, sheet, ox, oy,
                            layer_border, layer_outer,
-                           layer_holes, layer_numbers)
+                           layer_holes, layer_numbers,
+                           board_size=(board_w, board_h))
 
     doc.saveas(output_path)
 
 
 def _write_sheet_block(doc, sheet: Sheet, ox: float, oy: float,
-                       lb, lo, lh, ln, label: str | None = None):
+                       lb, lo, lh, ln, label: str | None = None,
+                       board_size: tuple[float, float] | None = None):
     """将一张大板的排板结果写入 DXF，含图层分离和 GROUP"""
     msp = doc.modelspace()
 
-    # 大板外框（红色）
+    # 大板外框（红色）：按大板本体尺寸绘制
+    bw, bh = board_size if board_size else (None, None)
+    bw = sheet.width if not bw else bw
+    bh = sheet.height if not bh else bh
     msp.add_lwpolyline(
-        [(ox, oy), (ox + sheet.width, oy),
-         (ox + sheet.width, oy + sheet.height),
-         (ox, oy + sheet.height), (ox, oy)],
+        [(ox, oy), (ox + bw, oy),
+         (ox + bw, oy + bh),
+         (ox, oy + bh), (ox, oy)],
         dxfattribs={"layer": lb, "color": RED},
     )
 
@@ -86,7 +97,7 @@ def _write_sheet_block(doc, sheet: Sheet, ox: float, oy: float,
         dxfattribs={"layer": lb, "color": RED, "height": 50.0},
     )
     sheet_label.set_placement(
-        (ox, oy + sheet.height + 30),
+        (ox, oy + bh + 30),
         align=TextEntityAlignment.BOTTOM_LEFT,
     )
 

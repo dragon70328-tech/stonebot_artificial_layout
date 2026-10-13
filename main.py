@@ -1,4 +1,4 @@
-﻿#!python
+#!python
 # -*- coding: utf-8 -*-
 """DXF 自动排板系统 - 主入口（支持 CLI 参数 + 交互模式）"""
 
@@ -176,6 +176,10 @@ def parse_args():
                    help="锯缝宽度 mm（清单排板或桥切刀路损耗，零件为净尺寸）")
     p.add_argument("--oversize", type=float, default=0.0,
                    help="大板让尺 mm（清单排板；可用尺寸=标称+让尺）")
+    p.add_argument("--kerf-reserve", type=float, default=30.0,
+                   help="大板让尺 mm（默认 30，长宽各加）：零件排板只用标称"
+                        "尺寸，让尺专门留给通切刀缝，只参与刀缝材料校验，"
+                        "不会放大零件可用区，也不改变 DXF 外框（仍画标称）")
     p.add_argument("--sheet-oversize", type=str, default=None,
                    help="桥切大板长/宽让尺 mm，如 30 或 30,30（默认 0；"
                         "让尺只用于容纳刀路，不放大零件可用尺寸）")
@@ -545,6 +549,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         reader_options: dict | None = None,
         input_limits=None,
         kerf_mm: float = 0.0,
+        kerf_reserve_mm: float = 0.0,
         sheet_oversize: tuple[float, float] | None = None,
         output_root: Path | None = None,
         auto_review: bool = True,
@@ -588,14 +593,31 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     # ── 打印约束摘要 ──
     rot_str = ",".join(str(r) for r in profile.rotation)
     oversize_x, oversize_y = sheet_oversize or (0.0, 0.0)
+    # 让尺（oversize）是【每张板】的工艺余量，专供刀缝，因此：
+    #   - 排板空间 = 标称尺寸（零件用满标称，不侵占让尺带）
+    #   - 刀缝校验允许 = 标称 + 让尺 + 刀缝预留
+    # 即让尺只进入材料校验，不放大零件的可用区。
+    reserve_x = kerf_reserve_mm if kerf_mm > 0 else 0.0
+    reserve_y = kerf_reserve_mm if kerf_mm > 0 else 0.0
     nesting_width_mm = width_mm + oversize_x
     nesting_height_mm = height_mm + oversize_y
+    if nesting_width_mm <= 0 or nesting_height_mm <= 0:
+        print(f"错误：排板空间无效 {nesting_width_mm:.0f}x"
+              f"{nesting_height_mm:.0f}mm")
+        sys.exit(1)
     print(f"约束: rotation=[{rot_str}], gap={profile.min_gap}mm, "
           f"group={profile.group_mode}, slide={profile.slide_to_edge}, "
           f"align={profile.align_edges}, thickness={effective_thickness}mm, "
           f"process={PROCESSING_CLASS_HELP[profile.processing_class]}, "
           f"free_rotation={profile.arbitrary_rotation}, "
-          f"sheet_oversize={oversize_x:.0f}x{oversize_y:.0f}mm")
+          f"sheet_oversize={oversize_x:.0f}x{oversize_y:.0f}mm, "
+          f"kerf={kerf_mm:.0f}mm")
+    if reserve_x or reserve_y:
+        print(f"让尺口径: 排板空间 {nesting_width_mm:.0f}x"
+              f"{nesting_height_mm:.0f}mm（零件用满标称）；"
+              f"刀缝校验允许 {nesting_width_mm + reserve_x:.0f}x"
+              f"{nesting_height_mm + reserve_y:.0f}mm"
+              f"（标称 + 让尺 {reserve_x:.0f}x{reserve_y:.0f}mm）")
 
     # ── 读取 DXF / 匹配画像 / 编号 / 材料分组 ──
     prepared = prepare_drawing(
@@ -801,11 +823,13 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         estimate_kerf_material(result.sheets, kerf_mm)
         if kerf_mm > 0 else None
     )
+    # 让尺与刀缝预留都计入可用尺寸：排板可用区 = 本体 + 让尺，
+    # 而预留的刀缝空间在实际下料时仍属于这张大板，因此并入 allowance。
     kerf_material_errors = (
         validate_kerf_material(
             result.sheets, kerf_mm,
-            allowance_x_mm=oversize_x,
-            allowance_y_mm=oversize_y,
+            allowance_x_mm=oversize_x + reserve_x,
+            allowance_y_mm=oversize_y + reserve_y,
         )
         if kerf_mm > 0 else []
     )
@@ -888,7 +912,11 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     out_dxf = str(out_dir / f"{stem}_nested_{suffix}.dxf")
     out_json = str(out_dir / f"{stem}_report_{suffix}.json")
 
-    write_nested_dxf(result, out_dxf, unit_system=unit.value)
+    # 大板外框按【标称尺寸】绘制（用户口径：外框只画 3200x1600）。
+    # 让尺与刀缝预留只用于材料校验，不改变外框尺寸。
+    write_nested_dxf(result, out_dxf, unit_system=unit.value,
+                     board_size=(width_mm + oversize_x,
+                                 height_mm + oversize_y))
 
     report = build_report(
         result, profile, width_mm, height_mm, special_w, special_h,
@@ -1214,6 +1242,7 @@ def main():
         quick=quick,
         pairing=args.pairing,
         kerf_mm=args.kerf,
+        kerf_reserve_mm=args.kerf_reserve,
         sheet_oversize=sheet_oversize,
         auto_review=not args.no_auto_review,
         review_budget_s=args.review_budget,

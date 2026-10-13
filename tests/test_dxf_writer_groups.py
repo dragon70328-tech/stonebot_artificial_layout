@@ -45,6 +45,16 @@ def _group_sizes(doc) -> dict[str, int]:
     return {name: len(list(group)) for name, group in doc.groups}
 
 
+def _border_size(doc):
+    for entity in doc.modelspace():
+        if entity.dxf.layer == "SHEET_BORDER" and entity.dxftype() == "LWPOLYLINE":
+            points = [(p[0], p[1]) for p in entity.get_points("xy")]
+            xs = [p[0] for p in points]
+            ys = [p[1] for p in points]
+            return (max(xs) - min(xs), max(ys) - min(ys))
+    return None
+
+
 def test_nested_dxf_groups_bind_outer_hole_and_number(tmp_path):
     parts = [_part(1, "P-0001"), _part(2, "P-0002", x=500)]
     output = tmp_path / "nested.dxf"
@@ -73,3 +83,36 @@ def test_numbered_parts_dxf_groups_are_not_empty(tmp_path):
 
     groups = _group_sizes(ezdxf.readfile(output))
     assert groups == {"PART_P-0001": 3, "PART_P-0002": 3}
+
+
+def test_nested_dxf_border_defaults_to_sheet_size(tmp_path):
+    """未指定 board_size 时，大板外框沿用 sheet 尺寸。"""
+    output = tmp_path / "nested_default.dxf"
+
+    write_nested_dxf(_result([_part(1, "P-0001")]), str(output))
+
+    assert _border_size(ezdxf.readfile(output)) == (1000.0, 800.0)
+
+
+def test_nested_dxf_border_uses_board_size_not_packing_area(tmp_path):
+    """排板可用区因刀缝预留收缩时，外框仍按大板本体尺寸绘制。
+
+    回归：曾把收缩后的排板空间当成大板尺寸画外框（3185x1585 而非
+    3200x1600），导致按图下料量错尺寸。
+    """
+    parts = [_part(1, "P-0001"), _part(2, "P-0002", x=500)]
+    # sheet 是收缩后的排板可用区，本体是 1000x800
+    sheet = Sheet(index=1, width=985, height=785, thickness=20, parts=parts)
+    result = NestingResult(
+        sheets=[sheet],
+        unit="metric",
+        total_parts=len(parts),
+        total_sheets=1,
+        total_part_area=sum(part.area for part in parts),
+        total_sheet_area=sheet.total_area,
+    )
+    output = tmp_path / "nested_board.dxf"
+
+    write_nested_dxf(result, str(output), board_size=(1000.0, 800.0))
+
+    assert _border_size(ezdxf.readfile(output)) == (1000.0, 800.0)
