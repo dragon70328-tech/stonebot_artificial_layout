@@ -1,0 +1,11 @@
+# -*- coding: utf-8 -*-
+# 测试 / 开发依赖（本地 .venv 与 CI 使用）。
+#
+# 运行时依赖的"实测版本快照"见 requirements.lock.txt（由 .venv 冻结而来）；
+# 允许版本区间见 requirements.txt。
+# 说明：pytest 与 httpx 之前从未声明——本机全局 Python 里恰好装着，所以本地
+# 一直能跑；新建 .venv 时才暴露（httpx 缺失会让 test_http_api /
+# test_conversation_api 收集失败）。
+-r requirements.lock.txt
+pytest==9.1.1
+httpx==0.28.1

@@ -30,11 +30,37 @@
 
 ## 2. 本地启动
 
-### 2.1 依赖
+### 2.1 依赖（推荐用项目自带 `.venv`）
 
-```bash
-python -m pip install -r requirements.txt
+仓库根目录的 `.venv` 是本地虚拟环境（已被 `.gitignore` 忽略）。首次搭建：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 ```
+
+三份依赖文件的分工：
+
+| 文件 | 作用 |
+|---|---|
+| `requirements.txt` | **允许的版本区间**（人工维护的唯一来源） |
+| `requirements.lock.txt` | **实测版本快照**（2026-10-13 在 `.venv` 冻结；该组合下 `pytest -q -m "not slow"` = 443 passed）。CI 与部署建议用它锁定 |
+| `requirements-dev.txt` | `-r requirements.lock.txt` + `pytest` + `httpx`（测试/开发用） |
+
+历史说明：2026-10-13 之前本项目**一直直接用系统 Python**
+（`C:\Program Files\Python310`）跑，没有虚拟环境；`pytest` 与 `httpx`
+也从未在依赖文件里声明过（靠机器上恰好装着，所以本地能跑、新建 venv 才暴露）。
+现在 `.venv` + lock 把环境固定下来了。
+
+日常运行：
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 main.py input.dxf 3200 1800 20 --profile min_sheets
+.\.venv\Scripts\python.exe -X utf8 -m pytest -q -m "not slow"
+```
+
+`scripts/run_dev.ps1` 已改为**优先使用 `.venv`**，没有 `.venv` 时回退到 PATH 上的
+`python`。
 
 Python 3.10+（CI 使用 3.11）。
 

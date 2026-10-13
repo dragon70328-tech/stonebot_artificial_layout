@@ -24,4 +24,9 @@ Set-Location $projectRoot
 
 $port = if ($env:STONEBOT_PORT) { $env:STONEBOT_PORT } else { "8002" }
 
-python -X utf8 -m uvicorn src.http_api:app --host 127.0.0.1 --port $port
+# 优先用项目自带虚拟环境；没有 .venv 时回退到 PATH 上的 python。
+$venvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
+$python = if (Test-Path $venvPython) { $venvPython } else { "python" }
+Write-Host "使用解释器: $python"
+
+& $python -X utf8 -m uvicorn src.http_api:app --host 127.0.0.1 --port $port
