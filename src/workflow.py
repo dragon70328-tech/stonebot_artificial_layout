@@ -130,14 +130,21 @@ def material_group_for_number(number: str, drawing_profile) -> str | None:
 
 
 def apply_material_grouping(parts, drawing_profile):
-    """Assign material groups and remove parts without an allowed material prefix."""
+    """Assign material groups and remove parts without an allowed material prefix.
+
+    列头材料（`DrawingProfile.material_column_enabled`）在读图阶段已经写进
+    ``Part.material_group``，这里优先保留它——否则 citizen 这类"编号是房号
+    而不是材料前缀"的图纸会把所有零件判为无材料而整体跳过。
+    """
     if drawing_profile is None or not drawing_profile.material_group_enabled:
         return parts, []
 
     grouped = []
     skipped = []
     for part in parts:
-        prefix = material_group_for_number(part.number, drawing_profile)
+        prefix = part.material_group or material_group_for_number(
+            part.number, drawing_profile
+        )
         if prefix is None:
             skipped.append(part.number)
             continue

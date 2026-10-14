@@ -5,7 +5,9 @@
   1) 原始封闭实体普查（全部图层，仅做线型/闭合过滤）
   2) 层级分类（外轮廓 / 孔洞）
   3) 画像管线结果（自动匹配画像，含 expected_counts 对比）
-  4) 审图问题清单 + 原位编号 DXF
+  3.5) 列头材料（画像启用 material_column_enabled 时）
+  4) 审图问题清单 + 原位编号 DXF（含材料号：零件级 MATERIALS +
+     原图列头标签原位的 MATERIAL_HEADER）
 
 用法：
   python -X utf8 _analysis/analyze_drawing.py <dxf路径> [输出目录] \
@@ -29,7 +31,11 @@ if str(PROJECT_ROOT) not in sys.path:
 import ezdxf  # noqa: E402
 
 from src.drawing_profile import audit_drawing  # noqa: E402
-from src.drawing_profile import load_profiles  # noqa: E402
+from src.drawing_profile import (  # noqa: E402
+    collect_column_materials,
+    column_material_for_x,
+    load_profiles,
+)
 from src.dxf_reader import (  # noqa: E402
     _build_part_hierarchy,
     extract_closed_entity_candidates,
@@ -187,6 +193,79 @@ def main() -> int:
         ],
     })
 
+    # ── 3.5) 列头材料（多层平面图：每列一个楼层） ─────────────────
+    material_columns: list[dict] = []
+    material_headers: list[dict] = []
+    if profile is not None and profile.material_column_enabled:
+        material_columns = collect_column_materials(doc, profile)
+        material_headers = [
+            {
+                "text": column["label"],
+                "point": column["point"],
+                "height": column["height"],
+            }
+            for column in material_columns
+            if column.get("label") and column.get("point")
+        ]
+        by_material = Counter(
+            column["material_group"] for column in material_columns
+        )
+        unmatched = [p for p in parts if not p.material_group]
+
+        print()
+        print(SEP)
+        print("3.5) 列头材料（材料号写在原位）")
+        print(SEP)
+        print(f"列数（楼层）               : {len(material_columns)}")
+        print("各材料列数                 : " + ", ".join(
+            f"{key}: {value}" for key, value in sorted(by_material.items())
+        ))
+        for column in material_columns:
+            if column.get("warning"):
+                print(f"  警告：{column['warning']}")
+        print(f"已按列归属零件             : "
+              f"{len(parts) - len(unmatched)} / {len(parts)}")
+        print(f"未归入任何列的零件         : {len(unmatched)}")
+        if unmatched:
+            for part in unmatched[:10]:
+                print(f"  {part.number} 质心="
+                      f"({part.label_position[0]:.0f},"
+                      f"{part.label_position[1]:.0f})")
+
+        report.update({
+            "material_column_count": len(material_columns),
+            "material_columns": [
+                {
+                    "column": column["column"],
+                    "level": column["level"],
+                    "materials": column["materials"],
+                    "material_group": column["material_group"],
+                    "x_min": (
+                        None if column["x_min"] == float("-inf")
+                        else round(float(column["x_min"]), 1)
+                    ),
+                    "x_max": (
+                        None if column["x_max"] == float("inf")
+                        else round(float(column["x_max"]), 1)
+                    ),
+                    "warning": column.get("warning"),
+                }
+                for column in material_columns
+            ],
+            "material_columns_by_group": dict(sorted(by_material.items())),
+            "parts_without_material_column": [
+                {
+                    "number": part.number,
+                    "x": round(float(part.label_position[0]), 1),
+                    "y": round(float(part.label_position[1]), 1),
+                }
+                for part in unmatched
+            ],
+        })
+    elif profile is not None:
+        print()
+        print("（画像未启用 material_column_enabled，原位 DXF 只有编号、没有材料号）")
+
     # ── 4) 审图问题 ──────────────────────────────────────────────
     if "--no-audit" not in flags and profile is not None:
         print()
@@ -235,12 +314,22 @@ def main() -> int:
     print(SEP)
     print("5) 生成原位编号 DXF（坐标不变，供人工审核）")
     print(SEP)
-    numbered_dxf = out_dir / f"{dxf_path.stem}_numbered_原位.dxf"
-    write_numbered_parts_dxf(parts, str(numbered_dxf), unit_system="metric")
+    suffix = "_房号材料" if material_headers else ""
+    numbered_dxf = out_dir / f"{dxf_path.stem}_numbered_原位{suffix}.dxf"
+    write_numbered_parts_dxf(
+        parts,
+        str(numbered_dxf),
+        unit_system="metric",
+        material_headers=material_headers,
+    )
     print(f"OUTER={len(parts)} 个外轮廓, HOLES={total_holes} 个孔洞, "
           f"NUMBERS={len(parts)} 个编号")
+    if material_headers:
+        print(f"MATERIALS={len(parts)} 个零件材料号, "
+              f"MATERIAL_HEADER={len(material_headers)} 个原位列头标签")
     print(f"已写入: {numbered_dxf}")
     report["numbered_dxf"] = str(numbered_dxf)
+    report["numbered_dxf_material_tags"] = len(material_headers)
 
     recognized = out_dir / f"{dxf_path.stem}_recognized.json"
     recognized.write_text(

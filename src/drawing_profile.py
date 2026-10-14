@@ -66,6 +66,16 @@ class DrawingProfile:
     # 达到该值的视为区域轮廓，不作为规格板；它们仍参与编号归属
     # （`assignment_mode="containing_region"`）。0 = 不启用。
     region_min_side_mm: float = 0.0
+    # 列头材料标签（多层平面图：x 方向每列 = 一个楼层，列头给出
+    # `L-XX LEVEL` + `材料：ST-x`）。启用后读图会给每个零件写入
+    # material_group（取自它所在列），原位 DXF 也据此标注材料号。
+    # 见 docs/drawing-profile-citizen.md。
+    material_column_enabled: bool = False
+    material_layers: list[str] = field(default_factory=list)
+    material_label_pattern: str = (
+        r"材料\s*[:：]\s*(?P<materials>[A-Za-z0-9\-/、,;；\s]+)"
+    )
+    level_label_pattern: str = r"^(?P<level>L-\d+)\s*LEVEL$"
     number_fallback_radius: float = 0.0
     bbox_overlap_threshold: float = 0.5
     build_hierarchy: bool = True
@@ -1573,6 +1583,196 @@ def _collect_zone_texts(
     return texts
 
 
+COLUMN_MATERIAL_SPLIT = re.compile(r"[/、,;；]")
+
+
+def _split_material_codes(value: str) -> list[str]:
+    """把 `ST-7/ST-8` 这类写法拆成材料号列表（保持书写顺序，大写化）。"""
+    return [
+        part.strip().upper()
+        for part in COLUMN_MATERIAL_SPLIT.split(value)
+        if part.strip()
+    ]
+
+
+def _text_height(entity, default: float) -> float:
+    """TEXT 用 `height`、MTEXT 用 `char_height`；都取不到时回退画像默认字高。"""
+    for attribute in ("height", "char_height"):
+        try:
+            value = float(getattr(entity.dxf, attribute, 0.0) or 0.0)
+        except Exception:
+            value = 0.0
+        if value > 0.0:
+            return value
+    return float(default or 0.0)
+
+
+def _text_left_edge(entity, box: Polygon | None) -> float:
+    """文字视觉左边缘 x，用作列边界锚点。
+
+    citizen 的 `L-XX LEVEL` 是左对齐 TEXT（`halign=0`），此时
+    `insert.x` 就是文字左边缘，也正是该列零件的起始 x；用包围盒中心
+    当边界会让每列整体右移半个字宽，把边界附近的零件错分到相邻列。
+    """
+    if box is not None and not box.is_empty:
+        try:
+            return float(box.bounds[0])
+        except Exception:
+            pass
+    return float(_entity_coordinates(entity)[0])
+
+
+def collect_column_materials(
+    doc: ezdxf.document.Drawing,
+    profile: DrawingProfile,
+    exclude_layers: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """收集列头「材料：ST-x」标签，并按楼层标签（`L-XX LEVEL`）划分列。
+
+    多层平面图约定（citizen.dxf 实测）：每个楼层占 x 方向一列，列头同时给出
+    `L-XX LEVEL` 与 `材料：ST-x`；两组标签按 x 顺序一一配对，列的 x 区间为
+    `[本层标签 x, 下一层标签 x)`，最后一列向右开放。零件按质心 x 归列。
+
+    返回按 x 升序排列的列表，每项：
+
+    - ``column`` / ``level``：列序号与楼层标签，如 ``L-10``；
+    - ``x_min`` / ``x_max``：列区间（最后一列 ``x_max`` 为 ``inf``）；
+      锚点是楼层标签的**左边缘**（`_text_left_edge`），与
+      `_analysis/material_usage_report.py` 同口径；
+    - ``materials``：材料号列表，如 ``["ST-6"]``、``["ST-7", "ST-8"]``；
+    - ``material_group``：材料号合并写法，如 ``ST-7/ST-8``（列内共用，未拆分）；
+    - ``label`` / ``point`` / ``height``：标签原文、原位坐标（包围盒中心）与字高，
+      供原位 DXF 复写；
+    - ``warning``：配对异常说明（正常时该键不存在）。
+    """
+    allowed_layers = set(profile.material_layers or profile.number_layers)
+    excluded_layers = {value for value in (exclude_layers or [])}
+    material_pattern = re.compile(profile.material_label_pattern)
+    level_pattern = re.compile(profile.level_label_pattern)
+
+    level_marks: list[dict[str, Any]] = []
+    material_marks: list[dict[str, Any]] = []
+    for entity in doc.modelspace():
+        if entity.dxftype() not in ("TEXT", "MTEXT"):
+            continue
+        layer = getattr(entity.dxf, "layer", "0") or "0"
+        if layer in excluded_layers:
+            continue
+        if allowed_layers and layer not in allowed_layers:
+            continue
+        if getattr(entity.dxf, "handle", None) in profile.exclude_entity_handles:
+            continue
+        try:
+            text = (
+                entity.dxf.text
+                if entity.dxftype() == "TEXT"
+                else entity.plain_text()
+            )
+        except Exception:
+            continue
+        if not text or not text.strip():
+            continue
+        text = text.strip()
+        box = _text_box_polygon(entity)
+        point = (
+            (float(box.centroid.x), float(box.centroid.y))
+            if box is not None and not box.is_empty
+            else _entity_coordinates(entity)
+        )
+        left_edge = _text_left_edge(entity, box)
+        height = _text_height(entity, profile.text_height)
+
+        level = level_pattern.match(text)
+        if level:
+            level_marks.append(
+                {
+                    "level": level.group("level").upper(),
+                    "text": text,
+                    "layer": layer,
+                    "point": point,
+                    "x_anchor": left_edge,
+                    "height": height,
+                }
+            )
+            continue
+        material = material_pattern.search(text)
+        if not material:
+            continue
+        materials = _split_material_codes(material.group("materials"))
+        if not materials:
+            continue
+        material_marks.append(
+            {
+                "materials": materials,
+                "text": text,
+                "layer": layer,
+                "point": point,
+                "x_anchor": left_edge,
+                "height": height,
+            }
+        )
+
+    level_marks.sort(key=lambda item: item["x_anchor"])
+    material_marks.sort(key=lambda item: item["x_anchor"])
+
+    columns: list[dict[str, Any]] = []
+    for index, mark in enumerate(level_marks):
+        x_min = float(mark["x_anchor"])
+        x_max = (
+            float(level_marks[index + 1]["x_anchor"])
+            if index + 1 < len(level_marks)
+            else float("inf")
+        )
+        column: dict[str, Any] = {
+            "column": index + 1,
+            "level": mark["level"],
+            "x_min": x_min,
+            "x_max": x_max,
+            "materials": [],
+            "material_group": None,
+            "label": None,
+            "point": None,
+            "height": mark["height"],
+        }
+        if index < len(material_marks):
+            material = material_marks[index]
+            material_x = float(material["x_anchor"])
+            if not x_min <= material_x < x_max:
+                span = (
+                    f"[{x_min:.0f}, {x_max:.0f})"
+                    if x_max != float("inf")
+                    else f"[{x_min:.0f}, inf)"
+                )
+                column["warning"] = (
+                    f"第 {index + 1} 列（{mark['level']}）材料标签 "
+                    f"x={material_x:.0f} 不在 {span} 内"
+                )
+            column.update(
+                {
+                    "materials": material["materials"],
+                    "material_group": "/".join(material["materials"]),
+                    "label": material["text"],
+                    "point": material["point"],
+                    "height": material["height"] or mark["height"],
+                }
+            )
+        else:
+            column["warning"] = f"第 {index + 1} 列（{mark['level']}）没有配到材料标签"
+        columns.append(column)
+    return columns
+
+
+def column_material_for_x(
+    columns: list[dict[str, Any]],
+    x: float,
+) -> dict[str, Any] | None:
+    """按 x 坐标取列定义（与 `_analysis/material_usage_report.py` 同口径）。"""
+    for column in columns:
+        if column["x_min"] <= x < column["x_max"]:
+            return column
+    return None
+
+
 def _overlap_ratio(polygon: Polygon, box: Polygon | None) -> float:
     if box is None or box.is_empty or box.area <= 0:
         return 0.0
@@ -1946,6 +2146,16 @@ def read_dxf_with_profile(
     else:
         assignments, _ = _assign_texts_to_panels(panels, texts, profile)
 
+    # 列头材料：零件按质心 x 归属到所在列，材料号写进 material_group，
+    # 供原位 DXF 标注与后续"不同材料不共板"的分组使用。
+    column_materials: list[dict[str, Any]] = []
+    if profile.material_column_enabled and not profile.network_mode:
+        column_materials = collect_column_materials(
+            doc,
+            profile,
+            exclude_layers=exclude_layers,
+        )
+
     parts_data: list[dict[str, Any]] = []
     for panel in panels:
         number_layer = None
@@ -1971,6 +2181,11 @@ def read_dxf_with_profile(
                 )
 
         centroid = panel["centroid"]
+        column_material = (
+            column_material_for_x(column_materials, float(centroid.x))
+            if column_materials
+            else None
+        )
         parts_data.append(
             {
                 "polygon": panel["polygon"],
@@ -1988,6 +2203,16 @@ def read_dxf_with_profile(
                 "source": panel.get("source", "closed_polygon"),
                 "closure_gap": float(panel.get("closure_gap", 0.0) or 0.0),
                 "classification": panel.get("classification"),
+                "material_group": (
+                    column_material["material_group"]
+                    if column_material is not None
+                    else None
+                ),
+                "material_column": (
+                    column_material["level"]
+                    if column_material is not None
+                    else None
+                ),
             }
         )
     return parts_data, doc

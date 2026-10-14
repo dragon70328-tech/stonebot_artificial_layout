@@ -13,6 +13,7 @@ RED = 1
 BLUE = 5
 WHITE = 7
 ORANGE = 30
+GREEN = 3
 
 # 原图轮廓缺口超过该值（mm）就视为“不规范图纸”，
 # 在 CHECK_CLOSURE 图层标出提示人工确认。
@@ -307,13 +308,20 @@ def _label_point(part: Part) -> tuple[float, float]:
 
 
 def write_numbered_parts_dxf(parts: list, output_path: str,
-                             unit_system: str = "metric") -> None:
+                             unit_system: str = "metric",
+                             material_headers: list[dict] | None = None) -> None:
     """生成排板前的规格板带编号检查 DXF（保持原始坐标）。
 
     图层：
     - OUTER：台面板外轮廓
     - HOLES：盆孔/水龙头孔（蓝色）
     - NUMBERS：板件编号（居中）
+    - MATERIALS：板件材料号（`Part.material_group`，绿色，居编号下方）
+    - MATERIAL_HEADER：原图列头材料标签（原位复写，不改坐标）
+
+    ``material_headers`` 为 `{"text", "point", "height"}` 列表，来自
+    `drawing_profile.collect_column_materials()`：原图的「材料：ST-x」标签
+    按原坐标、原字高写回独立图层，便于在 CAD 里开关对照。
     """
     doc = ezdxf.new()
     doc.units = units.MM if unit_system != "imperial" else units.IN
@@ -325,6 +333,17 @@ def write_numbered_parts_dxf(parts: list, output_path: str,
     layer_check = "CHECK_CLOSURE"
     for name in (layer_outer, layer_holes, layer_numbers, layer_check):
         doc.layers.add(name)
+
+    layer_materials = "MATERIALS"
+    if any((getattr(part, "material_group", None) or "").strip() for part in parts):
+        doc.layers.add(layer_materials)
+    else:
+        layer_materials = None
+
+    headers = [header for header in (material_headers or []) if header.get("text")]
+    layer_material_header = "MATERIAL_HEADER"
+    if headers:
+        doc.layers.add(layer_material_header)
 
     for part in parts:
         group_entities = []
@@ -382,6 +401,44 @@ def write_numbered_parts_dxf(parts: list, output_path: str,
         )
         group_entities.append(label)
 
+        material = (getattr(part, "material_group", None) or "").strip()
+        if material and layer_materials is not None:
+            material_height = max(20.0, min(height * 0.6, 60.0))
+            material_label = msp.add_text(
+                material,
+                dxfattribs={
+                    "layer": layer_materials,
+                    "color": GREEN,
+                    "height": material_height,
+                },
+            )
+            material_label.set_placement(
+                (cx, cy - height * 0.5 - material_height * 0.6),
+                align=TextEntityAlignment.MIDDLE_CENTER,
+            )
+            group_entities.append(material_label)
+
         _create_part_group(doc, part, group_entities)
+
+    for header in headers:
+        text = str(header["text"]).strip()
+        point = header.get("point")
+        if not text or not point:
+            continue
+        try:
+            height = float(header.get("height") or 0.0)
+        except (TypeError, ValueError):
+            height = 0.0
+        header_label = msp.add_text(
+            text,
+            dxfattribs={
+                "layer": layer_material_header,
+                "height": height if height > 0.0 else 40.0,
+            },
+        )
+        header_label.set_placement(
+            (float(point[0]), float(point[1])),
+            align=TextEntityAlignment.MIDDLE_CENTER,
+        )
 
     doc.saveas(output_path)

@@ -79,6 +79,16 @@ def parts_data_to_recognized_drawing(
                         if part.get("classification") is not None
                         else {}
                     ),
+                    **(
+                        {"material_group": part["material_group"]}
+                        if part.get("material_group")
+                        else {}
+                    ),
+                    **(
+                        {"material_column": part["material_column"]}
+                        if part.get("material_column")
+                        else {}
+                    ),
                 },
             )
         )

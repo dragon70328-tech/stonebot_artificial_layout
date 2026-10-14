@@ -32,6 +32,34 @@
   `L-10 LEVEL` 等不会被该正则匹配。
 - `build_hierarchy: false`：房间轮廓已按区域排除，不能再用"被包含即孔洞"
   的逻辑，否则 3525 件会被整体丢掉。
+- `material_column_enabled: true` + `material_layers: ["0"]`：x 方向每列是一个
+  楼层，列头写 `材料：ST-x`；零件按**质心 x** 归属到所在列，材料号写进
+  `Part.material_group`（如 `ST-6`、`ST-7/ST-8`）。列边界取楼层标签
+  `L-XX LEVEL` 的**左边缘**（这些标签是左对齐 TEXT，`insert.x` 即左边缘），
+  与 `_analysis/material_usage_report.py` 同口径——用包围盒中心当边界会让
+  每列右移半个字宽，边界附近的零件会被错分到相邻列。
+
+## 列头材料（2026-10-14）
+
+`collect_column_materials()`（`src/drawing_profile.py`）把 56 个「材料：ST-x」
+标签按 x 与 56 个 `L-XX LEVEL` 标签一一配对，列的 x 区间为
+`[本层标签左边缘, 下一层标签左边缘)`，最后一列向右开放。零件按质心 x 归列。
+
+实测：56 列配对无异常、3525 件**全部归列**（0 件落在列外）；
+`ST-6` 22 列 / 1543 件，`ST-7/ST-8` 34 列 / 1982 件，与
+`_analysis/material_usage_report.py` 的结果逐件一致（独立复算 0 处不一致）。
+
+注意：`ST-7/ST-8` 那 34 列是"该列两种料都用"，图面没有拆分依据，
+`material_group` 记作 `ST-7/ST-8` 整体一组；不同材料不共板的规则需要
+先由用户给出 07 与 08 的拆分方式才能落地。
+
+原位 DXF（`analyze_drawing.py` 第 5 步；画像启用列头材料时文件名带
+`_房号材料`）会写三个相关图层：
+
+- `NUMBERS`：零件编号（房号 + 序号，居中）；
+- `MATERIALS`：零件材料号（绿色，居编号下方，跟随零件进同一个 GROUP）；
+- `MATERIAL_HEADER`：原图「材料：ST-x」列头标签**按原坐标复写**，
+  便于在 CAD 里开关对照。
 
 ## 实测结果（2026-10-13）
 
