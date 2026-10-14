@@ -190,6 +190,9 @@ def parse_args():
     p.add_argument("--usable-includes-oversize", action="store_true",
                    help="声明本次排板大板可利用尺寸包括让尺（零件可用 "
                         "标称+让尺）；默认不包括，即可利用尺寸=标称")
+    p.add_argument("--material", type=str, default=None,
+                   help="只排指定材料组（列头材料号，如 ST-6；多个用逗号分隔）。"
+                        "不同材料绝不共板，分单排板时用它过滤；缺省排全部零件")
     p.add_argument("--previous-state", type=str, default=None,
                    help="上次审图生成的 review_state.json，用于修正重传后的复检")
     p.add_argument("--accept-issue", type=str, default=None,
@@ -535,6 +538,55 @@ def _forced_closure_parts(recognized_drawing, threshold_mm: float = 5.0):
     return forced
 
 
+def parse_material_filter(value: str | None) -> list[str] | None:
+    """解析 --material，如 ``"ST-6"`` / ``"ST-6,ST-7"``。"""
+    if not value:
+        return None
+    codes = [code.strip() for code in value.split(",") if code.strip()]
+    return codes or None
+
+
+def _filter_parts_by_material(parts, wanted: list[str]):
+    """只保留指定材料组的零件（分单排板）。
+
+    不同材料绝不共板：分单排板时先在这里把零件过滤到目标材料组，再走原有
+    排板引擎。材料组在整个图纸里都找不到时直接报错，避免静默排出空结果
+    （留白比排错板更容易被忽略）。
+    """
+    wanted_codes = [code.strip().upper() for code in wanted if code.strip()]
+    available: dict[str, int] = {}
+    for part in parts:
+        key = (part.material_group or "").upper()
+        available[key] = available.get(key, 0) + 1
+
+    missing = [code for code in wanted_codes if code not in available]
+    if missing:
+        print("错误：图纸里没有材料组 " + "、".join(missing)
+              + "。可用材料组："
+              + "、".join(
+                  f"{key or '(无材料)'}({count} 件)"
+                  for key, count in sorted(available.items())
+              ))
+        sys.exit(1)
+
+    wanted_set = set(wanted_codes)
+    kept = [
+        part for part in parts
+        if (part.material_group or "").upper() in wanted_set
+    ]
+    if not kept:
+        print("错误：材料筛选后没有可排板零件。")
+        sys.exit(1)
+
+    skipped = len(parts) - len(kept)
+    print(f"材料筛选：只排 {'/'.join(wanted_codes)} —— {len(kept)} 件"
+          + (f"，跳过其他材料 {skipped} 件" if skipped else ""))
+    filtered_groups = sorted(
+        {part.material_group for part in kept if part.material_group}
+    )
+    return kept, (filtered_groups or [None])
+
+
 def _rebuild_material_summary(result, previous_summary):
     """回看减板后按材料分组重算板数与出材率。"""
     previous = {
@@ -643,7 +695,8 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         use_template: bool = False,
         cold_start: bool = False,
         beam: bool = True,
-        beam_width: int | None = None) -> None:
+        beam_width: int | None = None,
+        material_filter: list[str] | None = None) -> None:
     """核心排板流程
 
     ``use_template`` 默认 False：模板布局复用是显式选择，默认只跑算法，
@@ -742,6 +795,12 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     groups = prepared.groups
     material_group_enabled = prepared.material_group_enabled
     forced_closure_parts = _forced_closure_parts(recognized_drawing)
+
+    if material_filter:
+        parts, groups = _filter_parts_by_material(parts, material_filter)
+        print("注意：本次输出目录里的原位 DXF / 排板 DXF / 报告"
+              f"只含材料 {', '.join(material_filter)} 的零件。")
+
     if forced_closure_parts:
         preview = "，".join(
             f"{item['number'] or item['handle']}(缺口 {item['closure_gap']:.0f}mm)"
@@ -761,6 +820,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
             "parts": len(parts),
             "total_area": round(prepared.total_area, 1),
             "material_groups": [g for g in groups if g],
+            "material_filter": material_filter,
             "skipped_material_numbers": len(skipped_material_numbers),
         },
     )
@@ -1354,6 +1414,7 @@ def main():
         cold_start=args.cold_start,
         beam=not args.no_beam,
         beam_width=args.beam_width,
+        material_filter=parse_material_filter(args.material),
     )
     if args.check_only:
         sys.exit(check_only_exit_code(outcome))
