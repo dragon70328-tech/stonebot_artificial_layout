@@ -157,6 +157,9 @@ stonebot_artificial_layout/
 - 面板外轮廓 + 孔洞（独立图层）+ 编号 TEXT（质心居中）
 - 坐标保持原位，不做平移旋转
 - 用途：用户检查面板识别和编号准确性
+- 画像启用列头材料（`material_column_enabled`）时文件名带 `_房号材料`，
+  并多写两个图层：`MATERIALS`（零件材料号，绿色，居编号下方，与零件同 GROUP）
+  和 `MATERIAL_HEADER`（原图「材料：ST-x」列头标签按原坐标复写）
 
 ### Step 4.5: 材料分组（仅启用图纸画像的项目）
 
@@ -328,6 +331,24 @@ ZIGZAG 线型的大样图标记必须排除，否则会被误识别为规格板�
 启用 `material_group_enabled` 后，允许材料前缀集合由
 `DrawingProfile.allowed_material_prefixes` 决定；没有允许材料前缀的零件
 即使识别为封闭图形也不排板。
+
+### 列头材料：按质心 x 归列，边界取楼层标签左边缘
+多层平面图（如 citizen）x 方向每列 = 一个楼层，列头同时写 `L-XX LEVEL` 与
+`材料：ST-x`。画像开 `material_column_enabled` 后，零件按**质心 x** 归属到
+所在列，材料号写进 `Part.material_group`，原位 DXF 也据此标注。
+
+- 列边界取楼层标签的**左边缘**（这些标签是左对齐 TEXT，`insert.x` 就是左边缘），
+  与 `_analysis/material_usage_report.py` 同口径；用包围盒中心当边界会让每列
+  右移半个字宽，边界附近的零件会被错分到相邻列、甚至落到第一列之外变成"无材料"
+  （2026-10-14 踩过：3524/3525，`1002-01` 掉出列外）。
+- `material_group_enabled`（按编号前缀取材料）与 `material_column_enabled`
+  （按列取材料）是两条来源；`apply_material_grouping` 优先保留读图阶段已写入的
+  `Part.material_group`，否则 citizen 这种"编号是房号"的图纸会被判无材料而整体跳过。
+- `ST-7/ST-8` 表示该列两种料都用，图面没有拆分依据，只能整体记作一组，
+  要落地"不同材料不共板"必须先由用户给出拆分方式。
+- 分单排板用 `--material ST-6`（多个用逗号分隔）过滤零件：材料组找不到时
+  直接报错并列出可用材料组，不静默排空；过滤后输出目录里的原位 DXF /
+  排板 DXF / 报告只含该材料的零件。
 
 ### 禁止旋转时首件左贴边可能不满足
 `first_part_left_edge` 要求首件最长直边贴大板左边缘；若 `--no-rotation`
