@@ -68,8 +68,29 @@ _EDGE_GRID_STEP = 45.0
 
 
 def _edge_segments(poly):
-    coords = list(poly.exterior.coords)
-    return [(coords[i], coords[i + 1]) for i in range(len(coords) - 1)]
+    """外轮廓的直边序列。
+
+    零件外轮廓可能是 MultiPolygon / GeometryCollection（图纸里两个子轮廓被强制
+    闭合或被 CAD 合成一个实体时会出现），逐个多边形展开；对空几何返回空列表。
+    2026-10-14 修复：东莞奥特莱斯2 水刀 + 共边配对路径曾在此处抛
+    ``AttributeError: 'MultiPolygon' object has no attribute 'exterior'``。
+    """
+    if poly is None:
+        return []
+    if getattr(poly, "geom_type", "") in ("MultiPolygon", "GeometryCollection"):
+        items = list(poly.geoms)
+    else:
+        items = [poly]
+    segments = []
+    for item in items:
+        exterior = getattr(item, "exterior", None)
+        if exterior is None:
+            continue
+        coords = list(exterior.coords)
+        segments.extend(
+            (coords[i], coords[i + 1]) for i in range(len(coords) - 1)
+        )
+    return segments
 
 
 def _edge_length(edge):
