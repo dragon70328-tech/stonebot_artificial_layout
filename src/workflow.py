@@ -560,7 +560,7 @@ def _split_normal_parts_by_group(normal_parts, group_mode):
 def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
                     effective_thickness, unit, profile, drawing_profile,
                     trials, seed, budget, quick, pairing=False,
-                    beam=True, beam_width=None):
+                    beam=True, beam_width=None, stats=None, compress=True):
     """Nest one material group and return result plus group stats."""
     normal_parts = []
     special_parts = []
@@ -645,7 +645,12 @@ def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
                 min_gap=profile.min_gap,
                 min_sheets=group_min_sheets,
                 beam=beam,
-                beam_width=beam_width or (400 if quick else 1000),
+                # 束搜索宽度只由 --beam-width 决定：--quick 代表"更少的配置与
+                # 更小的预算"，不应静默降级搜索空间（那会让同一张图因 flag
+                # 差一张板，见 2026-10-14 实测）。
+                beam_width=beam_width or 1000,
+                stats=stats,
+                compress=compress,
                 configs=QUICK_CONFIGS if quick else None))
     if special_parts:
         results.append(nest_special_parts(
@@ -687,7 +692,8 @@ class GroupNestingOutcome:
 def nest_groups(parts, groups, width_mm, height_mm, special_w, special_h,
                 effective_thickness, unit, profile, drawing_profile,
                 trials, seed, budget, quick, pairing=False,
-                beam=True, beam_width=None) -> GroupNestingOutcome:
+                beam=True, beam_width=None, stats=None,
+                compress=True) -> GroupNestingOutcome:
     """Nest every material group and combine into a single NestingResult."""
     t0 = time.time()
     group_results = []
@@ -708,7 +714,8 @@ def nest_groups(parts, groups, width_mm, height_mm, special_w, special_h,
                 group_parts, width_mm, height_mm, special_w, special_h,
                 effective_thickness, unit, profile, drawing_profile,
                 trials, seed, budget, quick, pairing,
-                beam=beam, beam_width=beam_width,
+                beam=beam, beam_width=beam_width, stats=stats,
+                compress=compress,
             )
         )
         group_results.append(group_result)
@@ -844,7 +851,8 @@ def build_report(result, profile, width_mm, height_mm, special_w, special_h,
                  skip_unnumbered, kerf_metrics=None,
                  sheet_oversize: tuple[float, float] | None = None,
                  usable_size: tuple[float, float] | None = None,
-                 usable_includes_oversize: bool = False) -> dict:
+                 usable_includes_oversize: bool = False,
+                 optimizer_stats: dict | None = None) -> dict:
     """Build the final nesting report payload.
 
     口径同 `build_check_payload`：标称 + 让尺 = 实物；可利用尺寸由调用方给出，
@@ -896,6 +904,7 @@ def build_report(result, profile, width_mm, height_mm, special_w, special_h,
         "parameters": {
             "trials": trials, "seed": seed, "budget_s": budget,
             "skip_unnumbered": skip_unnumbered,
+            "optimizer": optimizer_stats or {},
         },
         "sheets": [
             {

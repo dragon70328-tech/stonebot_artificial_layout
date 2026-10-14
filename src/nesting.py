@@ -552,6 +552,182 @@ def _concentration(sheets_pl: list) -> float:
     return sum(_sheet_used_area(s) ** 2 for s in sheets_pl)
 
 
+def _weakest_sheet_area(sheets_pl: list) -> float:
+    """最弱板（已用面积最小的一张）的已用面积。
+
+    板数相同的两个布局总浪费相同（总零件面积固定），所以"最弱板更轻"并不浪费
+    材料，而是代表回看更容易把它并掉——作为尾板可并性的代理指标。
+    """
+    if not sheets_pl:
+        return 0.0
+    return min(_sheet_used_area(s) for s in sheets_pl)
+
+
+def _layout_key(sheets_pl: list, *, manufacture_score: float,
+                compact: float) -> tuple:
+    """布局择优键：板数 → 最弱板可并性 → 制造评分 → 紧凑度。
+
+    板数是离散目标且有平台期，真正决定能否少一张板的是"最弱的那张板能不能被
+    并掉"，因此把它显式放进择优键（此前尾板完全不参与择优）。
+    """
+    return (len(sheets_pl), _weakest_sheet_area(sheets_pl),
+            -manufacture_score, compact)
+
+
+# 大邻域搜索的确定性预算：迭代数与连续无改进轮数优先，墙钟预算退化为护栏。
+_LNS_DEFAULT_ITERATIONS = 40
+_LNS_DEFAULT_PATIENCE = 12
+
+
+def _sheet_outer_area(pls: list) -> float:
+    """一张板上零件的**外包络**面积和。
+
+    压缩可行性必须用外包络：孔洞不占板面，而 `part.area` 是扣洞后的净面积
+    （报告里的出材率用它）。CGR45 上两者差 12%（235.9 vs 210.1 m²），
+    用净面积做可行性判断会高估能塞进去的量。
+    """
+    return sum(pl.poly.area for pl in pls)
+
+
+# 显式压缩重排（P1，2026-10-14）：
+# 把 k 张填充最低的板联合重排进 k-1 张。k 必须够大——压缩 k 张到 k-1 张需要
+# Σ外包络 / ((k-1)·板面积) ≤ fill_cap，满板布局上 k=2/3 在算术上就不可能
+# （CGR45 50 张布局：k=2 需 135%、k=3 需 103%，k=4 才降到 92%）。
+_COMPRESS_SUBSET_SIZES = (4, 6, 8)
+# 重排后 (k-1) 张板的平均外包络填充乐观上限（实测单板最高 96.8%）。
+_COMPRESS_FILL_CAP = 0.95
+_COMPRESS_SORT_MODES = (
+    ("area", "skyline"), ("short", "contact"), ("long", "col"),
+    ("area", "col"), ("short", "skyline"), ("area", "contact"),
+)
+
+
+def _subset_selections(sheets_pl: list, k: int, seed: int) -> list[list[int]]:
+    """给出若干种"选哪 k 张板一起重排"的方案（都确定性）。
+
+    只用"填充最低的 k 张"不够：那些板往往装着最大的件，凑在一起反而塞不进 k-1 张。
+    所以另外给两种互补的组合——
+
+    - ``parts``：最弱板 + 零件数最多的 k-1 张（零件多、粒度细，容易嵌合）；
+    - ``mixed``：最弱板 + 由固定种子随机挑的 k-1 张（探索不同搭配）。
+    """
+    n = len(sheets_pl)
+    k = min(k, n)
+    fill_order = sorted(range(n), key=lambda i: _sheet_outer_area(sheets_pl[i]))
+    weakest = fill_order[0]
+    selections = [fill_order[:k]]
+
+    by_parts = sorted(range(n), key=lambda i: (-len(sheets_pl[i]), i))
+    parts_sel = [weakest] + [i for i in by_parts if i != weakest][:k - 1]
+    if sorted(parts_sel) != sorted(selections[0]):
+        selections.append(sorted(parts_sel))
+
+    rng = random.Random(seed * 1000 + k)
+    pool = [i for i in range(n) if i != weakest]
+    if len(pool) >= k - 1:
+        mixed = [weakest] + rng.sample(pool, k - 1)
+        if sorted(mixed) not in [sorted(s) for s in selections]:
+            selections.append(sorted(mixed))
+    return selections
+
+
+def _compress_sheets(sheets_pl: list, sheet_w: float, sheet_h: float,
+                     cache: dict, *, rotations: tuple = _DEFAULT_ROTATIONS,
+                     min_gap: float = 0.0, first_part_left_edge: bool = False,
+                     subset_sizes=_COMPRESS_SUBSET_SIZES,
+                     fill_cap: float = _COMPRESS_FILL_CAP,
+                     beam_width: int = 150,
+                     beam_part_cap: int = 60,
+                     stats: dict | None = None) -> list:
+    """显式压缩：把 k 张最低填充板**联合重排进 k-1 张**（硬上限）。
+
+    与 LNS 里那次"顺带压缩"的区别：`_lns_improve` 的判定是 `len(got) <= k`，
+    并不要求少一张板，所以满板布局上几乎不会发生；这里用
+    `_nest_single(max_sheets=k-1)` 硬性要求塞进 k-1 张（装不下返回 None），
+    并且先用外包络面积算术筛掉不可能的 k。
+
+    代价可控：子集只有 k 张板的零件（CGR45 上 k=8 约 32 件），每个候选
+    排序×模式组合一次 `_nest_single`；`first_part_left_edge` 约束下跳过
+    （重排会破坏"首件贴左边缘"）。
+
+    "塞进 k-1 张"是硬可行性问题，贪心很弱（CGR45 上 18 组全失败），
+    所以每组子集还会用子集**束搜索**再试一次：束搜索对小子集能做接近最优的
+    分组，且天然会尽量少开板，`len(got) <= k-1` 即压缩成功。
+
+    ``beam_part_cap``：子集零件数超过它时**不做束搜索兜底**（只跑贪心）。
+    大图上子集会很大——东莞奥特莱斯2（1109 件 / 53 张板，每板约 21 件）k=8 的子集
+    接近 170 件，束搜索要跑好几分钟且基本不会成功。确定性上限，但必须设，
+    否则这个默认开启的通道会在大单上失控。
+    """
+    stats_state = {"attempts": 0, "accepted": 0, "skipped_area": 0,
+                   "beam_skipped_large": 0}
+    t0 = time.time()
+    if not first_part_left_edge:
+        from src.beam_nesting import beam_layout
+
+        sheet_area = sheet_w * sheet_h
+        while True:
+            order = sorted(range(len(sheets_pl)),
+                           key=lambda i: _sheet_outer_area(sheets_pl[i]))
+            progressed = False
+            for k in subset_sizes:
+                if k > len(sheets_pl):
+                    continue
+                for sel in _subset_selections(sheets_pl, k, seed=0):
+                    area = sum(_sheet_outer_area(sheets_pl[i]) for i in sel)
+                    if area > (k - 1) * sheet_area * fill_cap:
+                        stats_state["skipped_area"] += 1
+                        continue
+                    sub = [pl.part for i in sel for pl in sheets_pl[i]]
+                    sel_set = set(sel)
+                    for sort_name, mode in _COMPRESS_SORT_MODES:
+                        stats_state["attempts"] += 1
+                        res = _nest_single(sub, sheet_w, sheet_h,
+                                           _make_sort_key(sort_name, 0), mode,
+                                           cache, max_sheets=k - 1,
+                                           rotations=rotations, min_gap=min_gap)
+                        if res is None or sum(len(s) for s in res) != len(sub):
+                            continue
+                        sheets_pl = [pl for i, pl in enumerate(sheets_pl)
+                                     if i not in sel_set] + res
+                        stats_state["accepted"] += 1
+                        progressed = True
+                        break
+                    if progressed:
+                        break
+                    # 束搜索兜底：贪心装不下不代表装不下
+                    if len(sub) > beam_part_cap:
+                        stats_state["beam_skipped_large"] += 1
+                        break
+                    stats_state["attempts"] += 1
+                    try:
+                        got = beam_layout(sub, sheet_w, sheet_h, cache,
+                                          beam_width=beam_width,
+                                          rotations=rotations, min_gap=min_gap)
+                    except ValueError:
+                        got = None
+                    if got is not None and len(got) <= k - 1:
+                        sheets_pl = [pl for i, pl in enumerate(sheets_pl)
+                                     if i not in sel_set] + got
+                        stats_state["accepted"] += 1
+                        progressed = True
+                        break
+                if progressed:
+                    break
+            if not progressed:
+                break
+    if stats is not None:
+        stats.update({
+            "compress_attempts": stats_state["attempts"],
+            "compress_accepted": stats_state["accepted"],
+            "compress_skipped_by_area": stats_state["skipped_area"],
+            "compress_beam_skipped_large": stats_state["beam_skipped_large"],
+            "compress_seconds": round(time.time() - t0, 3),
+            "compress_left_edge_skipped": bool(first_part_left_edge),
+        })
+    return sheets_pl
+
+
 def _lns_improve(sheets_pl: list, sheet_w: float, sheet_h: float,
                  cache: dict, budget_s: float = 40.0,
                  seed: int = 0, progress=None,
@@ -559,7 +735,10 @@ def _lns_improve(sheets_pl: list, sheet_w: float, sheet_h: float,
                  first_part_left_edge: bool = False,
                  min_gap: float = 0.0,
                  warm_start: list | None = None,
-                 sub_beam_width: int | None = 150) -> list:
+                 sub_beam_width: int | None = 150,
+                 max_iterations: int | None = _LNS_DEFAULT_ITERATIONS,
+                 patience: int | None = _LNS_DEFAULT_PATIENCE,
+                 stats: dict | None = None) -> list:
     """大邻域搜索：反复拆除利用率偏低的若干张板并重排，
     同数重排提升填充集中度（中性移动），偶尔直接压缩板数。
 
@@ -567,7 +746,11 @@ def _lns_improve(sheets_pl: list, sheet_w: float, sheet_h: float,
     件时）用逐板束搜索 beam_layout：贪心 _nest_single 只能按固定排序
     一趟摆放，几乎找不到跨板重排机会（CGR45 上 LNS 曾 180s 零收益）；
     束搜索对小子集能做接近最优的分组，是压缩板数的实际杠杆。
-    束搜索结果是确定性的，按子集签名缓存避免重复求解。"""
+    束搜索结果是确定性的，按子集签名缓存避免重复求解。
+
+    预算口径（2026-10-14）：``max_iterations`` 与 ``patience`` 是主控且确定；
+    ``budget_s`` 降级为墙钟护栏，触发时在 ``stats`` 里标记
+    ``lns_budget_exhausted``，表示本次结果不再保证同输入同输出。"""
     from src.beam_nesting import beam_layout
 
     rng = random.Random(seed)
@@ -578,9 +761,18 @@ def _lns_improve(sheets_pl: list, sheet_w: float, sheet_h: float,
     best, best_key = cur, cur_key
     t0 = time.time()
     it = 0
+    dry = 0
+    budget_hit = False
     beam_cache: dict = {}
 
-    while time.time() - t0 < budget_s:
+    while True:
+        if max_iterations is not None and it >= max_iterations:
+            break
+        if patience is not None and dry >= patience:
+            break
+        if budget_s is not None and budget_s > 0 and time.time() - t0 >= budget_s:
+            budget_hit = True
+            break
         it += 1
         n = len(cur)
         k = min(rng.choice((2, 3, 3, 4, 4, 5, 6, 8)), n)
@@ -628,17 +820,30 @@ def _lns_improve(sheets_pl: list, sheet_w: float, sheet_h: float,
                                    first_part_left_edge=first_part_left_edge,
                                    min_gap=min_gap)
         if res is None:
+            dry += 1
             continue
 
         new = [s for i, s in enumerate(cur) if i not in sel_set] + res
         new_key = (len(new), -_concentration(new))
+        improved = False
         if new_key < cur_key:
             cur, cur_key = new, new_key
             if new_key < best_key:
                 best, best_key = new, new_key
+                improved = True
+        dry = 0 if improved else dry + 1
         if progress and it % 20 == 0:
             progress(it, len(best))
 
+    if stats is not None:
+        stats.update({
+            "lns_iterations": it,
+            "lns_dry_rounds": dry,
+            "lns_seconds": round(time.time() - t0, 3),
+            "lns_budget_exhausted": budget_hit,
+            "lns_max_iterations": max_iterations,
+            "lns_patience": patience,
+        })
     return best
 
 
@@ -816,7 +1021,11 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
                min_sheets: int | None = None,
                beam: bool = True,
                beam_width: int = 1000,
-               progress=None) -> NestingResult:
+               progress=None,
+               improve_iterations: int | None = None,
+               improve_patience: int | None = None,
+               compress: bool = True,
+               stats: dict | None = None) -> NestingResult:
     """排板主入口：多轮贪心 + 多次试验取最优。
 
     configs：可选，自定义 [(排序键, 评分模式, 种子)] 列表；
@@ -826,7 +1035,11 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
     beam_width：束搜索每层保留的布局数，越大越优越慢；
     trials：独立试验次数（每次不同随机种子），取最优；
     seed：随机种子基数，保证可复现；
-    progress：可选回调 fn(当前轮次, 总轮次, 当前最优板数)。
+    progress：可选回调 fn(当前轮次, 总轮次, 当前最优板数)；
+    improve_iterations / improve_patience：LNS 的确定性预算（None 用默认值）；
+    compress：LNS 之后做一次"多板联合重排压缩"（把 k 张最低填充板重排进 k-1 张，
+    见 `_compress_sheets`）；`--no-compress` 可关闭；
+    stats：可选 dict，回填本次运行的确定性诊断（迭代数/是否吃到墙钟护栏）。
     """
     best_result = None
     best_key = None
@@ -851,7 +1064,8 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
             manufacture_score = _placement_manufacturability_score(
                 sheets_pl, sheet_width, sheet_height
             )
-            key = (len(sheets_pl), -manufacture_score, compact)
+            key = _layout_key(sheets_pl, manufacture_score=manufacture_score,
+                              compact=compact)
             if trial_best_key is None or key < trial_best_key:
                 trial_best_key = key
                 best_pl = sheets_pl
@@ -871,7 +1085,8 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
             manufacture_score = _placement_manufacturability_score(
                 beam_pl, sheet_width, sheet_height
             )
-            key = (len(beam_pl), -manufacture_score, compact)
+            key = _layout_key(beam_pl, manufacture_score=manufacture_score,
+                              compact=compact)
             if trial_best_key is None or key < trial_best_key:
                 trial_best_key = key
                 best_pl = beam_pl
@@ -885,7 +1100,27 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
                                    rotations=rotations,
                                    first_part_left_edge=first_part_left_edge,
                                    min_gap=min_gap,
-                                   warm_start=best_pl_global)
+                                   warm_start=best_pl_global,
+                                   max_iterations=(
+                                       _LNS_DEFAULT_ITERATIONS
+                                       if improve_iterations is None
+                                       else improve_iterations),
+                                   patience=(
+                                       _LNS_DEFAULT_PATIENCE
+                                       if improve_patience is None
+                                       else improve_patience),
+                                   stats=stats)
+
+        if compress:
+            before = len(best_pl)
+            best_pl = _compress_sheets(
+                best_pl, sheet_width, sheet_height, cache,
+                rotations=rotations,
+                first_part_left_edge=first_part_left_edge,
+                min_gap=min_gap, stats=stats)
+            if stats is not None:
+                stats.setdefault("compress_sheets_before", before)
+                stats["compress_sheets_after"] = len(best_pl)
 
         result = _materialize(best_pl, sheet_width, sheet_height,
                               sheet_thickness, unit, len(parts))
@@ -900,6 +1135,8 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
         )
         trial_key = (
             result.total_sheets,
+            min((sum(p.area for p in s.parts) for s in result.sheets),
+                default=0.0),
             -trial_manufacture_score,
             _compactness(result),
         )

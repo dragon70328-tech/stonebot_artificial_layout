@@ -359,11 +359,19 @@ def find_reductions(
     min_gap: float = 0.0,
     time_budget_s: float | None = None,
     per_donor_time_s: float | None = None,
+    max_nodes_per_donor: int = 20000,
+    placement_limit: int = 40,
 ) -> tuple[list[ReductionCandidate], NestingResult]:
     """Find a sequence of local sheet reductions.
 
     Returns the list of applied candidates and the final reduced result.
     The input ``result`` is not modified.
+
+    确定性口径（2026-10-14）：真正的搜索上限是 ``max_reductions`` /
+    ``max_donor_attempts`` / ``max_nodes_per_donor`` / ``placement_limit``，
+    它们都确定；``time_budget_s`` 与 ``per_donor_time_s`` 只是墙钟护栏，
+    一旦触发就会放弃本来可能成功的 donor，使结果不可复现——因此默认应为
+    None（只靠确定性上限兜底）。
     """
     current = result
     candidates: list[ReductionCandidate] = []
@@ -399,6 +407,8 @@ def find_reductions(
                 donor_deadline = single if donor_deadline is None else min(donor_deadline, single)
             candidate = _try_reduce_donor(
                 donor, current, profile, clearance, deadline=donor_deadline,
+                max_nodes=max_nodes_per_donor,
+                placement_limit=placement_limit,
             )
             if candidate is not None:
                 break

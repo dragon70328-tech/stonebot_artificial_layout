@@ -145,10 +145,15 @@ def parse_args():
                    help="排板后不自动回看跨板减板机会")
     p.add_argument("--use-template", action="store_true",
                    help="允许复用已验证模板布局（默认关闭，只用算法排板）")
+    p.add_argument("--no-compress", action="store_true",
+                   help="关闭多板联合重排压缩（默认开启：把 k 张最低填充板"
+                        "联合重排进 k-1 张，是压缩板数的显式通道）")
     p.add_argument("--cold-start", action="store_true",
                    help="冷启动：忽略模板/已验证案例/审图缓存，仅用原始 DXF + 配置")
-    p.add_argument("--review-budget", type=float, default=120.0,
-                   help="自动回看的总时间上限（秒，默认 120）")
+    p.add_argument("--review-budget", type=float, default=0.0,
+                   help="自动回看的总时间上限（秒）。0（默认）= 不用墙钟上限，"
+                        "只受确定性上限约束（reductions/donor 次数/搜索节点数），"
+                        "因此同参数同输入必然同输出；给正数则可能被截断而不可复现")
     p.add_argument("--report-only", action="store_true",
                    help="仅完成排板并报告大板使用量，不执行后处理和输出文件")
     p.add_argument("--check-only", action="store_true",
@@ -619,29 +624,57 @@ def _rebuild_material_summary(result, previous_summary):
 
 def _auto_reduce_sheets(result, profile, material_summary, manufacturing_metrics, *,
                         max_reductions: int = 5,
-                        max_donor_attempts: int = 60,
-                        time_budget_s: float = 120.0,
-                        per_donor_time_s: float = 20.0):
+                         max_donor_attempts: int = 8,
+                         max_donor_parts: int = 6,
+                         max_nodes_per_donor: int = 3000,
+                         time_budget_s: float = 0.0,
+                         per_donor_time_s: float | None = None,
+                         stats: dict | None = None):
     """后处理后回看排板结果，把能合并的板并掉。
 
     回看是增强项：失败、超时、校验不通过都不影响主流程，
     只是保留原排板。
+
+    确定性（2026-10-14 起）：默认不设墙钟上限，只受 max_reductions /
+    max_donor_attempts / max_donor_parts / max_nodes_per_donor 这些确定性上限约束；
+    传正的 time_budget_s 会恢复旧的"时间截断"行为（结果可能不可复现）。
+
+    上限取值的依据：donor 拆除搜索的代价 ≈ 零件数 × 目标板数 × 每件候选数，
+    大单（50+ 张板）上单个 donor 就能吃掉几十秒。所以既要限"试几个 donor"
+    （8），也要限"单个 donor 的节点数"（3000），并跳过零件数 > 6 的 donor
+    ——需要腾空的板几乎都只有一两件，件数多的板几何上基本并不掉。
     """
     print(f"回看排板结果：{result.total_sheets} 张板，"
           f"寻找可合并的大板...")
+    t_review = time.time()
     try:
         candidates, reduced = find_reductions(
             result,
             profile=profile,
             max_reductions=max_reductions,
             max_donor_attempts=max_donor_attempts,
+            max_donor_parts=max_donor_parts,
+            max_nodes_per_donor=max_nodes_per_donor,
             min_gap=profile.min_gap,
-            time_budget_s=time_budget_s,
+            time_budget_s=(time_budget_s if time_budget_s and time_budget_s > 0
+                           else None),
             per_donor_time_s=per_donor_time_s,
         )
     except Exception as exc:  # noqa: BLE001 - 回看不能影响主流程
         print(f"回看跳过：{exc}")
+        if stats is not None:
+            stats["review_seconds"] = round(time.time() - t_review, 3)
+            stats["review_error"] = str(exc)
         return [], result, material_summary, manufacturing_metrics
+
+    if stats is not None:
+        stats["review_seconds"] = round(time.time() - t_review, 3)
+        stats["review_reduced_sheets"] = len(candidates)
+        stats["review_deterministic"] = not (time_budget_s and time_budget_s > 0)
+        stats["review_max_reductions"] = max_reductions
+        stats["review_max_donor_attempts"] = max_donor_attempts
+        stats["review_max_donor_parts"] = max_donor_parts
+        stats["review_max_nodes_per_donor"] = max_nodes_per_donor
 
     if not candidates:
         print("回看完成：未发现可合并的大板。")
@@ -696,6 +729,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         cold_start: bool = False,
         beam: bool = True,
         beam_width: int | None = None,
+        compress: bool = True,
         material_filter: list[str] | None = None) -> None:
     """核心排板流程
 
@@ -914,6 +948,8 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
                 layout_source = f"template:{template_record.name}"
                 print(f"模板排板命中: {template_record.name}")
 
+    # 优化器诊断：确定性预算消耗、是否被墙钟护栏截断（进报告 parameters.optimizer）
+    optimizer_stats: dict = {}
     if nesting is None:
         nesting = nest_groups(
             parts, groups, nesting_width_mm, nesting_height_mm,
@@ -921,6 +957,8 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
             effective_thickness, unit, profile, drawing_profile,
             trials, seed, budget, quick, pairing,
             beam=beam, beam_width=beam_width,
+            stats=optimizer_stats,
+            compress=compress,
         )
     result = nesting.result
     print(f"布局来源: 模板 {layout_source}" if template_result
@@ -934,6 +972,14 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     # ── 排板完成后先报告板数，确认后再执行后处理 ──
     print(f"排板完成：使用 {result.total_sheets} 张大板，"
           f"出材率 {result.yield_rate:.2f}%，耗时 {elapsed:.1f}s")
+    _lns_it = optimizer_stats.get("lns_iterations")
+    if _lns_it is not None:
+        print(f"优化预算：LNS {_lns_it} 轮"
+              f"（连续无改进 {optimizer_stats.get('lns_dry_rounds')} 轮停止），"
+              f"{optimizer_stats.get('lns_seconds')}s，"
+              + ("墙钟护栏已触发（本次结果不可复现）"
+                 if optimizer_stats.get("lns_budget_exhausted")
+                 else "确定性预算内完成"))
     session.transition(
         WorkflowStage.NESTED_REPORTED,
         summary={
@@ -978,6 +1024,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         ) = _auto_reduce_sheets(
             result, profile, material_summary, manufacturing_metrics,
             time_budget_s=review_budget_s,
+            stats=optimizer_stats,
         )
     kerf_metrics = (
         estimate_kerf_material(result.sheets, kerf_mm)
@@ -1089,6 +1136,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         sheet_oversize=(oversize_x, oversize_y),
         usable_size=(nesting_width_mm, nesting_height_mm),
         usable_includes_oversize=caliber.usable_includes_oversize,
+        optimizer_stats=optimizer_stats,
     )
     report["forced_closure_parts"] = forced_closure_parts
     report["auto_review"] = {
@@ -1414,6 +1462,7 @@ def main():
         cold_start=args.cold_start,
         beam=not args.no_beam,
         beam_width=args.beam_width,
+        compress=not args.no_compress,
         material_filter=parse_material_filter(args.material),
     )
     if args.check_only:
