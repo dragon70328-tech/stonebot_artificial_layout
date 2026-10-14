@@ -46,3 +46,16 @@ output/.cache/
 # local runtime logs
 _analysis/*.log
 output/*.log
+
+# REA 分析工作区：厂商二进制、反编译源码与本地工具不入库
+# （targets/ 可从安装目录用 dump_evidence.ps1 重新复制，原始 SHA-256 记录在
+#   _analysis/rea_youshi/FINDINGS.md）
+_analysis/rea_youshi/targets/
+_analysis/rea_youshi/tools/
+_analysis/rea_youshi/proj/
+_analysis/rea_youshi/decompiled/
+_analysis/rea_youshi/*.strings.txt
+# REA 原始证据 dump（约 3MB，可用 dump_evidence.ps1 重新生成；
+# 关键结论与 evidence_id / SHA-256 已记在 FINDINGS.md）
+_analysis/rea_youshi/ident_*.json
+_analysis/rea_youshi/members_*.json
