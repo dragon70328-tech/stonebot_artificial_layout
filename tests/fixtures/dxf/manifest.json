@@ -35,6 +35,34 @@
         "holes": 0,
         "numbers": 1258
       }
+    },
+    {
+      "file": "加拿大3L.dxf",
+      "sha256": "f19daa79781ba3e02fbca86dfc16730b5c01bdfba3859bff19cdfacfa2d42441",
+      "bytes": 2984274,
+      "role": "raw upload (孔洞/编号识别输入)",
+      "source": "用户图纸目录（临时文件\\AI识图文件），2026-10-16 随历史回填入库",
+      "drawing_profile": "canada3l.json",
+      "expected_counts": {
+        "panels": 96,
+        "holes": 144,
+        "numbers": 96
+      },
+      "notes": "与 validated_cases/canada3l.json 按 sha256 配对；本样本是画像条目的第一份可复现夹具。"
+    },
+    {
+      "file": "福州万象城1.dxf",
+      "sha256": "d85525b01c2a4b453540879b3cea36e1aaf85c79a7b9588f17e6d2fb63c07e49",
+      "bytes": 1793882,
+      "role": "raw upload (区域/重复算量图层过滤场景)",
+      "source": "用户图纸目录（临时文件\\AI识图文件），2026-10-16 随历史回填入库",
+      "drawing_profile": "fuzhou_wanxiangcheng1.json",
+      "expected_counts": {
+        "panels": 133,
+        "holes": 36,
+        "numbers": 133
+      },
+      "notes": "**当前为已知回归样本**：实测 143 件 / 268 孔——多出的 10 件来自画像明确排除的图层（F-地材造型线 5、ST-02算量 4、现场实际间隔柱定位 1），已登记为 tests/test_validated_cases.py 的 xfail(strict) 门禁。"
     }
   ]
 }

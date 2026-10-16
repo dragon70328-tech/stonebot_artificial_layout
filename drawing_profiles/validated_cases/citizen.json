@@ -1,0 +1,32 @@
+{
+  "case_id": "citizen",
+  "profile_name": "citizen",
+  "source_sha256": "993cfcf6c693d817cdbaeb66a23513789995afaddb8b2af3f5a341473e8b2f1d",
+  "fingerprint": {
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+      "TEXT": 749,
+      "LWPOLYLINE": 4162,
+      "DIMENSION": 7464
+    },
+    "layer_counts": {
+      "0": 4911,
+      "标注": 7464
+    },
+    "linetype_counts": {
+      "BYLAYER": 12375
+    },
+    "has_hatch": false,
+    "has_lwpolyline": true,
+    "has_line": false,
+    "has_circle": false
+  },
+  "expected_counts": {
+    "panels": 3525,
+    "holes": 0,
+    "numbers": 3525
+  },
+  "notes": "由历史回填登记（源文件 citizen.dxf，线索来源 recognized）。",
+  "audit_ignore_rules": []
+}

@@ -66,5 +66,44 @@
       "action": "ignore"
     }
   ],
-  "notes": "区域用料指示面板（F-地材填充/造型线）不排板；ST-02算量/ST-12算量为重复算量图层，不提取。规格板 133 件：ST-01水刀 28、ST-02整砖 86、ST-12整砖 19；孔洞 36 个。编号按最近中庭/分区标签（1#-6#）+面板图层材料生成 4F-分区-ST-材料-序号。"
+  "notes": "区域用料指示面板（F-地材填充/造型线）不排板；ST-02算量/ST-12算量为重复算量图层，不提取。规格板 133 件：ST-01水刀 28、ST-02整砖 86、ST-12整砖 19；孔洞 36 个。编号按最近中庭/分区标签（1#-6#）+面板图层材料生成 4F-分区-ST-材料-序号。",
+  "fingerprint": {
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+      "INSERT": 2,
+      "LWPOLYLINE": 225,
+      "LINE": 20,
+      "CIRCLE": 173,
+      "HATCH": 17,
+      "ARC": 1,
+      "LEADER": 36,
+      "TEXT": 65,
+      "DIMENSION": 172
+    },
+    "layer_counts": {
+      "ST-01水刀": 34,
+      "ST-02算量": 12,
+      "现场实际间隔柱定位": 1,
+      "ST-12算量": 44,
+      "0": 71,
+      "灯柱定位线": 3,
+      "F-地材造型线": 72,
+      "DEFPOINTS": 3,
+      "F-地材填充": 21,
+      "d地面疏散指示开孔165mm": 344,
+      "D-智能疏散": 1,
+      "ST-02整砖": 86,
+      "ST-12整砖": 19
+    },
+    "linetype_counts": {
+      "BYLAYER": 661,
+      "EXP JT_LINE": 46,
+      "Continuous": 4
+    },
+    "has_hatch": true,
+    "has_lwpolyline": true,
+    "has_line": true,
+    "has_circle": true
+  }
 }

@@ -24,7 +24,7 @@ stonebot_artificial_layout/
   .github/workflows/    # CI：pytest -q -m "not slow"
   portal/               # 静态前端：modules.json 注册、nesting/ 识图排板页、admin/ 模型运维页
   deploy/               # nginx 反代示例、识别模型定时运维模板
-  scripts/              # 开发启动、识别模型训练/监控/归档、备份、复核脚本
+  scripts/              # 开发启动、识别模型训练/监控/归档、备份/复核/画像回填脚本
   src/
     # ── 适配层 adapter ──
     dxf_reader.py       # DXF 读取：封闭图形候选、层级（孔洞）、编号文本
@@ -42,6 +42,7 @@ stonebot_artificial_layout/
     project_config.py   # ProjectConfig（sheet/profile/optimizer/reader）
     drawing_profile.py  # 图纸画像匹配、结构化读图、编号归属、审图
     profile_proposal.py # 画像提议/登记：候选画像自动产出、expected_counts 复算、入库
+    case_backfill.py    # 历史回填：按 sha256 配对源图，补案例/指纹/expected_counts
     entity_classifier.py # 图层弱化的多证据实体分类（panel/hole/unknown）
     # ── 应用/排板 application ──
     nesting.py          # 桥切引擎：多轮贪心 BFD + LNS
@@ -360,6 +361,56 @@ python main.py new.dxf --register-profile <草稿路径> # 3. 复算后登记入
   应上升，**新增画像率**应下降。
 - 冒烟验证：CGR45final 提议结果与手写画像逐项一致（203/306/203，
   正则功能等价）。
+
+### 历史回填：把已核对过的项目补成完整资产（2026-10-16 起）
+
+`scripts/backfill_validated_cases.py`（逻辑在 `src/case_backfill.py`）扫描
+`output/*/*_recognized.json` 的 `input_digest`（源图 sha256）与 `profile_name`，
+在 `--sources` 指定的目录里**按 sha256 内容配对**源图（源图不进仓库），
+用生产读图链路复算件数与指纹，然后**只补缺口**：缺 fingerprint 补指纹、
+缺 expected_counts 补件数、缺 source_sha256 补摘要、缺案例建案例。
+
+```bash
+python scripts/backfill_validated_cases.py --sources "D:\图纸"    # 只报告（默认）
+python scripts/backfill_validated_cases.py --sources "D:\图纸" --write
+python scripts/backfill_validated_cases.py --source mercury="D:\图纸\水星.dxf"
+```
+
+- 默认只报告，`--write` 落盘；`--verify-all` 连已完整的画像也复算（慢）。
+- **绝不按文件名猜源图**：优先级为 显式 `--source` > 案例 source_sha256 >
+  历史运行摘要 > 案例指纹记录的原图路径（按名称回找，必须通过指纹结构复核，
+  复核不过就放弃绑定）。
+- **不一致只报告**：已声明件数与复算不一致时，**带件数**的动作默认拦下
+  （`--force` 才写并把"[回填警告]"留进 notes）；补指纹、补 sha256 这类
+  **身份类**动作不受件数不一致影响。
+- 一画像多源图（`dongguan_outlets` 对应东莞奥特莱斯1/2）时 expected_counts
+  不猜测；指纹只跟"已解析的那张源图"的案例比，避免拿另一张图误报。
+
+### 案例库立刻暴露的三处"声明值已过期"（2026-10-16 回填 + 复算二分定位）
+
+第一次全库体检就报出：三个项目的 `expected_counts` 已经不能被当前代码复现。
+**这不是工具误报，是"人类核对过的真值"与"现在的代码"之间的差**——正是把
+validated_cases 纳入 CI 的意义。定位方法：用
+`git archive <sha> src drawing_profiles | tar -x -C <树外目录>` 把历史提交的
+代码树导出到仓库外（不动 `.git`），拿同一张源图复算，二分定位改动点。
+结论是**两处真回归 + 一处源图改版**：
+
+| 项目 | 声明 | 现算 | 根因（已定位到提交） |
+|---|---|---|---|
+| mercury 水星 | 1258 | 1243 | **回归**：`49da243`（09-19「分离闭合与清理容差」）把"末点落在已有边上 ⇒ 兜成闭合"这条判定也钳到 0.01mm，覆盖了画像声明的 `closed_tolerance: 0.1`。最小复现：末点距已有边 0.031mm 的 8 顶点轮廓，旧码读成 1 件、现码 0 件。水星 15 件（F-厨房 / F1-卫生间，L 形 2.06~2.27m²，均已分配房号编号）被静默丢弃 |
+| fuzhou_wanxiangcheng1 | 133 / 36 / 133 | 143 / 268 / 143 | **回归（图层过滤）**：多出的 10 件来自画像明确排除的图层——`F-地材造型线` 5、`ST-02算量` 4、`现场实际间隔柱定位` 1；孔洞 36→268 由这些越界件带来。登记的 133 = ST-01水刀 28 + ST-02整砖 86 + ST-12整砖 19，与画像 notes 完全一致 |
+| canada_ifc | 765 编号 | 766 | **源图改版**：案例指纹与现行源图不是同一修订（LWPOLYLINE 779→766、编号层 749→767、多出 Defpoints 10），765 来自 09-02 之前的旧版图；而 09-02、09-19、HEAD 三个代码版本读现行文件都得 766 |
+
+处理原则：**不自动改写**（会动人类核对过的基线）。canada_ifc 属"源图改版"，
+应按现行修订重新登记（sha256 `43a415fc…`、fingerprint 复算、编号 766，
+旧值 765 写进 notes 保留血缘）；水星与福州万象城1 是**读图回归**，
+要修代码而不是改声明。
+
+门口状态（2026-10-16 起）：`tests/test_validated_cases.py` 把案例库与本地夹具
+绑成读图门禁——有夹具的案例断言复算件数，两处回归登记为
+`xfail(strict=True)`（修好后 XPASS 立刻变红，逼着改回正常断言），没夹具的
+案例 `skip` 并打印覆盖缺口；`tests/fixtures/benchmark_cases.json` 另补了
+`canada3l_read`。CI 保持全绿。
 
 ### 线型过滤是第一步
 ZIGZAG 线型的大样图标记必须排除，否则会被误识别为规格板。

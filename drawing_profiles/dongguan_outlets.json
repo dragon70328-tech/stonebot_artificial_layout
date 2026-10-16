@@ -51,5 +51,27 @@
       "issue_type": "low_confidence_entity",
       "action": "ignore"
     }
-  ]
+  ],
+  "fingerprint": {
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+      "LWPOLYLINE": 1109,
+      "TEXT": 1109,
+      "REGION": 65
+    },
+    "layer_counts": {
+      "石材分缝": 1109,
+      "石材文字": 1043,
+      "石材编号": 66,
+      "石材箱号": 65
+    },
+    "linetype_counts": {
+      "BYLAYER": 2283
+    },
+    "has_hatch": false,
+    "has_lwpolyline": true,
+    "has_line": false,
+    "has_circle": false
+  }
 }

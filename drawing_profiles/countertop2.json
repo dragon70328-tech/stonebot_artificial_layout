@@ -53,5 +53,10 @@
     "has_lwpolyline": true,
     "has_line": true,
     "has_circle": false
+  },
+  "expected_counts": {
+    "panels": 100,
+    "holes": 0,
+    "numbers": 100
   }
 }

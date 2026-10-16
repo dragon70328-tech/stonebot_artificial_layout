@@ -64,5 +64,35 @@
       "action": "ignore"
     }
   ],
-  "notes": "F-地材填充 的 LINE 网格多边形化后过滤短边≤3mm 的伸缩缝；保留其余封闭图形，包括 F-地材造型线 曲线切分后的非矩形件。编号原图无逐件编号，排板时自动生成 P 编号。"
+  "notes": "F-地材填充 的 LINE 网格多边形化后过滤短边≤3mm 的伸缩缝；保留其余封闭图形，包括 F-地材造型线 曲线切分后的非矩形件。编号原图无逐件编号，排板时自动生成 P 编号。",
+  "fingerprint": {
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+      "LWPOLYLINE": 27,
+      "LINE": 1788,
+      "CIRCLE": 173,
+      "HATCH": 17,
+      "ARC": 1,
+      "TEXT": 32,
+      "DIMENSION": 171
+    },
+    "layer_counts": {
+      "现场实际间隔柱定位": 1,
+      "0": 37,
+      "灯柱定位线": 3,
+      "F-地材造型线": 25,
+      "DEFPOINTS": 3,
+      "F-地材填充": 1797,
+      "d地面疏散指示开孔165mm": 343
+    },
+    "linetype_counts": {
+      "BYLAYER": 429,
+      "Continuous": 1780
+    },
+    "has_hatch": true,
+    "has_lwpolyline": true,
+    "has_line": true,
+    "has_circle": true
+  }
 }

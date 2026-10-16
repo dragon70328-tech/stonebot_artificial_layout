@@ -51,5 +51,30 @@
     "numbers": 52
   },
   "audit_ignore_rules": [],
-  "notes": "PDF 文字层包含编号 1~48 与尺寸标注；标题区 9/1 通过 exclude_entity_handles 排除。面板为 4x12 矩形网格，由 PDF_几何图形 的长横/竖 LWPOLYLINE 网格线重建。"
+  "notes": "PDF 文字层包含编号 1~48 与尺寸标注；标题区 9/1 通过 exclude_entity_handles 排除。面板为 4x12 矩形网格，由 PDF_几何图形 的长横/竖 LWPOLYLINE 网格线重建。",
+  "fingerprint": {
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+      "HATCH": 1549,
+      "SOLID": 52,
+      "LWPOLYLINE": 3625,
+      "MTEXT": 114,
+      "TEXT": 18
+    },
+    "layer_counts": {
+      "PDF_实体填充": 1601,
+      "PDF_几何图形": 3621,
+      "PDF_文字": 114,
+      "0": 4,
+      "MJ": 18
+    },
+    "linetype_counts": {
+      "BYLAYER": 5358
+    },
+    "has_hatch": true,
+    "has_lwpolyline": true,
+    "has_line": false,
+    "has_circle": false
+  }
 }

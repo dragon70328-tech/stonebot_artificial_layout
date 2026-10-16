@@ -40,5 +40,25 @@
     "holes": 0,
     "numbers": 3525
   },
-  "notes": "2026-10-13 实测：4162 个封闭图形全在图层 0，其中最小边 >2500mm 的 637 个是房间轮廓（与 637 个 4 位房间号文本一一对应），内部 3525 个才是规格板；1500~2500mm 区间为空，故阈值取 1800mm 有充足余量。low_confidence_threshold 取 0.7：本图所有实体同在图层 0，分类器给出的置信度只有 0.78，按默认 0.8 会给 3525 件全部报 low_confidence_entity（噪音），阈值下调后仍需人工抽查 3525 件。expected_counts 为按该阈值读出的结果，待用户抽查确认。"
+  "notes": "2026-10-13 实测：4162 个封闭图形全在图层 0，其中最小边 >2500mm 的 637 个是房间轮廓（与 637 个 4 位房间号文本一一对应），内部 3525 个才是规格板；1500~2500mm 区间为空，故阈值取 1800mm 有充足余量。low_confidence_threshold 取 0.7：本图所有实体同在图层 0，分类器给出的置信度只有 0.78，按默认 0.8 会给 3525 件全部报 low_confidence_entity（噪音），阈值下调后仍需人工抽查 3525 件。expected_counts 为按该阈值读出的结果，待用户抽查确认。",
+  "fingerprint": {
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+      "TEXT": 749,
+      "LWPOLYLINE": 4162,
+      "DIMENSION": 7464
+    },
+    "layer_counts": {
+      "0": 4911,
+      "标注": 7464
+    },
+    "linetype_counts": {
+      "BYLAYER": 12375
+    },
+    "has_hatch": false,
+    "has_lwpolyline": true,
+    "has_line": false,
+    "has_circle": false
+  }
 }

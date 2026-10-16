@@ -1,0 +1,64 @@
+{
+  "case_id": "canada3l",
+  "profile_name": "canada3l",
+  "source_sha256": "f19daa79781ba3e02fbca86dfc16730b5c01bdfba3859bff19cdfacfa2d42441",
+  "fingerprint": {
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+      "TEXT": 166,
+      "LWPOLYLINE": 365,
+      "CIRCLE": 72,
+      "INSERT": 8,
+      "MTEXT": 32,
+      "LINE": 128,
+      "DIMENSION": 690
+    },
+    "layer_counts": {
+      "0": 420,
+      "框": 8,
+      "说明": 56,
+      "标注": 690,
+      "大样": 191,
+      "编号": 96
+    },
+    "linetype_counts": {
+      "BYLAYER": 1238,
+      "ACAD_ISO02W100": 16,
+      "ZIGZAG": 177,
+      "MB": 30
+    },
+    "has_hatch": false,
+    "has_lwpolyline": true,
+    "has_line": true,
+    "has_circle": true
+  },
+  "expected_counts": {
+    "panels": 96,
+    "holes": 144,
+    "numbers": 96
+  },
+  "notes": "由历史回填登记（源文件 加拿大3L.dxf，线索来源 recognized）。",
+  "audit_ignore_rules": [
+    {
+      "issue_type": "low_confidence_entity",
+      "action": "ignore",
+      "reason": "317-A、318-B 两件面板由 LINE 链组成，已正确提取，低置信度不阻塞"
+    },
+    {
+      "issue_type": "number_outside_panel",
+      "action": "ignore",
+      "reason": "305-D 编号插入点位于面板边界上，已通过文字包围盒补配"
+    },
+    {
+      "issue_type": "open_chain",
+      "action": "ignore",
+      "reason": "图层 0 的开放 LINE 为辅助线/网格线，不参与面板提取"
+    },
+    {
+      "issue_type": "unclosed_geometry",
+      "action": "ignore",
+      "reason": "图层 0 的开放 LWPOLYLINE 为辅助线，不参与面板提取"
+    }
+  ]
+}

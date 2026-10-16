@@ -27,6 +27,18 @@
       "notes": "2026-09-23 实测基线（画像未声明 expected_counts，未经人工复核）"
     },
     {
+      "name": "canada3l_read",
+      "kind": "read",
+      "input": "tests/fixtures/dxf/加拿大3L.dxf",
+      "profile": "canada3l",
+      "expected": {
+        "panels": 96,
+        "holes": 144,
+        "numbers": 96
+      },
+      "notes": "2026-10-16 历史回填：画像声明的 96/144/96 与复算一致，本样本按 sha256 与 validated_cases/canada3l.json 配对（f19daa79…）。"
+    },
+    {
       "name": "mercury_numbered_read",
       "kind": "read",
       "input": "tests/fixtures/dxf/mercury_numbered_原位.dxf",

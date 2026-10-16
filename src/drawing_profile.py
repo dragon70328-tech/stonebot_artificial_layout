@@ -198,12 +198,13 @@ def load_profiles(directory: str | Path) -> list[DrawingProfile]:
     return profiles
 
 
-def analyze_drawing(filepath: str | Path) -> dict[str, Any]:
-    """生成图纸指纹，用于后续画像匹配。"""
-    filepath = Path(filepath)
-    doc = ezdxf.readfile(str(filepath))
-    model = doc.modelspace()
-    entities = list(model)
+def fingerprint_from_doc(doc, source_path: str | Path) -> dict[str, Any]:
+    """从已打开的 DXF 文档生成图纸指纹。
+
+    与 :func:`analyze_drawing` 同源：后者只是"打开文件再调用本函数"的薄封装。
+    已经拿在手里的文档（回填、画像提议）可直接复用，避免为大图重复读一遍。
+    """
+    entities = list(doc.modelspace())
 
     entity_counts = Counter(entity.dxftype() for entity in entities)
     layer_counts = Counter(
@@ -216,7 +217,7 @@ def analyze_drawing(filepath: str | Path) -> dict[str, Any]:
     )
 
     return {
-        "path": str(filepath),
+        "path": str(source_path),
         "dxf_version": doc.dxfversion,
         "insunits": doc.header.get("$INSUNITS"),
         "entity_counts": dict(entity_counts),
@@ -227,6 +228,13 @@ def analyze_drawing(filepath: str | Path) -> dict[str, Any]:
         "has_line": entity_counts.get("LINE", 0) > 0,
         "has_circle": entity_counts.get("CIRCLE", 0) > 0,
     }
+
+
+def analyze_drawing(filepath: str | Path) -> dict[str, Any]:
+    """生成图纸指纹，用于后续画像匹配。"""
+    filepath = Path(filepath)
+    doc = ezdxf.readfile(str(filepath))
+    return fingerprint_from_doc(doc, filepath)
 
 
 def _fingerprint_jaccard(left: set[str], right: set[str]) -> float:

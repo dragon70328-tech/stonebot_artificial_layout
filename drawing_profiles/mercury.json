@@ -45,5 +45,24 @@
       "action": "ignore"
     }
   ],
-  "notes": "水星项目户型石材面板：按最近户型标签生成 unit-room-序号 编号。"
+  "notes": "水星项目户型石材面板：按最近户型标签生成 unit-room-序号 编号。",
+  "fingerprint": {
+    "dxf_version": "AC1032",
+    "insunits": 1,
+    "entity_counts": {
+      "LWPOLYLINE": 1264,
+      "DIMENSION": 2522,
+      "MTEXT": 682
+    },
+    "layer_counts": {
+      "0": 4468
+    },
+    "linetype_counts": {
+      "BYLAYER": 4468
+    },
+    "has_hatch": false,
+    "has_lwpolyline": true,
+    "has_line": false,
+    "has_circle": false
+  }
 }
