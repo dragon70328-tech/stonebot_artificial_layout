@@ -6,16 +6,17 @@
     "dxf_version": "AC1032",
     "insunits": 1,
     "entity_counts": {
-      "LWPOLYLINE": 779,
+      "LWPOLYLINE": 766,
       "DIMENSION": 1559,
-      "MTEXT": 1070
+      "MTEXT": 1066
     },
     "layer_counts": {
-      "0": 2659,
-      "编号": 749
+      "0": 2614,
+      "Defpoints": 10,
+      "编号": 767
     },
     "linetype_counts": {
-      "BYLAYER": 3408
+      "BYLAYER": 3391
     },
     "has_hatch": false,
     "has_lwpolyline": true,
@@ -25,7 +26,8 @@
   "expected_counts": {
     "panels": 766,
     "holes": 0,
-    "numbers": 765
+    "numbers": 766
   },
-  "notes": "加拿大IFC 读图画像回归用例。"
+  "source_sha256": "43a415fca80d1d54a2bfe1db0c16d76ea97218dc4b96b166fcae5b46034aeaf8",
+  "notes": "加拿大IFC 读图画像回归用例。**2026-10-16 按现行图纸修订重新登记**：指纹与件数都按 sha256 43a415fc… 的现行文件复算（LWPOLYLINE 779→766、编号层 749→767、多出 Defpoints 10、MTEXT 1070→1066）。血缘：旧版图（09-02 之前）复算是 766 面板 / 765 编号，765 这个数字保留在此备查——09-02、09-19、HEAD 三个代码版本读现行文件都是 766，所以当年的差不是代码回归、是源图改版。现行修订：编号层 767 个编号文本，766 件面板各拿到 1 个编号，去重后 765 个（`A1-22B` 有 2 件，排板前需人工确认，`assign_numbers` 会给第二件追加 `-2`）。"
 }

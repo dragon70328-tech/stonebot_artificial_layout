@@ -62,7 +62,21 @@
         "holes": 36,
         "numbers": 133
       },
-      "notes": "**当前为已知回归样本**：实测 143 件 / 268 孔——多出的 10 件来自画像明确排除的图层（F-地材造型线 5、ST-02算量 4、现场实际间隔柱定位 1），已登记为 tests/test_validated_cases.py 的 xfail(strict) 门禁。"
+      "notes": "2026-10-16 图层过滤回归已修（画像新增 exclude_layers，hint 模式也生效）：复算回到 133 件 / 133 编号；孔洞 35（声明 36）已按 validated_cases/fuzhou_wanxiangcheng1.json 的 known_deltas 登记——实体 198C 自接触环的 MultiPolygon 归约丢了 1.45m² 波瓣及其 ⌀165 孔。"
+    },
+    {
+      "file": "加拿大IFC.dxf",
+      "sha256": "43a415fca80d1d54a2bfe1db0c16d76ea97218dc4b96b166fcae5b46034aeaf8",
+      "bytes": 6280618,
+      "role": "raw upload (编号/层级识别输入)",
+      "source": "用户图纸目录（临时文件\\AI识图文件），2026-10-16 随 canada_ifc 重新登记入库",
+      "drawing_profile": "canada_ifc.json",
+      "expected_counts": {
+        "panels": 766,
+        "holes": 0,
+        "numbers": 766
+      },
+      "notes": "按现行图纸修订重新登记（旧版图复算是 765 编号，见 validated_cases/canada_ifc.json 的血缘说明）。编号层 767 个文本，去重后 765 个编号，`A1-22B` 两件共用。"
     }
   ]
 }
