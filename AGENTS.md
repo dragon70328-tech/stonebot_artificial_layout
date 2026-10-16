@@ -29,6 +29,7 @@ stonebot_artificial_layout/
     # ── 适配层 adapter ──
     dxf_reader.py       # DXF 读取：封闭图形候选、层级（孔洞）、编号文本
     dxf_writer.py       # DXF 写入：排板结果、编号检查、GROUP、清单排板图
+    spec_list.py        # 规格板尺寸清单（材料 x 区域 分组 + 图纸要求提取）
     drawing_preview.py  # 原位 DXF 在线预览（可点击实体 + target_id）
     visual_evidence.py  # 审图问题视觉证据（SVG 高亮）
     visual_renderer.py  # 整图 SVG 渲染
@@ -40,6 +41,7 @@ stonebot_artificial_layout/
     correction_contracts.py / recognized_contract.py / recognition_contracts.py
     project_config.py   # ProjectConfig（sheet/profile/optimizer/reader）
     drawing_profile.py  # 图纸画像匹配、结构化读图、编号归属、审图
+    profile_proposal.py # 画像提议/登记：候选画像自动产出、expected_counts 复算、入库
     entity_classifier.py # 图层弱化的多证据实体分类（panel/hole/unknown）
     # ── 应用/排板 application ──
     nesting.py          # 桥切引擎：多轮贪心 BFD + LNS
@@ -72,6 +74,7 @@ stonebot_artificial_layout/
     recognition_operations.py / recognition_training_policy.py / recognition_retention.py
     # ── CLI 支撑 ──
     cli_audit.py        # 审图 CLI（从 main.py 抽出）
+    cli_profile.py      # 画像提议/登记 CLI（--propose-profile / --register-profile）
     cli_paths.py        # 输出目录约定（时间戳_文件名）
     numbering.py / units.py / input_guard.py / active_learning.py
   drawing_profiles/     # 项目级图纸画像 JSON（validated_cases/、validated_templates/）
@@ -160,6 +163,22 @@ stonebot_artificial_layout/
 - 画像启用列头材料（`material_column_enabled`）时文件名带 `_房号材料`，
   并多写两个图层：`MATERIALS`（零件材料号，绿色，居编号下方，与零件同 GROUP）
   和 `MATERIAL_HEADER`（原图「材料：ST-x」列头标签按原坐标复写）
+
+### Step 4.1: 规格板尺寸清单（审图参考，2026-10-16 起）
+
+主流程与 `--audit` 在读取 DXF 后都会产出 `{name}_规格清单.csv/.json`
+（`src/spec_list.py`），供人工审图参考：
+
+- 按 **材料 × 区域** 分组列出规格板：长 x 宽、数量、单件净面积、面积小计、
+  孔洞数、编号清单；末行合计。材料 = `Part.material_group`，
+  区域 = `Part.material_column`（楼层列），都没有 = 空。
+- **表面处理 / 磨边 / 纹理走向**：关键词扫描图纸 TEXT/MTEXT 提取
+  （抛光/圆边/顺纹等），只提取原文不做推断，上下文窗口保留"不磨边"
+  否定语境；**图纸未注明一律留空**；证据原文存 JSON `annotations_evidence`。
+- 尺寸口径：外轮廓外包络跨度，长边在前（长>=宽），0.1mm 精度；
+  异形件（外轮廓面积/外包络 < 0.98）备注列标"尺寸为外包络"。
+- CSV 为 utf-8-sig（Excel/WPS 直接打开）；`--audit` 同批还产出原位 DXF
+  （此前只有主流程有）；清单生成失败降级为警告，不阻断审图/排板主产物。
 
 ### Step 4.5: 材料分组（仅启用图纸画像的项目）
 
@@ -314,6 +333,33 @@ python main.py input.dxf 3200 1800 20 --use-template --no-confirm
 ```
 
 ## 关键经验
+
+### 画像库积累：提议 → 核对 → 登记（2026-10-16 起）
+
+读图是项目的核心竞争力：只有分析图纸准确才能排板。画像库是数据资产，
+新画像**不再手写**，走三步流水线：
+
+```bash
+python main.py new.dxf --propose-profile            # 1. 自动提议候选画像
+# 人工核对问题清单（件数/编号格式/排除项），必要时编辑草稿
+python main.py new.dxf --register-profile <草稿路径> # 3. 复算后登记入库
+```
+
+- `--propose-profile` 自动产出：panel_layer(s)、number_layers、label_pattern
+  （字符类游程归纳最紧正则，数字段+大写段自动命名 material/shape）、
+  closed_tolerance（缝隙 p95）、small_area_threshold（面积断层 ≥8 倍）、
+  build_hierarchy（有 CIRCLE 即 True）、exclude_linetypes（全部非实线）、
+  expected_counts（候选参数实读结果，标"待确认"）。
+- `--register-profile` 的硬门槛：登记前复算 expected_counts，**与草稿不一致
+  默认拒绝**（`--force` 例外并写"[登记警告]"进 notes）；同名画像默认拒绝
+  覆盖。写画像 JSON（含 fingerprint）+ `validated_cases/{name}.json`
+  （含 source_sha256）。
+- 入库标准：画像 + fingerprint + expected_counts + notes（写清取值依据，
+  citizen.json 是范本）+ 已验证案例，五件齐才算积累完成。
+- 库的健康度看两个收敛指标：新图纸**命中率**（已有画像直接读准的比例）
+  应上升，**新增画像率**应下降。
+- 冒烟验证：CGR45final 提议结果与手写画像逐项一致（203/306/203，
+  正则功能等价）。
 
 ### 线型过滤是第一步
 ZIGZAG 线型的大样图标记必须排除，否则会被误识别为规格板。

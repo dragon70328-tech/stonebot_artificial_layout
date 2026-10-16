@@ -28,7 +28,19 @@ from src.contracts import (
     RecheckSummary,
     ReviewState,
 )
-from src.drawing_profile import audit_drawing, write_audit_dxf
+from src.drawing_profile import (
+    audit_drawing,
+    collect_column_materials,
+    read_dxf_with_profile,
+    write_audit_dxf,
+)
+from src.dxf_writer import write_numbered_parts_dxf
+from src.numbering import assign_numbers
+from src.spec_list import (
+    build_spec_list,
+    extract_annotations,
+    write_spec_list_files,
+)
 from src.visual_evidence import write_issue_evidence_svg
 from src.visual_renderer import write_dxf_overview_svg
 from src.workflow import resolve_drawing_profile
@@ -280,6 +292,33 @@ def run_audit(
     if recheck is not None:
         recheck_json.write_text(recheck.to_json(), encoding="utf-8")
 
+    # 规格板尺寸清单 + 原位 DXF：审图参考产物（材料 × 区域 分组，
+    # 表面处理/磨边/纹理走向按图纸文字提取，未注明留空）。
+    # 失败不阻断审图主产物（问题报告/复检状态），与 overview SVG 同口径。
+    spec_csv = None
+    numbered_dxf = None
+    try:
+        parts_data, audit_doc = read_dxf_with_profile(dxf_path, drawing_profile)
+        spec_parts = assign_numbers(parts_data, skip_unnumbered=False)
+        spec = build_spec_list(
+            spec_parts,
+            annotations=extract_annotations(audit_doc),
+            source_name=Path(dxf_path).name,
+        )
+        spec_json, spec_csv = write_spec_list_files(spec, out_dir, stem)
+        numbered_dxf = out_dir / f"{stem}_numbered_原位.dxf"
+        material_headers = (
+            collect_column_materials(audit_doc, drawing_profile)
+            if drawing_profile.material_column_enabled
+            else None
+        )
+        write_numbered_parts_dxf(
+            spec_parts, str(numbered_dxf), material_headers=material_headers
+        )
+    except Exception as exc:
+        print(f"警告：生成规格清单/原位 DXF 失败 - {exc}")
+        spec = None
+
     print(f"审图完成：发现 {len(contract_issues)} 个问题")
     for issue_type, count in sorted(summary.items()):
         print(f"  {issue_type}: {count}")
@@ -294,6 +333,13 @@ def run_audit(
     if overview_svg is not None:
         print(f"检查图: {overview_svg}")
     print(f"状态: {state_json}")
+    if spec_csv is not None and spec is not None:
+        print(
+            f"规格清单: {spec_csv} "
+            f"({spec['totals']['groups']} 组 / {spec['totals']['parts']} 件)"
+        )
+    if numbered_dxf is not None:
+        print(f"原位 DXF: {numbered_dxf}")
     if recheck is not None:
         print(
             f"复检: 修复 {len(recheck.fixed_issue_ids)}，"

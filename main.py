@@ -61,12 +61,18 @@ from src.workflow import (
 )
 from src.nesting_reviewer import find_reductions
 from src.postprocess import estimate_kerf_material, validate_kerf_material
+from src.spec_list import (
+    build_spec_list,
+    extract_annotations_from_file,
+    write_spec_list_files,
+)
 from src.template_nesting import match_template, nest_from_template
 from src.artifact_store import ArtifactStore
 from src.workflow_session import WorkflowSession, WorkflowStage
 from src.agent_cli import run_agent_mode
 from src.cli_audit import run_audit, split_issue_ids
 from src.cli_paths import make_output_dir
+from src.cli_profile import run_propose_profile, run_register_profile
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -176,6 +182,18 @@ def parse_args():
     # DXF 读取
     p.add_argument("--audit", action="store_true",
                    help="仅执行读图审图并输出问题报告，不进入排板")
+    p.add_argument("--propose-profile", action="store_true",
+                   help="画像提议：分析图纸结构，产出候选读图画像草稿"
+                        "与待确认问题（只读图，不排板）")
+    p.add_argument("--register-profile", type=str, default=None,
+                   metavar="DRAFT_JSON",
+                   help="登记画像：把确认后的画像草稿写入 drawing_profiles/"
+                        "与 validated_cases/（复算 expected_counts）")
+    p.add_argument("--profile-name", type=str, default=None,
+                   help="画像名（默认取 DXF 文件名），配合 --propose-profile")
+    p.add_argument("--force", action="store_true",
+                   help="登记画像时允许覆盖同名画像/案例，或容忍"
+                        "expected_counts 与复算不一致")
     p.add_argument("--list-nest", action="store_true",
                    help="按 Excel/PDF 规格尺寸与数量清单排板，输出文字结论")
     p.add_argument("--kerf", type=float, default=0.0,
@@ -901,6 +919,20 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
                                  unit_system=unit.value)
         _track_artifact(WorkflowStage.READ, recognized_json)
         _track_artifact(WorkflowStage.READ, numbered_original)
+        # 规格板尺寸清单（材料 × 区域 分组）——审图参考产物，
+        # 与 recognized.json / 原位 DXF 同批产出，排板前即可用。
+        spec = build_spec_list(
+            parts,
+            annotations=extract_annotations_from_file(dxf_path),
+            source_name=Path(dxf_path).name,
+            unit=unit.value,
+        )
+        spec_json, spec_csv = write_spec_list_files(spec, out_dir, stem)
+        _track_artifact(WorkflowStage.READ, spec_json)
+        _track_artifact(WorkflowStage.READ, spec_csv)
+        print(f"规格清单: {spec_csv.name} "
+              f"({spec['totals']['groups']} 组 / "
+              f"{spec['totals']['parts']} 件)")
 
     if profile.uses_deepnest:
         print(f"开始排板... (DeepNest/BLF, trials={trials})")
@@ -1291,6 +1323,16 @@ def main():
             fixed_issue_ids=split_issue_ids(args.mark_fixed),
             drawing_profile=requested_drawing_profile,
             use_cache=not args.cold_start,
+        )
+        return
+
+    if args.propose_profile:
+        run_propose_profile(dxf_path, name=args.profile_name)
+        return
+
+    if args.register_profile:
+        run_register_profile(
+            dxf_path, args.register_profile, force=args.force
         )
         return
 
