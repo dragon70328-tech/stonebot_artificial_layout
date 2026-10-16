@@ -97,7 +97,26 @@ def _dedupe_consecutive_points(points: list, tolerance: float = 1e-6) -> list:
     return cleaned
 
 
-def _closed_loop_points(points: list, tolerance: float = 0.01) -> list:
+# "退化残点"（末点落在已有边上）的判定上限，mm。这是**制造噪声**尺度：
+# CAD 收口残点在 0.03mm 量级（水星 11DA7 的 v7 距 v1 0.0309mm），而刀缝/
+# 加工公差在 0.1mm 以上，所以 0.1mm 以内的残点删掉不影响成品。
+# 画像声明的 ``closed_tolerance`` 是**缺口**容差（fuzhou 声明 1000mm 是
+# "允许 1m 的缺口仍算闭合"），拿它当残点阈值会把正常边长整段裁掉
+# （1000x1000 的闭环在容差 1500 下被裁成三角形）。
+TRAILING_VERTEX_NOISE_MM = 0.1
+
+
+def _stub_tolerance(closure_slack: float) -> float:
+    """残点判定容差 = min(画像声明的闭合容差, 制造噪声上限)。"""
+    return min(max(float(closure_slack), 1e-9), TRAILING_VERTEX_NOISE_MM)
+
+
+def _closed_loop_points(
+    points: list,
+    tolerance: float = 0.01,
+    *,
+    vertices_are_closed: bool = False,
+) -> list:
     """Return a minimal closed vertex loop from messy DXF polyline points.
 
     CAD files often represent L-shaped panels with redundant vertices:
@@ -105,12 +124,32 @@ def _closed_loop_points(points: list, tolerance: float = 0.01) -> list:
     - the last point repeats an earlier internal vertex
     A plain ``append(first)`` creates self-touching/invalid geometry. Prefer
     trimming the repeated prefix/suffix before handing the loop to Shapely.
+
+    **缺口本身**是不是闭合由 ``_is_closed`` 用画像声明的容差判定；本函数
+    只做顶点层面的规整，三种容差不能混用（2026-09-19 只做对了一半，
+    2026-10-16 补齐）：
+
+    * **重复顶点**（相邻重复点、首尾相接、首/末点与内部顶点重复）→ 一律
+      0.01mm。拿 1000mm 去去重会把整条多段线的顶点全部并掉，实体直接消失
+      （fuzhou 37 件的根因），也会把 1000x1000 的闭环裁成三角形；
+    * **退化残点**（末点落在已有边上）→ ``_stub_tolerance``：不能用画像
+      声明的缺口容差，0.03mm 级的 CAD 收口误差（水星）要在噪声尺度上
+      被识别并删掉，否则自重叠的环会退化成空多边形、静默丢件（水星
+      1258→1243）；但也不能放宽到 1000mm（见 ``TRAILING_VERTEX_NOISE_MM``）。
+    * ``vertices_are_closed=True``（实体自带闭合标记，顶点表就是环）→
+      **只去重不裁剪**：对这类顶点表做缺口裁剪会把正常边长裁掉
+      （1000x1000 的矩形在容差 1500 下会被裁成三角形）。
     """
     cleanup_tolerance = min(max(float(tolerance), 1e-9), 0.01)
     points = _dedupe_consecutive_points(points, cleanup_tolerance)
     if len(points) < 3:
         return []
 
+    closure_slack = (
+        cleanup_tolerance
+        if vertices_are_closed
+        else max(float(tolerance), cleanup_tolerance)
+    )
     first = points[0]
     last = points[-1]
     if math.hypot(first[0] - last[0], first[1] - last[1]) <= cleanup_tolerance:
@@ -140,7 +179,12 @@ def _closed_loop_points(points: list, tolerance: float = 0.01) -> list:
                 return loop
 
     if any(
-        _point_on_segment(last, points[index], points[index + 1], cleanup_tolerance)
+        _point_on_segment(
+            last,
+            points[index],
+            points[index + 1],
+            _stub_tolerance(closure_slack),
+        )
         for index in range(len(points) - 2)
     ):
         return points[:-1]
@@ -161,7 +205,18 @@ def _entity_to_polygon(entity, num_segments: int = 64,
 
             if len(points) < 3:
                 return None
-            loop = _closed_loop_points(points, closed_tolerance)
+            # 实体自带闭合标记（LWPolyline.closed / Polyline.is_closed）时，
+            # 顶点表就是环本身：只去重，不做缺口裁剪。
+            vertices_are_closed = bool(
+                getattr(entity, "closed", False)
+                if isinstance(entity, LWPolyline)
+                else getattr(entity, "is_closed", False)
+            )
+            loop = _closed_loop_points(
+                points,
+                closed_tolerance,
+                vertices_are_closed=vertices_are_closed,
+            )
             if len(loop) < 3:
                 return None
             poly = Polygon(loop)
@@ -223,20 +278,28 @@ def _point_on_segment(
     end: tuple[float, float],
     tolerance: float = 0.01,
 ) -> bool:
-    """Return True when point lies on the finite segment start-end."""
+    """Return True when point lies on the finite segment start-end.
+
+    ``tolerance`` 是**长度**（mm）。叉积与点积都是面积量纲，必须乘上
+    边长换算：端点余量用 ``tolerance * |ab|``。写成 ``dot <= length_sq
+    + tolerance`` 时量的单位对不上，0.03mm 的收口误差需要 19.9 的
+    "容差"才能判成落在边上——判据形同虚设，是水星丢 15 件的另一半原因。
+    """
     ab_x = end[0] - start[0]
     ab_y = end[1] - start[1]
     length_sq = ab_x * ab_x + ab_y * ab_y
     if length_sq <= 1e-18:
         return math.hypot(point[0] - start[0], point[1] - start[1]) < tolerance
 
+    length = math.sqrt(length_sq)
     ap_x = point[0] - start[0]
     ap_y = point[1] - start[1]
     cross = abs(ab_x * ap_y - ab_y * ap_x)
-    if cross > tolerance * math.sqrt(length_sq):
+    if cross > tolerance * length:
         return False
     dot = ab_x * ap_x + ab_y * ap_y
-    return -tolerance <= dot <= length_sq + tolerance
+    slack = tolerance * length
+    return -slack <= dot <= length_sq + slack
 
 
 def _is_recoverable_closed(entity, tolerance: float = 0.01) -> bool:
@@ -245,6 +308,12 @@ def _is_recoverable_closed(entity, tolerance: float = 0.01) -> bool:
 
     These DXF entities often have closed=False and a self-touching outline,
     while buffer(0) repairs them to the intended polygon.
+
+    "末点落在已有边上 ⇒ 兜成闭合"这条**判定**是按残点尺度（
+    ``_stub_tolerance``）做的：49da243 把它钳到 0.01mm，水星 15 件
+    （末点距 v1 仅 0.0309mm）被静默丢弃；但如果放宽到画像声明的缺口容差
+    （fuzhou 1000mm），任何开口多段线都会被当成闭合，等于取消这道判定。
+    "缺口有多大仍算闭合"由 ``_is_closed`` 的首尾距离判定负责。
     """
     if not isinstance(entity, (LWPolyline, Polyline)):
         return False
@@ -263,17 +332,18 @@ def _is_recoverable_closed(entity, tolerance: float = 0.01) -> bool:
     if len(points) < 3:
         return False
     cleanup_tolerance = min(max(float(tolerance), 1e-9), 0.01)
+    closure_slack = max(float(tolerance), cleanup_tolerance)
 
     first = points[0]
     last = points[-1]
-    if math.hypot(first[0] - last[0], first[1] - last[1]) < tolerance:
+    if math.hypot(first[0] - last[0], first[1] - last[1]) < closure_slack:
         return False
 
     for index in range(1, len(points) - 1):
         if math.hypot(
             first[0] - points[index][0],
             first[1] - points[index][1],
-        ) < tolerance:
+        ) < closure_slack:
             loop = points[:index]
             if len(loop) < 3:
                 return False
@@ -287,13 +357,18 @@ def _is_recoverable_closed(entity, tolerance: float = 0.01) -> bool:
             return polygon.area > 0.01
 
     last_on_existing_edge = any(
-        _point_on_segment(last, points[index], points[index + 1], cleanup_tolerance)
+        _point_on_segment(
+            last,
+            points[index],
+            points[index + 1],
+            _stub_tolerance(closure_slack),
+        )
         for index in range(len(points) - 2)
     )
     if not last_on_existing_edge:
         return False
 
-    polygon = _entity_to_polygon(entity)
+    polygon = _entity_to_polygon(entity, closed_tolerance=closure_slack)
     return (
         polygon is not None
         and not polygon.is_empty
@@ -409,6 +484,10 @@ def extract_closed_entity_candidates(doc,
     ``strict`` 保持旧行为，只保留 panel_layers 中实体。对于通用图纸和画像
     匹配路径使用 ``hint``：不在指定图层中的实体仍保留，图层信息只作为
     分类器的弱提示，最终由几何、包含关系和文本证据决定。
+
+    ``exclude_layers`` 是**显式排除**，在 strict / hint / off 三种模式下
+    一律生效：调用方（画像 ``exclude_layers`` 字段）说这些图层不是几何
+    内容时说一不二，不能再由分类器凭几何把它捡回来。
     """
     if layer_filter_mode not in {"strict", "hint", "off"}:
         raise ValueError(f"unsupported layer_filter_mode: {layer_filter_mode}")
@@ -429,10 +508,10 @@ def extract_closed_entity_candidates(doc,
         panel_hint = layer in panel_layer_set
         hole_hint = layer in hole_layer_set
         excluded_hint = layer in excluded_layer_set
+        if excluded_hint:
+            continue
         if layer_filter_mode == "strict":
             if panel_layers is not None and not panel_hint:
-                continue
-            if excluded_hint:
                 continue
 
         linetype = _linetype_name(entity, doc)

@@ -83,6 +83,11 @@ class DrawingProfile:
     closed_tolerance: float = 0.01
     exclude_entity_types: list[str] = field(default_factory=list)
     exclude_entity_handles: list[str] = field(default_factory=list)
+    # 显式排除的图层（几何层面）：区域用料指示面板、重复算量图层、定位层等
+    # 明确"不是规格板"的图形所在层。读图时不提取、不参与孔洞归属，
+    # 也不给分类器"凭几何捡回来"的机会（hint 模式下同样生效）。
+    # 只影响几何提取，不影响编号/区域/列头材料等文字收集。
+    exclude_layers: list[str] = field(default_factory=list)
     exclude_linetypes: list[str] = field(default_factory=lambda: ["DASH", "PHANTOM"])
     small_area_threshold: float = 100.0
     text_height: float = 40.0
@@ -1131,7 +1136,13 @@ def _extract_profile_panels_impl(
         or ([panel_layer] if panel_layer else None)
     )
     allowed_panel_layers = set(panel_layers) if panel_layers else None
-    excluded_layers = {value for value in (exclude_layers or [])}
+    # 画像声明的排除图层与调用方传入的排除图层合并（几何层面生效，
+    # 编号/区域/材料等文字收集不受影响）。
+    excluded_layers = {
+        value for value in (exclude_layers or [])
+    } | {
+        value for value in (profile.exclude_layers or [])
+    }
     panels: list[dict[str, Any]] = []
 
     if profile.network_mode:
@@ -1191,7 +1202,7 @@ def _extract_profile_panels_impl(
     raw_candidates = extract_closed_entity_candidates(
         doc,
         panel_layers=panel_layers,
-        exclude_layers=exclude_layers,
+        exclude_layers=sorted(excluded_layers),
         exclude_linetypes=profile.exclude_linetypes,
         closed_tolerance=profile.closed_tolerance,
         exclude_handles=set(profile.exclude_entity_handles),
@@ -1202,7 +1213,7 @@ def _extract_profile_panels_impl(
         raw_candidates,
         panel_layers=panel_layers,
         hole_layers=profile.hole_layers,
-        exclude_layers=exclude_layers,
+        exclude_layers=sorted(excluded_layers),
         small_area_threshold=profile.small_area_threshold,
         label_boxes=label_boxes,
         recognition_memory=recognition_memory,
