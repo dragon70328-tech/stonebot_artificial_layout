@@ -1,5 +1,6 @@
 """DXF 输出：将排板结果写回 DXF 文件"""
 
+import math
 import sys
 
 import ezdxf
@@ -7,6 +8,7 @@ from ezdxf import units
 from ezdxf.enums import TextEntityAlignment
 from shapely.ops import polylabel
 from src.models import Sheet, NestingResult, Part
+from src.dxf_reader import SOURCE_CURVE_TOL_MM
 
 # ACI 颜色
 RED = 1
@@ -307,6 +309,117 @@ def _label_point(part: Part) -> tuple[float, float]:
         return part.label_position
 
 
+def _add_outline_entities(msp, part: Part, ring, layer: str) -> list:
+    """按**源实体类型**输出外轮廓（原位 DXF 是给人核对、量尺寸的）。
+
+    * 源图整件就是一个 CIRCLE → 写 CIRCLE（CAD 里直接量半径）；
+    * 源图轮廓上有 ARC → 这些圆弧写成 ARC，其余边界仍旧折线；
+    * 源图是多段线/直线拼接的（哪怕画成圆）→ 一条闭合多段线（原行为）。
+
+    判断在读图阶段做好挂在 ``Part.outer_shape`` / ``Part.outer_arcs`` 上
+    （见 ``dxf_reader.attach_source_curves``），写入端不重新解析源图。
+    """
+    spec = getattr(part, "outer_shape", None)
+    if isinstance(spec, dict) and spec.get("type") == "circle":
+        return [
+            msp.add_circle(
+                spec["center"], spec["radius"], dxfattribs={"layer": layer}
+            )
+        ]
+
+    arcs = [
+        item
+        for item in (getattr(part, "outer_arcs", None) or [])
+        if isinstance(item, dict) and item.get("type") == "arc"
+    ]
+    if not arcs:
+        return [
+            msp.add_lwpolyline(
+                [(x, y) for x, y in ring.coords], dxfattribs={"layer": layer}
+            )
+        ]
+
+    entities: list = []
+    for arc in arcs:
+        entities.append(
+            msp.add_arc(
+                arc["center"],
+                arc["radius"],
+                arc["start_angle"],
+                arc["end_angle"],
+                dxfattribs={"layer": layer},
+            )
+        )
+    for run in _ring_runs_outside_arcs(ring, arcs):
+        entities.append(msp.add_lwpolyline(run, dxfattribs={"layer": layer}))
+    return entities
+
+
+def _vertex_inside_arc(spec: dict, x: float, y: float,
+                       angle_margin: float = 0.5) -> bool:
+    """顶点是否落在该圆弧的**内部**（严格在起止角之间）。
+
+    不能用"到采样折线的距离"判断：采样再密，第一个采样点离端点也有
+    半径×步长 的差距（r25、32 段采样时是 1.3mm），于是圆弧端点与相邻直线的
+    端点一起被判成"在圆弧上"，整段直线被吃掉——2026-10-16 台面板边缘线消失
+    就是这么来的。按角度区间判定才准：半径对得上 + 角度严格落在起止角之间
+    （留一点角余量）；圆弧端点归相邻直线。
+    """
+    cx, cy = spec["center"]
+    radius = float(spec["radius"])
+    dx, dy = x - cx, y - cy
+    if abs(math.hypot(dx, dy) - radius) > SOURCE_CURVE_TOL_MM:
+        return False
+    span = (float(spec["end_angle"]) - float(spec["start_angle"])) % 360.0
+    if span <= 0.0:
+        span += 360.0
+    offset = (math.degrees(math.atan2(dy, dx)) - float(spec["start_angle"])) % 360.0
+    return angle_margin < offset < span - angle_margin
+
+
+def _ring_runs_outside_arcs(ring, arcs: list[dict]) -> list[list[tuple[float, float]]]:
+    """把环的顶点序列按"落在已复写圆弧上"切成若干段折线（圆弧部分不再画）。"""
+    points = [(float(x), float(y)) for x, y in ring.coords]
+    if len(points) >= 2 and points[0] == points[-1]:
+        points = points[:-1]
+    if not points:
+        return []
+
+    covered = [
+        any(_vertex_inside_arc(arc, x, y) for arc in arcs) for x, y in points
+    ]
+    if all(covered):
+        return []
+    if not any(covered):
+        return [points]
+
+    # 从一个"覆盖 → 未覆盖"的边界起算：这样折线段不会跨越列表首尾，
+    # 也不会把环首尾相连的那一段拆成"尾巴一个点 + 开头一段"（漏掉整条边——
+    # 2026-10-16 台面板左边线消失就是踩在这里）。
+    total = len(points)
+    start = 0
+    for index in range(total):
+        if covered[index] and not covered[(index + 1) % total]:
+            start = (index + 1) % total
+            break
+    order = [(start + step) % total for step in range(total)]
+    points = [points[index] for index in order]
+    covered = [covered[index] for index in order]
+
+    runs: list[list[tuple[float, float]]] = []
+    current: list[tuple[float, float]] = []
+    for point, is_covered in zip(points, covered):
+        if is_covered:
+            if len(current) >= 2:
+                runs.append(current)
+            current = []
+        else:
+            current.append(point)
+    if len(current) >= 2:
+        runs.append(current)
+    return runs
+
+
 def write_numbered_parts_dxf(parts: list, output_path: str,
                              unit_system: str = "metric",
                              material_headers: list[dict] | None = None) -> None:
@@ -351,19 +464,29 @@ def write_numbered_parts_dxf(parts: list, output_path: str,
         outer = _largest_polygon(part.outer_polygon)
         ext = outer.exterior if outer is not None else None
         if ext is not None:
-            pts = [(x, y) for x, y in ext.coords]
-            entity = msp.add_lwpolyline(pts, dxfattribs={"layer": layer_outer})
-            group_entities.append(entity)
+            group_entities.extend(
+                _add_outline_entities(msp, part, ext, layer_outer)
+            )
 
-        for hole in part.holes:
+        hole_shapes = list(getattr(part, "hole_shapes", None) or [])
+        for index, hole in enumerate(part.holes):
             h_ext = hole.exterior
-            if h_ext is not None:
-                pts = [(x, y) for x, y in h_ext.coords]
-                entity = msp.add_lwpolyline(
-                    pts,
+            if h_ext is None:
+                continue
+            spec = hole_shapes[index] if index < len(hole_shapes) else None
+            if isinstance(spec, dict) and spec.get("type") == "circle":
+                # 源图就是圆孔 → 写 CIRCLE（能直接量半径）
+                entity = msp.add_circle(
+                    spec["center"],
+                    spec["radius"],
                     dxfattribs={"layer": layer_holes, "color": BLUE},
                 )
-                group_entities.append(entity)
+            else:
+                entity = msp.add_lwpolyline(
+                    [(x, y) for x, y in h_ext.coords],
+                    dxfattribs={"layer": layer_holes, "color": BLUE},
+                )
+            group_entities.append(entity)
 
         b = outer.bounds if outer is not None else part.outer_polygon.bounds
         bw, bh = b[2] - b[0], b[3] - b[1]

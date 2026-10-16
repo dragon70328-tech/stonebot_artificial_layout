@@ -77,6 +77,20 @@
         "numbers": 766
       },
       "notes": "按现行图纸修订重新登记（旧版图复算是 765 编号，见 validated_cases/canada_ifc.json 的血缘说明）。编号层 767 个文本，去重后 765 个编号，`A1-22B` 两件共用。"
+    },
+    {
+      "file": "雪花白洗手台（小利）1.8.dxf",
+      "sha256": "e4d8a4e96b0761ab902678c35d0f03e61eeaee7d7042fd30ccf2e397f1a2a79f",
+      "bytes": 804412,
+      "role": "raw upload (双线绘制 + 颜色标记示意线)",
+      "source": "用户图纸目录（临时文件\\AI识图文件），2026-10-16 经用户逐项核对后登记入库",
+      "drawing_profile": "snow_white_basin.json",
+      "expected_counts": {
+        "panels": 6,
+        "holes": 4,
+        "numbers": 6
+      },
+      "notes": "LINE+ARC 双线绘制：线网络模式 + `exclude_colors: [2,3,6]` 排除磨边/示意线（M_LINE/X5_LINE/R_LINE 颜色），得到 6 件精确成品（XST-1 800x430、XST-4 800x450 各带 Ø25+Ø50 孔，XST-2/5 792x100、XST-3 405x100、XST-6 417x100）。用户确认台面下沿两端 25mm 台阶是真实前沿造型。"
     }
   ]
 }

@@ -243,8 +243,12 @@ def _run_atom(cls: str, values: list[str], named: str | None) -> str:
 def induce_label_pattern(texts: list[str]) -> dict[str, Any]:
     """从编号文本归纳最紧正则。
 
-    命名约定与 ``_normalize_label`` 对齐：同时含数字段与大写字母段时，
-    第一个数字段命名 ``material``、第一个大写段命名 ``shape``。
+    命名约定与 ``_normalize_label`` 对齐——它按 ``material-shape`` 拼接回
+    标签，所以命名必须**按文本里出现的先后**：第一个（数字或大写字母）段
+    命名 ``material``，第二个命名 ``shape``。
+
+    按"先数字段"命名在这里会翻车：``XST-1`` 会被拼成 ``1-XST``
+    （2026-10-16 雪花白洗手台踩到，手写画像改正后才能原样输出编号）。
     """
     if not texts:
         return {
@@ -274,12 +278,13 @@ def induce_label_pattern(texts: list[str]) -> dict[str, Any]:
     parts: list[str] = []
     for i, (cls, _value) in enumerate(runs):
         named = None
-        if cls == "9" and has_digit and has_upper and not named_used["material"]:
-            named = "material"
-            named_used["material"] = True
-        elif cls == "A" and has_digit and has_upper and not named_used["shape"]:
-            named = "shape"
-            named_used["shape"] = True
+        if cls in {"9", "A"} and has_digit and has_upper:
+            if not named_used["material"]:
+                named = "material"
+                named_used["material"] = True
+            elif not named_used["shape"]:
+                named = "shape"
+                named_used["shape"] = True
         parts.append(_run_atom(cls, positions[i], named))
 
     pattern = "^" + "".join(parts) + "$"

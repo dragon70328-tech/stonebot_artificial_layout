@@ -1,0 +1,83 @@
+{
+  "name": "snow_white_basin",
+  "version": "1.0.0",
+  "description": "雪花白洗手台（小利）1.8.dxf 读图画像：LINE+ARC 绘制，线网络模式 + 按颜色排除磨边/示意线（待人工核对）。",
+  "panel_layer": "0",
+  "hatch_layer": "0",
+  "use_hatch": false,
+  "number_layers": [
+    "0"
+  ],
+  "label_pattern": "^(?P<material>[A-Z]{3})\\-(?P<shape>\\d{1})$",
+  "assignment_mode": "point_then_bbox",
+  "build_hierarchy": true,
+  "conflict_resolution": "random",
+  "closed_tolerance": 0.01,
+  "exclude_entity_types": [],
+  "exclude_linetypes": [],
+  "small_area_threshold": 0.0,
+  "text_height": 30,
+  "material_group_enabled": false,
+  "first_part_left_edge": false,
+  "notes": "6 件 = XST-1 800x430、XST-4 800x450（台面，各带 Ø25 龙头孔 + Ø50 盆孔）、XST-2 792x100、XST-3 405x100、XST-5 792x100、XST-6 417x100。台面下沿两端各有一处 25mm 深的台阶（r25 圆角 + r5 小圆角），是用户确认的真实前沿造型，不是示意线遗留。图纸用颜色区分轮廓与示意线：磨边 M_LINE 颜色 2、X5_LINE 颜色 6、R_LINE 颜色 3；外框是 BYLAYER（不排除时示意线与外框相交的角落会被当成缺口）。2026-10-16 经用户对照原图逐项确认（成品尺寸、颜色规则、前沿造型）。",
+  "expected_counts": {
+    "panels": 6,
+    "holes": 4,
+    "numbers": 6
+  },
+  "network_mode": true,
+  "network_layers": [
+    "0"
+  ],
+  "network_min_area": 1000.0,
+  "network_max_area": 50000000.0,
+  "panel_layers": [
+    "0"
+  ],
+  "band_face_merge_mm": 0.0,
+  "network_assign_numbers": true,
+  "hole_layers": [
+    "0"
+  ],
+  "material_prefix_pattern": "^(?P<prefix>XST)",
+  "exclude_entity_handles": [
+    "F44D",
+    "F44E",
+    "F463",
+    "F4D7",
+    "F543"
+  ],
+  "exclude_colors": [
+    2,
+    3,
+    6
+  ],
+  "fingerprint": {
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+      "DIMENSION": 58,
+      "LINE": 55,
+      "ARC": 8,
+      "CIRCLE": 4,
+      "MTEXT": 14,
+      "INSERT": 3,
+      "TEXT": 7,
+      "LWPOLYLINE": 3,
+      "HATCH": 1
+    },
+    "layer_counts": {
+      "0": 153
+    },
+    "linetype_counts": {
+      "BYLAYER": 132,
+      "R_LINE": 9,
+      "M_LINE": 5,
+      "X5_LINE": 7
+    },
+    "has_hatch": true,
+    "has_lwpolyline": true,
+    "has_line": true,
+    "has_circle": true
+  }
+}

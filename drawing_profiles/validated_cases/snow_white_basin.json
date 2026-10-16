@@ -1,0 +1,40 @@
+{
+  "case_id": "snow_white_basin",
+  "profile_name": "snow_white_basin",
+  "source_sha256": "e4d8a4e96b0761ab902678c35d0f03e61eeaee7d7042fd30ccf2e397f1a2a79f",
+  "fingerprint": {
+    "dxf_version": "AC1032",
+    "insunits": 4,
+    "entity_counts": {
+      "DIMENSION": 58,
+      "LINE": 55,
+      "ARC": 8,
+      "CIRCLE": 4,
+      "MTEXT": 14,
+      "INSERT": 3,
+      "TEXT": 7,
+      "LWPOLYLINE": 3,
+      "HATCH": 1
+    },
+    "layer_counts": {
+      "0": 153
+    },
+    "linetype_counts": {
+      "BYLAYER": 132,
+      "R_LINE": 9,
+      "M_LINE": 5,
+      "X5_LINE": 7
+    },
+    "has_hatch": true,
+    "has_lwpolyline": true,
+    "has_line": true,
+    "has_circle": true
+  },
+  "expected_counts": {
+    "panels": 6,
+    "holes": 4,
+    "numbers": 6
+  },
+  "notes": "由 --register-profile 登记（源文件 雪花白洗手台（小利）1.8.dxf）。",
+  "audit_ignore_rules": []
+}

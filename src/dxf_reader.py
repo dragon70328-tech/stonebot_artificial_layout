@@ -478,6 +478,7 @@ def extract_closed_entity_candidates(doc,
                                      closed_tolerance: float = 0.01,
                                      exclude_handles = None,
                                      hole_layers = None,
+                                     exclude_colors = None,
                                      layer_filter_mode: str = "strict"):
     """提取封闭实体候选，同时保留 handle、图层和线型信息。
 
@@ -488,6 +489,10 @@ def extract_closed_entity_candidates(doc,
     ``exclude_layers`` 是**显式排除**，在 strict / hint / off 三种模式下
     一律生效：调用方（画像 ``exclude_layers`` 字段）说这些图层不是几何
     内容时说一不二，不能再由分类器凭几何把它捡回来。
+
+    ``exclude_colors``（ACI 颜色码）同理：图纸常用颜色区分"零件外框"与
+    "磨边/示意线"（雪花白洗手台：M_LINE 颜色 2、X5_LINE 颜色 6、R_LINE
+    颜色 3 都是示意线，外框是 BYLAYER）。256 = BYLAYER。
     """
     if layer_filter_mode not in {"strict", "hint", "off"}:
         raise ValueError(f"unsupported layer_filter_mode: {layer_filter_mode}")
@@ -496,6 +501,7 @@ def extract_closed_entity_candidates(doc,
     panel_layer_set = set(panel_layers or [])
     hole_layer_set = set(hole_layers or [])
     excluded_layer_set = set(exclude_layers or [])
+    excluded_color_set = {int(value) for value in (exclude_colors or [])}
     results = []
     msp = doc.modelspace()
 
@@ -503,6 +509,8 @@ def extract_closed_entity_candidates(doc,
         layer = getattr(entity.dxf, "layer", "0") or "0"
         handle = getattr(entity.dxf, "handle", None)
         if exclude_handles is not None and handle in exclude_handles:
+            continue
+        if excluded_color_set and int(getattr(entity.dxf, "color", 256)) in excluded_color_set:
             continue
 
         panel_hint = layer in panel_layer_set
@@ -548,6 +556,7 @@ def extract_closed_polygons(doc,
                              closed_tolerance: float = 0.01,
                              exclude_handles = None,
                              hole_layers = None,
+                             exclude_colors = None,
                              layer_filter_mode: str = "strict"):
     return [
         (item["polygon"], item["handle"])
@@ -559,11 +568,161 @@ def extract_closed_polygons(doc,
             closed_tolerance=closed_tolerance,
             exclude_handles=exclude_handles,
             hole_layers=hole_layers,
+            exclude_colors=exclude_colors,
             layer_filter_mode=layer_filter_mode,
         )
     ]
 
 HIERARCHY_CONTAINMENT_RATIO = 0.90
+
+
+# 源曲线（圆/圆弧）与生成轮廓的贴合容差 mm：轮廓是由源曲线展平出来的，
+# 展平偏差就是 flattening 距离（线网络模式默认 1.0mm），这里留一点余量。
+SOURCE_CURVE_TOL_MM = 1.5
+
+
+def _sample_arc(spec: dict, samples: int = 24) -> list[tuple[float, float]]:
+    """按圆心/半径/起止角采样圆弧点（含两端点）。"""
+    cx, cy = spec["center"]
+    radius = float(spec["radius"])
+    start = float(spec["start_angle"])
+    end = float(spec["end_angle"])
+    if end < start:
+        end += 360.0
+    step = (end - start) / max(samples - 1, 1)
+    points = []
+    for index in range(samples):
+        angle = math.radians(start + step * index)
+        points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+    return points
+
+
+def collect_source_curves(doc) -> dict[str, dict]:
+    """源图里可以"如实复写"的曲线：CIRCLE 与 ARC，按 handle 索引。"""
+    specs: dict[str, dict] = {}
+    if doc is None:
+        return specs
+    for entity in doc.modelspace():
+        handle = str(getattr(entity.dxf, "handle", "") or "")
+        if not handle:
+            continue
+        dtype = entity.dxftype()
+        if dtype == "CIRCLE":
+            specs[handle] = {
+                "type": "circle",
+                "center": (float(entity.dxf.center.x), float(entity.dxf.center.y)),
+                "radius": float(entity.dxf.radius),
+            }
+        elif dtype == "ARC":
+            specs[handle] = {
+                "type": "arc",
+                "center": (float(entity.dxf.center.x), float(entity.dxf.center.y)),
+                "radius": float(entity.dxf.radius),
+                "start_angle": float(entity.dxf.start_angle),
+                "end_angle": float(entity.dxf.end_angle),
+            }
+    return specs
+
+
+def _circle_matches_ring(spec: dict, ring, tol: float = SOURCE_CURVE_TOL_MM) -> bool:
+    """该圆是否就是这条环（顶点都落在同一个圆上）。"""
+    cx, cy = spec["center"]
+    radius = float(spec["radius"])
+    if radius <= 0:
+        return False
+    coords = list(ring.coords)
+    if len(coords) < 3:
+        return False
+    for x, y in coords:
+        if abs(math.hypot(x - cx, y - cy) - radius) > tol:
+            return False
+    return True
+
+
+def _arcs_on_ring(ring, arc_specs: list[dict], tol: float = SOURCE_CURVE_TOL_MM) -> list[dict]:
+    """筛出"整段都落在该环边界上"的圆弧（展平后贴合）。"""
+    matched: list[dict] = []
+    for spec in arc_specs:
+        start = float(spec["start_angle"])
+        end = float(spec["end_angle"])
+        span = (end - start) % 360.0
+        if span < 5.0:
+            continue
+        if all(ring.distance(Point(x, y)) <= tol for x, y in _sample_arc(spec)):
+            matched.append(spec)
+    return matched
+
+
+def attach_source_curves(parts_data: list[dict], doc, tol: float = SOURCE_CURVE_TOL_MM) -> None:
+    """给零件的轮廓/孔洞挂上"源实体类型"（圆/圆弧如实复写用）。
+
+    原位 DXF 是给人核对与量尺寸的：源图里是 CIRCLE 的孔/外形要写成真圆，
+    源图里落在轮廓上的 ARC 要写成真圆弧（能在 CAD 里直接量半径）；源图本身
+    就是多段线的（哪怕画成圆）仍旧写多段线。判断在读图阶段做一次，写出的
+    时候不必再读源图（大图不必二次解析）。
+
+    写入：``outer_shape``（整件就是一个圆）、``outer_arcs``（轮廓上的圆弧，
+    剩余部分仍写折线）、``hole_shapes``（与 ``holes`` 一一对应，圆孔标记，
+    非圆孔为 None）。
+    """
+    specs = collect_source_curves(doc)
+    if not specs:
+        return
+
+    circles = [spec for spec in specs.values() if spec["type"] == "circle"]
+    arcs = [spec for spec in specs.values() if spec["type"] == "arc"]
+
+    for part in parts_data:
+        outer = part.get("outer_polygon") or part.get("polygon")
+        if outer is not None and not outer.is_empty:
+            outer_handle = str(part.get("outer_handle") or "")
+            spec = specs.get(outer_handle)
+            if (
+                isinstance(spec, dict)
+                and spec.get("type") == "circle"
+                and _circle_matches_ring(spec, outer.exterior, tol)
+            ):
+                part["outer_shape"] = spec
+            else:
+                min_x, min_y, max_x, max_y = outer.bounds
+                nearby = [
+                    arc
+                    for arc in arcs
+                    if _spec_near_box(arc, min_x, min_y, max_x, max_y, tol)
+                ]
+                matched = _arcs_on_ring(outer.exterior, nearby, tol)
+                if matched:
+                    part["outer_arcs"] = matched
+
+        holes = part.get("holes") or []
+        handles = part.get("hole_handles") or []
+        shapes: list[dict | None] = []
+        for index, hole in enumerate(holes):
+            handle = str(handles[index]) if index < len(handles) and handles[index] else ""
+            spec = specs.get(handle)
+            if (
+                isinstance(spec, dict)
+                and spec.get("type") == "circle"
+                and isinstance(hole, Polygon)
+                and _circle_matches_ring(spec, hole.exterior, tol)
+            ):
+                shapes.append(spec)
+            else:
+                shapes.append(None)
+        part["hole_shapes"] = shapes
+
+
+def _spec_near_box(spec: dict, min_x: float, min_y: float, max_x: float, max_y: float,
+                   tol: float) -> bool:
+    """圆弧是否可能落在这个包围盒附近（先粗筛，避免大图逐件比较所有圆弧）。"""
+    cx, cy = spec["center"]
+    radius = float(spec["radius"])
+    return (
+        cx + radius >= min_x - tol
+        and cx - radius <= max_x + tol
+        and cy + radius >= min_y - tol
+        and cy - radius <= max_y + tol
+    )
 
 
 def _is_contained_as_hole(outer: Polygon, inner: Polygon,
@@ -1025,5 +1184,9 @@ def read_dxf(filepath: str,
         )
     for pd in parts_data:
         pd["original_number"] = assigned_numbers.get(pd["index"])
+
+    # 源实体类型（圆/圆弧）挂到零件上：原位 DXF 按"源图是圆就写圆、源图是
+    # 多段线就写多段线"输出，见 dxf_writer.write_numbered_parts_dxf。
+    attach_source_curves(parts_data, doc)
 
     return parts_data, doc

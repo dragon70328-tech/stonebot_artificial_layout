@@ -56,6 +56,9 @@ def assign_numbers(parts_data: list[dict],
             outer_handle=data.get("outer_handle"),
             hole_handles=data.get("hole_handles", []),
             closure_gap=float(data.get("closure_gap", 0.0) or 0.0),
+            outer_shape=data.get("outer_shape"),
+            outer_arcs=data.get("outer_arcs") or [],
+            hole_shapes=data.get("hole_shapes") or [],
         )
         parts.append(part)
 

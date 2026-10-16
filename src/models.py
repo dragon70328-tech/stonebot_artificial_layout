@@ -22,6 +22,11 @@ class Part:
     outer_handle: str | None = None       # 原DXF中外轮廓实体handle
     hole_handles: list[str] = field(default_factory=list)  # 原DXF中孔洞实体handle
     closure_gap: float = 0.0         # 原图轮廓未闭合的缺口(mm)，0=正常闭合
+    # 源实体类型（原位 DXF 如实复写用）：源图是圆就写圆、源图是圆弧就写圆弧，
+    # 源图本身是多段线的仍旧写多段线。见 dxf_reader.attach_source_curves。
+    outer_shape: dict | None = None        # 整件就是一个圆时的圆心/半径
+    outer_arcs: list[dict] = field(default_factory=list)   # 落在外轮廓上的圆弧
+    hole_shapes: list[dict | None] = field(default_factory=list)  # 与 holes 一一对应
 
     def __post_init__(self):
         if self.area == 0.0:

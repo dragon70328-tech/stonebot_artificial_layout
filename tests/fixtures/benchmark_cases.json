@@ -52,6 +52,18 @@
       "check_determinism": true
     },
     {
+      "name": "snow_white_basin_read",
+      "kind": "read",
+      "input": "tests/fixtures/dxf/雪花白洗手台（小利）1.8.dxf",
+      "profile": "snow_white_basin",
+      "expected": {
+        "panels": 6,
+        "holes": 4,
+        "numbers": 6
+      },
+      "notes": "双线绘制图纸的读图金标准（2026-10-16 经用户逐项核对）：LINE+ARC 拼轮廓走线网络模式，`exclude_colors: [2,3,6]` 排除磨边/示意线（不排除时立板两端各被切掉一块 20x20 缺口）；台面下沿两端的 25mm 台阶是真实前沿造型。"
+    },
+    {
       "name": "cgr45_nest_bridge",
       "kind": "nesting",
       "input": "tests/fixtures/dxf/CGR45final.dxf",

@@ -33,6 +33,7 @@ from .dxf_reader import (
     _is_recoverable_closed,
     _linetype_name,
     _lwpolyline_points,
+    attach_source_curves,
     extract_closed_entity_candidates,
 )
 
@@ -83,6 +84,11 @@ class DrawingProfile:
     closed_tolerance: float = 0.01
     exclude_entity_types: list[str] = field(default_factory=list)
     exclude_entity_handles: list[str] = field(default_factory=list)
+    # 按 ACI 颜色排除"标注/示意线"：如磨边示意线（M_LINE 颜色 2）、X5_LINE 颜色 6、
+    # R_LINE 颜色 3。雪花白洗手台就是靠颜色区分"零件外框（BYLAYER 7）"与
+    # "磨边/示意线"——不排除时，示意线与外框相交的角落会被当成缺口（立板两端
+    # 各被切掉一块 20x20）。256 = BYLAYER，一般不要放进这个列表。
+    exclude_colors: list[int] = field(default_factory=list)
     # 显式排除的图层（几何层面）：区域用料指示面板、重复算量图层、定位层等
     # 明确"不是规格板"的图形所在层。读图时不提取、不参与孔洞归属，
     # 也不给分类器"凭几何捡回来"的机会（hint 模式下同样生效）。
@@ -107,6 +113,17 @@ class DrawingProfile:
     network_gap_side_tolerance: float = 3.0
     network_arc_flattening: float = 1.0
     network_snap_tolerance: float = 1.5
+    # 双线绘制图纸：台面/挡水等按**外框**成件，外框内侧 20~26mm 处的平行线
+    # 只是"边缘加厚"的界线（不是孔洞、也不是另一件）。线网络读图会把这样一件
+    # 拆成"内芯 + 一圈薄片"（雪花白洗手台：792x100 被拆成 752x80 内芯 +
+    # 752x20 顶条 + 20x80 端帽 x2；800x430 台面被拆成 774x405 内芯 + 加厚带）。
+    # 本阈值（mm）启用"薄片并回相邻零件、取并集外轮廓"的合并；0 = 关闭（默认）。
+    # 见 AGENTS.md「双线图纸：外框成件」。
+    band_face_merge_mm: float = 0.0
+    # 线网络模式默认**不做编号归属**（避免把图面零碎文字乱挂到碎片上）；
+    # 声明显式 True 时按 assignment_mode 正常匹配（雪花白洗手台：XST-1..6
+    # 各落在一件里，是图纸自己给出的件定义）。
+    network_assign_numbers: bool = False
     notes: str = ""
     expected_counts: dict[str, int] = field(default_factory=dict)
     # 已验证图纸指纹（可选）。填写后 _rank 会把指纹相似度当作主排序信号，
@@ -969,6 +986,100 @@ def _snap_line_endpoints(
     return snapped_lines
 
 
+def _merge_band_faces(
+    panels: list[dict[str, Any]],
+    thin_mm: float,
+    gap_mm: float = 0.5,
+    hollow_ratio: float = 0.3,
+) -> list[dict[str, Any]]:
+    """双线图纸：把被拆碎的"薄片"并回它所属的零件。
+
+    双线绘制（台面/挡水按**外框**成件，外框内侧的平行线只是边缘加厚的界线）
+    在线网络读图里会被拆成"内芯 + 一圈薄片"。规则：
+
+    * **薄片判据**：最小外包边 < ``thin_mm``（20mm 宽的端帽/顶条），或
+      面积/外包面积 < ``hollow_ratio``（环形加厚带，800x430 的带只占 0.09）；
+    * **归属**：薄片并回**相邻**（边界距离 ≤ ``gap_mm``）的**非薄片**面，相邻有
+      多个时取面积最大的那个——两个相邻零件之间的端帽因此各归各家，不会被粘成
+      一件（雪花白洗手台 A 的 792x100 与 405x100 之间正是一对 20x80 端帽）；
+    * **结果**：取并集的外轮廓（内缩线不再算边界），其余字段沿用被并入的那件。
+
+    没有相邻非薄片面的薄片原样保留（可能是真的薄件，交给画像另加排除）。
+    """
+    if thin_mm <= 0 or len(panels) < 2:
+        return panels
+
+    polygons = [panel["polygon"] for panel in panels]
+    band_flags: list[bool] = []
+    for polygon in polygons:
+        min_x, min_y, max_x, max_y = polygon.bounds
+        width = max_x - min_x
+        height = max_y - min_y
+        box_area = width * height
+        fill = polygon.area / box_area if box_area > 0 else 1.0
+        band_flags.append(min(width, height) < thin_mm or fill < hollow_ratio)
+
+    if not any(band_flags):
+        return panels
+
+    tree = STRtree(polygons)
+    adopted: dict[int, list[int]] = {}
+    orphans: list[int] = []
+    for index, is_band in enumerate(band_flags):
+        if not is_band:
+            continue
+        best_index = None
+        best_area = -1.0
+        for raw_index in tree.query(polygons[index]):
+            other = int(raw_index)
+            if other == index or band_flags[other]:
+                continue
+            if polygons[index].distance(polygons[other]) > gap_mm:
+                continue
+            if polygons[other].area > best_area:
+                best_area = polygons[other].area
+                best_index = other
+        if best_index is None:
+            orphans.append(index)
+        else:
+            adopted.setdefault(best_index, []).append(index)
+
+    merged: list[dict[str, Any]] = []
+    for index, is_band in enumerate(band_flags):
+        if is_band:
+            continue
+        members = [index] + adopted.get(index, [])
+        if len(members) == 1:
+            merged.append(dict(panels[index]))
+            continue
+        union = unary_union([polygons[member] for member in members])
+        if union.geom_type != "Polygon":
+            union = max(
+                (
+                    geom
+                    for geom in getattr(union, "geoms", [])
+                    if geom.geom_type == "Polygon"
+                ),
+                key=lambda geom: geom.area,
+                default=None,
+            )
+        if union is None or union.is_empty:
+            continue
+        panel = dict(panels[index])
+        panel["polygon"] = union
+        panel["outer_polygon"] = union
+        panel["area"] = union.area
+        panel["centroid"] = union.centroid
+        merged.append(panel)
+
+    for index in orphans:
+        merged.append(dict(panels[index]))
+
+    for new_index, panel in enumerate(merged):
+        panel["index"] = new_index
+    return merged
+
+
 def _extract_line_network_panels(
     doc: ezdxf.document.Drawing,
     profile: DrawingProfile,
@@ -990,12 +1101,20 @@ def _extract_line_network_panels(
         return []
 
     excluded_linetypes = {value.upper() for value in profile.exclude_linetypes}
+    excluded_handles = {
+        str(value) for value in profile.exclude_entity_handles if value
+    }
+    excluded_colors = {int(value) for value in profile.exclude_colors}
     lines: list[LineString] = []
 
     for entity in doc.modelspace():
         dtype = entity.dxftype()
         layer = getattr(entity.dxf, "layer", "0") or "0"
         if layer in excluded_layers or layer not in layer_names:
+            continue
+        if str(getattr(entity.dxf, "handle", "")) in excluded_handles:
+            continue
+        if excluded_colors and int(getattr(entity.dxf, "color", 256)) in excluded_colors:
             continue
         linetype = _linetype_name(entity, doc).upper()
         if linetype in excluded_linetypes:
@@ -1152,6 +1271,8 @@ def _extract_profile_panels_impl(
             panel_layers,
             excluded_layers,
         )
+        if profile.band_face_merge_mm > 0:
+            panels = _merge_band_faces(panels, profile.band_face_merge_mm)
         _assign_profile_holes(panels, doc, profile, excluded_layers)
         return panels
 
@@ -1162,6 +1283,8 @@ def _extract_profile_panels_impl(
             panel_layers,
             excluded_layers,
         )
+        if profile.band_face_merge_mm > 0:
+            panels = _merge_band_faces(panels, profile.band_face_merge_mm)
         _assign_profile_holes(panels, doc, profile, excluded_layers)
         return panels
 
@@ -1207,6 +1330,7 @@ def _extract_profile_panels_impl(
         closed_tolerance=profile.closed_tolerance,
         exclude_handles=set(profile.exclude_entity_handles),
         hole_layers=profile.hole_layers,
+        exclude_colors=profile.exclude_colors or None,
         layer_filter_mode="hint",
     )
     classified_candidates = classify_candidates(
@@ -2161,7 +2285,10 @@ def read_dxf_with_profile(
             zone_texts=zone_texts or None,
         )
     elif profile.network_mode:
-        assignments = {}
+        assignments = (
+            {} if not profile.network_assign_numbers
+            else _assign_texts_to_panels(panels, texts, profile)[0]
+        )
     else:
         assignments, _ = _assign_texts_to_panels(panels, texts, profile)
 
@@ -2180,7 +2307,7 @@ def read_dxf_with_profile(
         number_layer = None
         if panel.get("original_number") is not None:
             original_number = panel["original_number"]
-        elif profile.network_mode:
+        elif profile.network_mode and not profile.network_assign_numbers:
             original_number = None
         elif room_assignments is not None:
             original_number = room_assignments.get(panel["index"])
@@ -2234,6 +2361,8 @@ def read_dxf_with_profile(
                 ),
             }
         )
+    # 源实体类型（圆/圆弧）挂到零件上，供原位 DXF 如实复写
+    attach_source_curves(parts_data, doc)
     return parts_data, doc
 
 
@@ -3010,7 +3139,7 @@ def audit_drawing(
                 issues,
                 actual_numbers=actual_numbers,
             )
-        elif profile.network_mode:
+        elif profile.network_mode and not profile.network_assign_numbers:
             actual_numbers = {
                 panel["original_number"]
                 for panel in panels
