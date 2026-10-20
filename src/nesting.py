@@ -1025,6 +1025,7 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
                improve_iterations: int | None = None,
                improve_patience: int | None = None,
                compress: bool = True,
+               rect_fast: bool = True,
                stats: dict | None = None) -> NestingResult:
     """排板主入口：多轮贪心 + 多次试验取最优。
 
@@ -1040,11 +1041,32 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
     compress：LNS 之后做一次"多板联合重排压缩"（把 k 张最低填充板重排进 k-1 张，
     见 `_compress_sheets`）；`--no-compress` 可关闭；
     stats：可选 dict，回填本次运行的确定性诊断（迭代数/是否吃到墙钟护栏）。
+
+    rect_fast：全部零件近似矩形（bbox 填充率 ≥0.98）时，先走矩形快通道
+    （尺寸档 + 行/列 guillotine 模式 + 束搜索，见 src/rect_nesting.py），
+    命中即直接返回（毫秒级、版式可桥切，跳过贪心/束搜索/LNS/压缩）。
+    ``--no-rect-fast`` 可关闭。
     """
     best_result = None
     best_key = None
     best_pl_global = None
     cache: dict = {}
+
+    if rect_fast and not first_part_left_edge and min_gap <= 0:
+        from src.rect_nesting import rect_fast_layout
+
+        rect_pl = rect_fast_layout(
+            parts, sheet_width, sheet_height,
+            rotations=rotations, min_gap=min_gap,
+        )
+        if rect_pl is not None:
+            if stats is not None:
+                stats["rect_fast_path"] = True
+                stats["rect_fast_sheets"] = len(rect_pl)
+            if progress:
+                progress(1, 1, len(rect_pl))
+            return _materialize(rect_pl, sheet_width, sheet_height,
+                                sheet_thickness, unit, len(parts))
 
     for trial in range(trials):
         trial_seed = seed + trial
@@ -1076,10 +1098,14 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
 
         if beam and not first_part_left_edge:
             from src.beam_nesting import beam_layout
+            # 束搜索本身也必须受预算约束：此前这里没传 time_budget_s，
+            # 束搜索会无上限地跑（2026-10-20 酒店 332 件、束宽 1000 跑了 35
+            # 分钟无输出）。超出预算后由 greedy_fallback 收尾，结果仍完整。
+            beam_budget = improve_budget if improve_budget and improve_budget > 0 else None
             beam_pl = beam_layout(
                 parts, sheet_width, sheet_height, cache,
                 beam_width=beam_width, rotations=rotations,
-                min_gap=min_gap)
+                min_gap=min_gap, time_budget_s=beam_budget)
             compact = sum(max((pl.poly.bounds[3] for pl in pls), default=0.0)
                           for pls in beam_pl)
             manufacture_score = _placement_manufacturability_score(
