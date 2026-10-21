@@ -359,6 +359,17 @@ def _beam_pass(parts, tiers, counts, sheet_w, sheet_h, cache,
                 got = _beam_pack_multi(counts, sub_tiers, k, sheet_w,
                                        sheet_h, multi_beam_width, min_gap,
                                        deadline=deadline)
+                if stats is not None:
+                    stats["multi_tail_attempts"] = (
+                        stats.get("multi_tail_attempts", 0) + 1)
+                    stats["multi_tail_success"] = (
+                        stats.get("multi_tail_success", 0)
+                        + (1 if got is not None else 0))
+                    if got is None:
+                        # 墙钟超时是这套引擎里唯一的时间相关分支：
+                        # 触发时结果可能跨运行不同（记录以便排查）
+                        stats["multi_tail_timeout"] = (
+                            stats.get("multi_tail_timeout", 0) + 1)
                 if got is not None:
                     for placed_j in got:
                         if not placed_j:

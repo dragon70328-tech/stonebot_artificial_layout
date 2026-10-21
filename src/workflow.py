@@ -754,6 +754,127 @@ def nest_groups(parts, groups, width_mm, height_mm, special_w, special_h,
     )
 
 
+def nest_groups_parallel(parts, groups, width_mm, height_mm,
+                         special_w, special_h, effective_thickness, unit,
+                         profile, drawing_profile, trials, seed, budget, quick,
+                         pairing=False, beam=True, beam_width=None, stats=None,
+                         compress=True, beam_budget=None, pattern_reuse=4,
+                         workers=4, batch_threshold=500):
+    """并行排板：按材料分组并行；同材料超过阈值再分层切批 + 尾部合并。"""
+    t0 = time.time()
+    from src.parallel_nesting import (
+        build_result, merge_tail_sheets, probe_multiprocessing, run_batches,
+        stratified_split,
+    )
+
+    if workers > 1:
+        ok, reason = probe_multiprocessing()
+        if not ok:
+            # 多进程不可用时**不分批**：顺序跑多批更慢且多耗板
+            if stats is not None:
+                stats["parallel_unavailable"] = reason
+            workers = 1
+
+    first_left = bool(
+        profile.first_part_left_edge
+        or (drawing_profile is not None
+            and drawing_profile.first_part_left_edge)
+    )
+    base_kwargs = dict(
+        sheet_width=width_mm,
+        sheet_height=height_mm,
+        sheet_thickness=effective_thickness,
+        unit=unit.value,
+        trials=trials,
+        seed=seed,
+        improve_budget=budget,
+        rotations=profile.rotation,
+        first_part_left_edge=first_left,
+        min_gap=profile.min_gap,
+        beam=beam,
+        beam_width=beam_width or 1000,
+        compress=compress,
+        beam_budget=beam_budget,
+        pattern_reuse=pattern_reuse,
+    )
+    if quick:
+        base_kwargs["configs"] = QUICK_CONFIGS
+
+    group_parts_list = []
+    tasks: list = []
+    plan: list[tuple[int, int]] = []
+    for group in groups:
+        group_parts = ([part for part in parts if part.material_group == group]
+                       if group is not None else parts)
+        group_parts_list.append(group_parts)
+        if not group_parts:
+            continue
+        n_batches = 1
+        if workers > 1 and len(group_parts) > batch_threshold:
+            n_batches = max(2, min(workers,
+                                   math.ceil(len(group_parts) / batch_threshold)))
+            n_batches = min(n_batches, len(group_parts))
+        batches = stratified_split(group_parts, n_batches)
+        plan.append((len(group_parts_list) - 1, len(batches)))
+        for batch in batches:
+            tasks.append((batch, dict(base_kwargs)))
+
+    results = run_batches(tasks, workers, stats=stats)
+
+    originals = {part.number: part for part in parts}
+    per_group: list[list] = [[] for _ in groups]
+    cursor = 0
+    for group_index, n_batches in plan:
+        chunk = results[cursor:cursor + n_batches]
+        cursor += n_batches
+        per_group[group_index] = chunk
+
+    sheet_area = width_mm * height_mm
+    material_summary = []
+    group_results = []
+    tail_saved = 0
+    for gi, group in enumerate(groups):
+        chunk = per_group[gi]
+        if not chunk:
+            continue
+        merged, saved = merge_tail_sheets(chunk, originals, unit.value,
+                                          dict(base_kwargs))
+        tail_saved += saved
+        sheets = [s for res in merged for s in res.sheets]
+        group_result = build_result(sheets, unit.value)
+        group_results.append(group_result)
+        label = group or "ALL"
+        min_sheets = math.ceil(sum(p.area for p in group_parts_list[gi]) / sheet_area) \
+            if group_parts_list[gi] else 0
+        material_summary.append({
+            "material_group": label,
+            "part_count": len(group_parts_list[gi]),
+            "sheets": group_result.total_sheets,
+            "yield_rate": round(group_result.yield_rate, 2),
+            "theoretical_min_sheets": min_sheets,
+            "batches": max(1, len(chunk)),
+        })
+        print(f"  {label}: {len(group_parts_list[gi])} 件 -> "
+              f"{group_result.total_sheets} 张大板（理论最少 {min_sheets} 张）"
+              f"，{len(chunk)} 批并行", flush=True)
+
+    result = combine_nesting_results(group_results)
+    if stats is not None:
+        stats["parallel_workers"] = workers
+        stats["parallel_batches"] = len(tasks)
+        stats["tail_merge_saved_sheets"] = tail_saved
+    total_min = sum(item["theoretical_min_sheets"] for item in material_summary)
+    return GroupNestingOutcome(
+        result=result,
+        material_summary=material_summary,
+        total_min_sheets=total_min,
+        total_normal_parts=len(parts),
+        total_special_parts=0,
+        total_special_pair_min_sheets=None,
+        elapsed_seconds=time.time() - t0,
+    )
+
+
 def postprocess_result(result, profile) -> dict:
     """Run slide/align/gap post-processing in place and return metrics."""
     manufacturing_metrics = {"edge_contact_mm": 0.0, "through_cut_mm": 0.0}

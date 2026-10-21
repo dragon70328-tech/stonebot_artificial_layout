@@ -263,6 +263,12 @@ stonebot_artificial_layout/
      cap 调到 10 反而更慢（1988s 对 1634s），默认保持 4。
    - **两遍尾板精修**只在 ≤400 件时启用；citizen 实测第二遍 ~10s 但不改板数，
      大单直接跳过。`--beam-budget 0` = 束搜索不限时（质量优先）。
+   - **并行**：`--parallel-workers N`（`src/parallel_nesting.py`）——按材料分组
+     并行零损失；同材料 >500 件再按尺寸档分层切批，每批自带尾板（3 批约 +3 张），
+     必须配尾部合并 + 回看补回。纯 Python 排板在多线程下被 GIL 限制，只能多进程。
+     **多进程不可用时必须退回单批**（`probe_multiprocessing`）：顺序跑多批
+     更慢且多耗板（citizen 149 张/361s 对 148 张/262s）。自检脚本
+     `scripts/check_parallel.py`。
    - **束搜索的预算截断必须带 `greedy_fallback`**：2026-10-21 曾因漏传
      fallback，citizen 1543 件只排出 176 件仍显示"校验通过"。
      现在 `nest_parts` 与 `main.py` 都有件数强制校验，丢件直接报错。

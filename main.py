@@ -52,6 +52,7 @@ from src.workflow import (
     combine_nesting_results,
     material_group_for_number,
     nest_groups,
+    nest_groups_parallel,
     nest_special_parts,
     postprocess_result,
     prepare_drawing,
@@ -109,6 +110,9 @@ def parse_args():
                         "不给则沿用 --budget")
     p.add_argument("--pattern-reuse", type=int, default=4,
                    help="板型复用上限（同配方最多复制几张，含原板；1=关闭）")
+    p.add_argument("--parallel-workers", type=int, default=1,
+                   help="并行进程数：按材料分组并行，同材料超 800 件再分层切批"
+                        "并做尾部合并（1=关闭）")
     p.add_argument("--imperial", action="store_true",
                    help="英制模式（默认公制）")
 
@@ -754,6 +758,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         beam_width: int | None = None,
         beam_budget: float | None = None,
         pattern_reuse: int = 4,
+        parallel_workers: int = 1,
         compress: bool = True,
         material_filter: list[str] | None = None) -> None:
     """核心排板流程
@@ -989,6 +994,29 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
 
     # 优化器诊断：确定性预算消耗、是否被墙钟护栏截断（进报告 parameters.optimizer）
     optimizer_stats: dict = {}
+    if nesting is None and parallel_workers > 1 and not profile.uses_deepnest \
+            and special_w is None:
+        from src.parallel_nesting import probe_multiprocessing
+
+        ok, reason = probe_multiprocessing()
+        if not ok:
+            print(f"多进程不可用（{reason}）：本次按单批排板，不做分批"
+                  "（顺序跑多批会更慢且多耗板）")
+            parallel_workers = 1
+    if nesting is None and parallel_workers > 1 and not profile.uses_deepnest \
+            and special_w is None:
+        nesting = nest_groups_parallel(
+            parts, groups, nesting_width_mm, nesting_height_mm,
+            special_w, special_h,
+            effective_thickness, unit, profile, drawing_profile,
+            trials, seed, budget, quick, pairing,
+            beam=beam, beam_width=beam_width,
+            beam_budget=beam_budget,
+            pattern_reuse=pattern_reuse,
+            stats=optimizer_stats,
+            compress=compress,
+            workers=parallel_workers,
+        )
     if nesting is None:
         nesting = nest_groups(
             parts, groups, nesting_width_mm, nesting_height_mm,
@@ -1059,6 +1087,17 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
 
     # ── 回看排板结果：基于压实后的图形，能合并的少量板就合并 ──
     review_candidates: list = []
+    if (auto_review and optimizer_stats.get("rect_fast_path")
+            and not template_result and special_w is None):
+        # 矩形快通道是横带/竖列版式，块内已排满；两板面积之和远超一板，
+        # 回看注定合不了，却要枚举大量 donor 组合（实测 3 分钟+无输出）。
+        auto_review = False
+        print("矩形快通道已排满横带：跳过回看减板（合并面积不可行）")
+    if (auto_review and not template_result and special_w is None
+            and parallel_workers > 1 and review_budget_s <= 0):
+        # 并行模式已经做过尾部合并，回看收益很低；不设上限会在大单上跑很久
+        review_budget_s = 60.0
+        print("并行模式：自动回看默认限时 60 秒（--review-budget 可覆盖）")
     if auto_review and not template_result and special_w is None:
         (
             review_candidates, result, material_summary, manufacturing_metrics,
@@ -1524,6 +1563,7 @@ def main():
         beam_width=args.beam_width,
         beam_budget=args.beam_budget,
         pattern_reuse=args.pattern_reuse,
+        parallel_workers=args.parallel_workers,
         compress=not args.no_compress,
         material_filter=parse_material_filter(args.material),
     )
