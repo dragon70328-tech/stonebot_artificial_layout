@@ -560,7 +560,8 @@ def _split_normal_parts_by_group(normal_parts, group_mode):
 def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
                     effective_thickness, unit, profile, drawing_profile,
                     trials, seed, budget, quick, pairing=False,
-                    beam=True, beam_width=None, stats=None, compress=True):
+                    beam=True, beam_width=None, stats=None, compress=True,
+                    beam_budget=None, pattern_reuse=4):
     """Nest one material group and return result plus group stats."""
     normal_parts = []
     special_parts = []
@@ -651,6 +652,8 @@ def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
                 beam_width=beam_width or 1000,
                 stats=stats,
                 compress=compress,
+                beam_budget=beam_budget,
+                pattern_reuse=pattern_reuse,
                 configs=QUICK_CONFIGS if quick else None))
     if special_parts:
         results.append(nest_special_parts(
@@ -693,7 +696,7 @@ def nest_groups(parts, groups, width_mm, height_mm, special_w, special_h,
                 effective_thickness, unit, profile, drawing_profile,
                 trials, seed, budget, quick, pairing=False,
                 beam=True, beam_width=None, stats=None,
-                compress=True) -> GroupNestingOutcome:
+                compress=True, beam_budget=None, pattern_reuse=4) -> GroupNestingOutcome:
     """Nest every material group and combine into a single NestingResult."""
     t0 = time.time()
     group_results = []
@@ -715,7 +718,8 @@ def nest_groups(parts, groups, width_mm, height_mm, special_w, special_h,
                 effective_thickness, unit, profile, drawing_profile,
                 trials, seed, budget, quick, pairing,
                 beam=beam, beam_width=beam_width, stats=stats,
-                compress=compress,
+                compress=compress, beam_budget=beam_budget,
+                pattern_reuse=pattern_reuse,
             )
         )
         group_results.append(group_result)

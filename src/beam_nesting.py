@@ -34,6 +34,19 @@ _TIER_DIGITS = 1
 _MAX_PIECES_PER_SHEET = 12
 # 缺口空区下限（mm²）：太小的缺口不值得作为空闲矩形回收
 _NOTCH_MIN_AREA = 1e4
+# 板型复用：一张板排完后，同配方还能用几次就原地复制几次。
+# 大单（citizen 1543 件 / 148 张）实测 148 张只有 31 种配方、
+# 116 张与上一张完全相同——逐张从零重算是主要耗时来源。
+_PATTERN_REUSE_CAP = 4
+# 只复用"填充足够高"的板型，低填充板型留给后续搜索重新组合
+_PATTERN_REUSE_MIN_FILL = 0.80
+# 剩余件数低于此值不再复用，尾部完整交给束搜索/多板耦合求解
+_PATTERN_REUSE_TAIL_RESERVE = 24
+# 第二遍"尾板精修"的规模上限：超出后只跑第一遍。
+# 2026-10-21 citizen ST-6 实测：第一遍 148 张 / 97.6s；
+# 再跑一遍（hard_bonus 加权）同一库存要 ~1500s，且板数不会更好——
+# 大单上第二遍的每层状态爆炸，收益为零。小单仍保留两遍。
+_REFINE_TAIL_MAX_PARTS = 400
 
 
 def _notch_rects_local(rp, rb) -> list:
@@ -310,7 +323,10 @@ def _beam_pack_multi(counts: tuple, tiers: list, n_sheets: int,
 def _beam_pass(parts, tiers, counts, sheet_w, sheet_h, cache,
                beam_width, rotations, max_pieces, min_gap,
                hard_bonus, time_budget_s, greedy_fallback, progress,
-               multi_tail: bool = True, multi_beam_width: int = 500):
+               multi_tail: bool = True, multi_beam_width: int = 500,
+               pattern_reuse: int = _PATTERN_REUSE_CAP,
+               reuse_min_fill: float = _PATTERN_REUSE_MIN_FILL,
+               stats: dict | None = None):
     """单遍逐板束搜索：从给定库存排完全部零件。"""
     sheets = []
     t0 = time.time()
@@ -350,8 +366,9 @@ def _beam_pass(parts, tiers, counts, sheet_w, sheet_h, cache,
                         sheets.append(build_sheet(placed_j))
                     counts = tuple(0 for _ in counts)
                     break
+        before = counts
         placed, counts = _beam_pack_one_sheet(
-            counts, tiers, sheet_w, sheet_h, beam_width, max_pieces,
+            before, tiers, sheet_w, sheet_h, beam_width, max_pieces,
             min_gap, hard_bonus=hard_bonus)
         if not placed:
             numbers = [parts[idx].number
@@ -359,6 +376,28 @@ def _beam_pass(parts, tiers, counts, sheet_w, sheet_h, cache,
             raise ValueError(
                 f"以下零件无法放入 {sheet_w:.0f}x{sheet_h:.0f} 大板：{numbers}")
         sheets.append(build_sheet(placed))
+        if stats is not None:
+            stats["beam_solves"] = stats.get("beam_solves", 0) + 1
+
+        # ── 板型复用：同一配方原地复制，跳过重复的束搜索 ──
+        if pattern_reuse > 1:
+            pattern = tuple(b - a for a, b in zip(counts, before))
+            fill = sum(w * h for _ti, _rot, _x, _y, w, h in placed) / sheet_area
+            if any(pattern) and fill >= reuse_min_fill:
+                repeats = 0
+                while repeats < pattern_reuse - 1:
+                    if sum(counts) <= _PATTERN_REUSE_TAIL_RESERVE:
+                        break
+                    if any(p and c < p for p, c in zip(pattern, counts)):
+                        break
+                    sheets.append(build_sheet(placed))
+                    counts = tuple(c - p for c, p in zip(counts, pattern))
+                    repeats += 1
+                    if stats is not None:
+                        stats["beam_reused_sheets"] = (
+                            stats.get("beam_reused_sheets", 0) + 1)
+                    if progress:
+                        progress(len(sheets), sum(counts))
         if progress:
             progress(len(sheets), sum(counts))
         if time_budget_s is not None and sum(counts) > 0 \
@@ -395,12 +434,18 @@ def beam_layout(parts: list, sheet_w: float, sheet_h: float,
                 time_budget_s: float | None = None,
                 greedy_fallback=None,
                 refine_tail: bool = True,
+                pattern_reuse: int = _PATTERN_REUSE_CAP,
+                reuse_min_fill: float = _PATTERN_REUSE_MIN_FILL,
+                stats: dict | None = None,
                 progress=None) -> list:
     """逐板束搜索排板，返回与 `_nest_single` 相同的 list[list[_Placement]]。
 
     beam_width：每层保留的部分布局数（越大越优越慢，CGR45 上 1000 约 40s）；
     time_budget_s：可选总时间预算；超出后剩余零件交给 greedy_fallback
     （一个 `_nest_single` 兼容函数）收尾，保证结果完整；
+    pattern_reuse：板型复用次数上限。一张板排完后，若同一尺寸档配方
+    还有库存，就原地复制该板（最多 pattern_reuse 张，含原板），
+    跳过重复的束搜索；reuse_min_fill 以下的低填充板型不复用；
     refine_tail：两遍法——第一遍找出尾板（低填充板上的难排件），
     第二遍给难排件加权，让它们尽早在满库存里找到最优搭档，
     避免尾板互相卡死；两遍取较优者，不会比单遍差；
@@ -413,8 +458,15 @@ def beam_layout(parts: list, sheet_w: float, sheet_h: float,
 
     sheets = _beam_pass(parts, tiers, counts, sheet_w, sheet_h, cache,
                         beam_width, rotations, max_pieces, min_gap,
-                        0.0, time_budget_s, greedy_fallback, progress)
+                        0.0, time_budget_s, greedy_fallback, progress,
+                        pattern_reuse=pattern_reuse,
+                        reuse_min_fill=reuse_min_fill, stats=stats)
     if not refine_tail or len(sheets) < 3:
+        return sheets
+    if len(parts) > _REFINE_TAIL_MAX_PARTS:
+        # 大单：第二遍代价过高且无收益，保留第一遍结果
+        if stats is not None:
+            stats["refine_tail_skipped_large"] = len(parts)
         return sheets
 
     # 难排档 = 低填充尾板（最差 3 张及所有低于 65% 的板）上的零件档
@@ -444,7 +496,9 @@ def beam_layout(parts: list, sheet_w: float, sheet_h: float,
     counts2 = tuple(len(dq) for _k, _v, dq, _h in tiers2)
     sheets2 = _beam_pass(parts, tiers2, counts2, sheet_w, sheet_h, cache,
                          beam_width, rotations, max_pieces, min_gap,
-                         sheet_area, time_budget_s, greedy_fallback, progress)
+                         sheet_area, time_budget_s, greedy_fallback, progress,
+                         pattern_reuse=pattern_reuse,
+                         reuse_min_fill=reuse_min_fill, stats=stats)
     return sheets2 if len(sheets2) <= len(sheets) else sheets
 
 

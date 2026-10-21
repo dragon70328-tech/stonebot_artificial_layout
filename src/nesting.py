@@ -31,6 +31,10 @@ _OVERLAP_PATTERN = "T********"
 _MAX_VALID_PER_ROT = 8
 # LNS 中改用束搜索求解的子问题件数上限（更大子集仍走贪心）
 _LNS_BEAM_MAX_PARTS = 40
+# 大单的贪心配置裁剪阈值：超过该件数且启用束搜索时，只保留一套贪心
+# 作为兜底基线。2026-10-21 citizen 实测：单套贪心 ~130s、10 套 ~1300s，
+# 而束搜索 98s 就能给出更少的板数（148 对 153）——大单上多跑贪心纯属浪费。
+_LARGE_ORDER_GREEDY_MAX_PARTS = 400
 
 
 # ---------------------------------------------------------------------------
@@ -1026,6 +1030,8 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
                improve_patience: int | None = None,
                compress: bool = True,
                rect_fast: bool = True,
+               beam_budget: float | None = None,
+               pattern_reuse: int = 4,
                stats: dict | None = None) -> NestingResult:
     """排板主入口：多轮贪心 + 多次试验取最优。
 
@@ -1042,6 +1048,9 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
     见 `_compress_sheets`）；`--no-compress` 可关闭；
     stats：可选 dict，回填本次运行的确定性诊断（迭代数/是否吃到墙钟护栏）。
 
+    beam_budget：束搜索的时间上限（秒）。None=沿用 improve_budget；
+    ≤0=不限（跑完整束搜索，质量最好但最慢）；
+    pattern_reuse：板型复用上限（一张板排完后同配方可复制几张，含原板）；
     rect_fast：全部零件近似矩形（bbox 填充率 ≥0.98）时，先走矩形快通道
     （尺寸档 + 行/列 guillotine 模式 + 束搜索，见 src/rect_nesting.py），
     命中即直接返回（毫秒级、版式可桥切，跳过贪心/束搜索/LNS/压缩）。
@@ -1068,6 +1077,11 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
             return _materialize(rect_pl, sheet_width, sheet_height,
                                 sheet_thickness, unit, len(parts))
 
+    if configs is None and beam and len(parts) > _LARGE_ORDER_GREEDY_MAX_PARTS:
+        # 大单：贪心只留一套兜底，主力交给束搜索
+        configs = [("short", "skyline", 0)]
+        if stats is not None:
+            stats["greedy_configs_used"] = 1
     for trial in range(trials):
         trial_seed = seed + trial
         trial_configs = _default_configs(trial_seed) if configs is None else configs
@@ -1101,11 +1115,31 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
             # 束搜索本身也必须受预算约束：此前这里没传 time_budget_s，
             # 束搜索会无上限地跑（2026-10-20 酒店 332 件、束宽 1000 跑了 35
             # 分钟无输出）。超出预算后由 greedy_fallback 收尾，结果仍完整。
-            beam_budget = improve_budget if improve_budget and improve_budget > 0 else None
+            if beam_budget is None:
+                beam_time_limit = (improve_budget
+                                   if improve_budget and improve_budget > 0
+                                   else None)
+            else:
+                # 显式给 0 或负数 = 不限时（质量优先）
+                beam_time_limit = (beam_budget if beam_budget > 0 else None)
+
+            def _beam_greedy_fallback(remaining):
+                # 束搜索超预算后的收尾：必须用确定性贪心把剩余零件排完，
+                # 否则 _beam_pass 会在预算处截断并丢失未排零件
+                # （2026-10-21 citizen ST-6：1367 件被静默丢弃）。
+                return _nest_single(
+                    remaining, sheet_width, sheet_height,
+                    _make_sort_key("area", 0), "skyline", cache,
+                    rotations=rotations,
+                    first_part_left_edge=first_part_left_edge,
+                    min_gap=min_gap)
+
             beam_pl = beam_layout(
                 parts, sheet_width, sheet_height, cache,
                 beam_width=beam_width, rotations=rotations,
-                min_gap=min_gap, time_budget_s=beam_budget)
+                min_gap=min_gap, time_budget_s=beam_time_limit,
+                greedy_fallback=_beam_greedy_fallback,
+                pattern_reuse=pattern_reuse, stats=stats)
             compact = sum(max((pl.poly.bounds[3] for pl in pls), default=0.0)
                           for pls in beam_pl)
             manufacture_score = _placement_manufacturability_score(
@@ -1148,6 +1182,12 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
                 stats.setdefault("compress_sheets_before", before)
                 stats["compress_sheets_after"] = len(best_pl)
 
+        placed_count = sum(len(sheet_pl) for sheet_pl in best_pl)
+        if placed_count != len(parts):
+            raise RuntimeError(
+                f"排板结果零件不完整：输入 {len(parts)} 件，"
+                f"输出只有 {placed_count} 件——引擎缺陷，请报告。"
+            )
         result = _materialize(best_pl, sheet_width, sheet_height,
                               sheet_thickness, unit, len(parts))
         errors = validate_nesting(

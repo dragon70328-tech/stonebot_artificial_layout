@@ -104,6 +104,11 @@ def parse_args():
                    help="关闭逐板最佳填充束搜索，只用多轮贪心配置")
     p.add_argument("--beam-width", type=int, default=None,
                    help="束搜索每层保留的布局数（默认 full=1000 / quick=400）")
+    p.add_argument("--beam-budget", type=float, default=None,
+                   help="束搜索时间上限（秒）；0=不限（质量优先）；"
+                        "不给则沿用 --budget")
+    p.add_argument("--pattern-reuse", type=int, default=4,
+                   help="板型复用上限（同配方最多复制几张，含原板；1=关闭）")
     p.add_argument("--imperial", action="store_true",
                    help="英制模式（默认公制）")
 
@@ -747,6 +752,8 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         cold_start: bool = False,
         beam: bool = True,
         beam_width: int | None = None,
+        beam_budget: float | None = None,
+        pattern_reuse: int = 4,
         compress: bool = True,
         material_filter: list[str] | None = None) -> None:
     """核心排板流程
@@ -989,6 +996,8 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
             effective_thickness, unit, profile, drawing_profile,
             trials, seed, budget, quick, pairing,
             beam=beam, beam_width=beam_width,
+            beam_budget=beam_budget,
+            pattern_reuse=pattern_reuse,
             stats=optimizer_stats,
             compress=compress,
         )
@@ -1077,6 +1086,15 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     errors = validate_mixed_nesting(result, min_gap=profile.min_gap)
     if kerf_material_errors:
         errors.extend(kerf_material_errors)
+    # 完整性校验：排板结果必须包含全部输入零件（几何校验只看单板
+    # 重叠/越界，发现不了"零件丢失"——2026-10-21 citizen ST-6 曾因此
+    # 静默丢 1367 件仍显示"校验通过"）。
+    placed_total = sum(len(sheet.parts) for sheet in result.sheets)
+    if placed_total != len(parts):
+        errors.append(
+            f"零件总数不符：输入 {len(parts)} 件，"
+            f"排板结果只有 {placed_total} 件"
+        )
     status = "通过" if not errors else f"{len(errors)} 处违规"
     print(f"完成：{result.total_sheets} 张板，"
           f"出材率 {result.yield_rate:.2f}%，"
@@ -1504,6 +1522,8 @@ def main():
         cold_start=args.cold_start,
         beam=not args.no_beam,
         beam_width=args.beam_width,
+        beam_budget=args.beam_budget,
+        pattern_reuse=args.pattern_reuse,
         compress=not args.no_compress,
         material_filter=parse_material_filter(args.material),
     )
