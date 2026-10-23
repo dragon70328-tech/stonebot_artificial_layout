@@ -253,7 +253,35 @@
     if (value.process === "bridge" && !(Number(value.kerf) > 0)) {
       errors.push("桥切必须输入大于 0 的刀厚或有效刀缝");
     }
+    if (
+      value.process !== "bridge"
+      && value.lowFillRework
+      && !(Number(value.lowFillThreshold) > 0 && Number(value.lowFillThreshold) <= 1)
+    ) {
+      errors.push("低填充阈值必须在 (0, 1] 范围内");
+    }
     return errors;
+  }
+
+  function optimizerParameters(input) {
+    const value = input || {};
+    const process = String(value.process || "bridge");
+    const lowFillRework = process !== "bridge" && Boolean(value.lowFillRework);
+    const beamWidth = Number(value.beamWidth);
+    return {
+      pairing: process !== "bridge" && !lowFillRework,
+      beam: value.beam !== false,
+      beam_width: beamWidth > 0 ? beamWidth : 1000,
+      compress: process === "bridge" && value.compress !== false,
+      rect_fast: process === "bridge" && value.rectFast !== false,
+      low_fill_rework: lowFillRework,
+      low_fill_threshold: Number(value.lowFillThreshold) || 0.6,
+      candidate_mode: (
+        process !== "bridge" && value.nfpLite === true
+          ? "nfp_lite"
+          : "bbox"
+      ),
+    };
   }
 
   function isDxfFile(name) {
@@ -327,6 +355,7 @@
     artifactLabel,
     effectiveSheetDimensions,
     validateNestingParameters,
+    optimizerParameters,
     isDxfFile,
     formatAttachmentPath,
     parseApiError,

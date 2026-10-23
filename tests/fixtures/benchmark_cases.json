@@ -136,6 +136,55 @@
       "kerf_mm": 0.0
     },
     {
+      "name": "cgr45_nest_waterjet_low_fill",
+      "kind": "nesting",
+      "input": "tests/fixtures/dxf/CGR45final.dxf",
+      "sheet": [
+        3200,
+        1800
+      ],
+      "nesting_profile": "waterjet",
+      "quick": true,
+      "budget": 60.0,
+      "trials": 1,
+      "seed": 0,
+      "slow": true,
+      "low_fill_rework": true,
+      "low_fill_threshold": 0.6,
+      "limits": {
+        "max_sheets": 53,
+        "min_yield": 68.5,
+        "max_seconds": 180.0
+      },
+      "notes": "水刀低填充联合重排回归。2026-10-22 实测 203 件：基线 54 张 / 67.55% / 10.7s；开启有界低填充板+donor 子集重排后 53 张 / 68.82% / 45.6s。只接受板数严格减少的完整重排，故绝不比基线差。",
+      "target_scenario": false,
+      "kerf_mm": 0.0
+    },
+    {
+      "name": "cgr45_nest_waterjet_nfp_lite",
+      "kind": "nesting",
+      "input": "tests/fixtures/dxf/CGR45final.dxf",
+      "sheet": [
+        3200,
+        1800
+      ],
+      "nesting_profile": "waterjet",
+      "quick": true,
+      "budget": 0.0,
+      "trials": 1,
+      "seed": 0,
+      "slow": true,
+      "candidate_mode": "nfp_lite",
+      "limits": {
+        "max_sheets": 54,
+        "min_yield": 65.0,
+        "max_seconds": 120.0
+      },
+      "notes": "水刀 NFP-lite 行为兼容基线。2026-10-22 A/B：包围盒候选与轮廓顶点接触候选均为 54 张 / 67.55%，耗时约 10.7–11.8s。CGR45 没有可利用的新凹槽，因此该用例只防止新候选模式退化；真实凹槽能力由 U 形合成单测覆盖。",
+      "target_scenario": false,
+      "kerf_mm": 0.0
+    },
+    {
       "name": "outlets2_nest_waterjet",
       "kind": "nesting",
       "input": "tests/fixtures/dxf/dongguan_outlets2_numbered_原位.dxf",

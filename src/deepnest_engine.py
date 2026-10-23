@@ -41,6 +41,7 @@
 
 import math
 import random
+import time
 from dataclasses import dataclass
 
 import shapely
@@ -54,6 +55,7 @@ from src.nesting import _reflex_vertices, validate_nesting
 EPS = 1e-6
 _OVERLAP_PATTERN = "T********"
 _MAX_VALID_PER_ANGLE = 4
+_MAX_VALID_PER_ANGLE_NFP = 12
 _ARBITRARY_ROTATION_STEP = 5.0
 # 参与边对齐计算的直边数量上限（按边长降序取最长边）。
 # 实测（CGR45final，203 件）：上限 8 与 2/4 同为 54 张板，上限 16 反而退化到 55 张
@@ -65,6 +67,16 @@ _MAX_EDGE_ANGLES = 8
 # 方向数很多但长边占比接近 1.0，属于多边形而不是曲线件。
 _EDGE_COVERAGE_MIN = 0.6
 _EDGE_GRID_STEP = 45.0
+_DEEPNEST_SORT_MODES = ("area", "short", "long", "jitter")
+_DEEPNEST_SCORE_MODES = ("bottom_left", "skyline", "column", "contact")
+_DEEPNEST_CANDIDATE_ORDERS = ("legacy", "sorted")
+_LOW_FILL_MAX_SUBSET = 6
+_LOW_FILL_MAX_ROUNDS = 3
+_LOW_FILL_MAX_ATTEMPTS = 96
+_LOW_FILL_AREA_CAP = 0.98
+_DEEPNEST_CANDIDATE_MODES = ("bbox", "nfp_lite")
+_NFP_LITE_MAX_VERTICES = 48
+_NFP_LITE_MAX_POSITIONS = 8000
 
 
 def _edge_segments(poly):
@@ -348,6 +360,98 @@ def _bbox_overlaps_any(cb: tuple, boxes: list) -> bool:
     return False
 
 
+def _compact_boundary_vertices(geom, limit: int = _NFP_LITE_MAX_VERTICES):
+    """返回用于 NFP-lite 接触的轮廓顶点，去掉重复点和共线冗余点。"""
+    if geom is None:
+        return []
+    geometry_type = getattr(geom, "geom_type", "")
+    if geometry_type in ("MultiPolygon", "GeometryCollection"):
+        vertices = []
+        for item in geom.geoms:
+            vertices.extend(_compact_boundary_vertices(item, limit))
+        if len(vertices) <= limit:
+            return vertices
+        stride = max(1, math.ceil(len(vertices) / limit))
+        return vertices[::stride][:limit]
+
+    exterior = getattr(geom, "exterior", None)
+    if exterior is None:
+        return []
+    coords = list(exterior.coords)
+    if len(coords) > 1 and coords[0] == coords[-1]:
+        coords.pop()
+
+    compact = []
+    for point in coords:
+        rounded = (round(float(point[0]), 7), round(float(point[1]), 7))
+        if not compact or rounded != compact[-1]:
+            compact.append(rounded)
+    if len(compact) > 2 and compact[0] == compact[-1]:
+        compact.pop()
+
+    changed = True
+    while changed and len(compact) > 3:
+        changed = False
+        filtered = []
+        count = len(compact)
+        for index, current in enumerate(compact):
+            previous = compact[index - 1]
+            following = compact[(index + 1) % count]
+            ax = current[0] - previous[0]
+            ay = current[1] - previous[1]
+            bx = following[0] - current[0]
+            by = following[1] - current[1]
+            cross = ax * by - ay * bx
+            scale = max(1.0, math.hypot(ax, ay) * math.hypot(bx, by))
+            if abs(cross) <= 1e-10 * scale:
+                changed = True
+                continue
+            filtered.append(current)
+        if len(filtered) < 3:
+            break
+        compact = filtered
+
+    if len(compact) <= limit:
+        return compact
+    stride = max(1, math.ceil(len(compact) / limit))
+    sampled = compact[::stride][:limit]
+    return sampled
+
+
+def _nfp_lite_positions(rotated, rb: tuple, geoms: list,
+                        sheet_w: float, sheet_h: float) -> list:
+    """顶点接触候选（NFP-lite）。
+
+    对每个已放零件顶点 q 和待放零件顶点 p，计算使 p 与 q 重合的平移量。
+    这些候选覆盖了大量 NFP 边界顶点，能进入凹多边形包围盒内部的凹槽；
+    最终仍由精确 DE-9IM 碰撞检测筛选，不会把接触当作重叠。
+    """
+    if rotated is None or not geoms:
+        return []
+    moving_vertices = _compact_boundary_vertices(rotated)
+    static_vertices = []
+    for geom in geoms:
+        static_vertices.extend(_compact_boundary_vertices(geom))
+    if not moving_vertices or not static_vertices:
+        return []
+
+    points = set()
+    for qx, qy in static_vertices:
+        for px, py in moving_vertices:
+            x = rb[0] + qx - px
+            y = rb[1] + qy - py
+            if x < -EPS or y < -EPS:
+                continue
+            if (
+                x + (rb[2] - rb[0]) > sheet_w + EPS
+                or y + (rb[3] - rb[1]) > sheet_h + EPS
+            ):
+                continue
+            points.add((round(x, 7), round(y, 7)))
+    ordered = sorted(points, key=lambda point: (point[1], point[0]))
+    return ordered[:_NFP_LITE_MAX_POSITIONS]
+
+
 def _candidate_axes(geoms: list, part_w: float, part_h: float,
                     sheet_w: float, sheet_h: float) -> tuple[list, list]:
     """生成候选左下角 x/y 坐标，覆盖板边和已放面板包围盒边缘。"""
@@ -381,7 +485,9 @@ def _candidate_positions(geoms: list, sheet_w: float, sheet_h: float,
                          part_w: float, part_h: float,
                          *, order: str = "legacy",
                          score_mode: str = "bottom_left",
-                         use_reflex: bool = False) -> list:
+                         use_reflex: bool = False,
+                         rotated=None,
+                         candidate_mode: str = "bbox") -> list:
     """候选左下角位置。
 
     ``order="legacy"`` 保持旧行为（y 升序 × x 升序）；``"sorted"`` 先按放置
@@ -399,6 +505,13 @@ def _candidate_positions(geoms: list, sheet_w: float, sheet_h: float,
                 points.add((vx, vy - part_h))
                 points.add((vx - part_w, vy - part_h))
 
+    contact_points = set()
+    if candidate_mode == "nfp_lite" and rotated is not None:
+        contact_points = set(_nfp_lite_positions(
+            rotated, rotated.bounds, geoms, sheet_w, sheet_h
+        ))
+        points.update(contact_points)
+
     inside = [
         (x, y)
         for (x, y) in points
@@ -406,14 +519,22 @@ def _candidate_positions(geoms: list, sheet_w: float, sheet_h: float,
         and x + part_w <= sheet_w + EPS
         and y + part_h <= sheet_h + EPS
     ]
-    if order == "sorted":
-        inside.sort(
-            key=lambda pt: _candidate_order_key(
-                score_mode, pt[0], pt[1], part_w, part_h
+    def sort_positions(items):
+        if order == "sorted":
+            return sorted(
+                items,
+                key=lambda pt: _candidate_order_key(
+                    score_mode, pt[0], pt[1], part_w, part_h
+                ),
             )
-        )
+        return sorted(items, key=lambda pt: (pt[1], pt[0]))
+
+    if contact_points:
+        contact_inside = [pt for pt in inside if pt in contact_points]
+        other_inside = [pt for pt in inside if pt not in contact_points]
+        inside = sort_positions(contact_inside) + sort_positions(other_inside)
     else:
-        inside.sort(key=lambda pt: (pt[1], pt[0]))
+        inside = sort_positions(inside)
     return inside
 
 
@@ -453,7 +574,8 @@ def _find_placement(part: Part, geoms: list, tree: STRtree | None,
                     angle_mode: str = "edge",
                     score_mode: str = "bottom_left",
                     candidate_order: str = "legacy",
-                    use_reflex: bool = False) -> _Placement | None:
+                    use_reflex: bool = False,
+                    candidate_mode: str = "bbox") -> _Placement | None:
     """为单个零件找一个最左下的可行放置。"""
     angles = angle_candidates(
         rotations, arbitrary_rotation, rotation_step,
@@ -473,6 +595,8 @@ def _find_placement(part: Part, geoms: list, tree: STRtree | None,
             geoms, sheet_w, sheet_h, part_w, part_h,
             order=candidate_order, score_mode=score_mode,
             use_reflex=use_reflex,
+            rotated=rotated,
+            candidate_mode=candidate_mode,
         )
         valid_count = 0
 
@@ -495,7 +619,12 @@ def _find_placement(part: Part, geoms: list, tree: STRtree | None,
                 best = (score, angle, placed)
 
             valid_count += 1
-            if valid_count >= _MAX_VALID_PER_ANGLE:
+            valid_limit = (
+                _MAX_VALID_PER_ANGLE_NFP
+                if candidate_mode == "nfp_lite"
+                else _MAX_VALID_PER_ANGLE
+            )
+            if valid_count >= valid_limit:
                 break
 
         # 已找到贴 (0,0) 的放置就不必再试更多角度（评分准则不同，判断放在
@@ -526,6 +655,110 @@ def _make_sort_key(name: str, seed: int = 0):
     return lambda p: -p.area
 
 
+def _normalize_score_mode(mode: str) -> str:
+    aliases = {"col": "column", "cols": "column"}
+    normalized = aliases.get(str(mode).casefold(), str(mode).casefold())
+    if normalized not in _DEEPNEST_SCORE_MODES:
+        raise ValueError(
+            f"未知的水刀/激光放置准则 {mode!r}；"
+            f"可选值：{', '.join(_DEEPNEST_SCORE_MODES)}"
+        )
+    return normalized
+
+
+def _normalize_candidate_mode(mode: str) -> str:
+    normalized = str(mode or "bbox").casefold()
+    if normalized not in _DEEPNEST_CANDIDATE_MODES:
+        raise ValueError(
+            f"未知的候选位置模式 {mode!r}；"
+            f"可选值：{', '.join(_DEEPNEST_CANDIDATE_MODES)}"
+        )
+    return normalized
+
+
+def _expand_search_configs(
+    configs: list | None,
+    *,
+    trials: int,
+    seed: int,
+    default_score_mode: str,
+    default_candidate_order: str,
+    use_reflex: bool,
+) -> list[tuple[str, str, int, str, bool]]:
+    """展开水刀/激光搜索配置。
+
+    与桥切引擎兼容的二元/三元组格式为
+    ``(sort_name, score_mode[, seed])``；额外两项可显式指定
+    ``candidate_order`` 与 ``use_reflex``。也接受同样字段的 dict。
+    ``configs`` 优先于 ``trials``，避免 quick 配置被 trials 静默忽略。
+    """
+    normalized: list[tuple[str, str, int, str, bool]] = []
+    if configs:
+        raw_configs = list(configs)
+    else:
+        raw_configs = [
+            (
+                _DEEPNEST_SORT_MODES[i % len(_DEEPNEST_SORT_MODES)],
+                default_score_mode,
+                seed + i,
+            )
+            for i in range(max(1, trials))
+        ]
+
+    for index, raw in enumerate(raw_configs):
+        if isinstance(raw, dict):
+            sort_name = raw.get("sort", "area")
+            score_mode = raw.get("score_mode", default_score_mode)
+            config_seed = raw.get("seed", seed + index)
+            candidate_order = raw.get("candidate_order",
+                                      default_candidate_order)
+            reflex = bool(raw.get("use_reflex", use_reflex))
+        else:
+            values = tuple(raw) if isinstance(raw, (tuple, list)) else (raw,)
+            sort_name = values[0] if len(values) > 0 and values[0] else "area"
+            score_mode = (
+                values[1]
+                if len(values) > 1 and values[1] is not None
+                else default_score_mode
+            )
+            config_seed = (
+                values[2]
+                if len(values) > 2 and values[2] is not None
+                else seed + index
+            )
+            candidate_order = (
+                values[3]
+                if len(values) > 3 and values[3] is not None
+                else default_candidate_order
+            )
+            reflex = bool(values[4]) if len(values) > 4 else use_reflex
+
+        sort_name = str(sort_name).casefold()
+        if sort_name not in _DEEPNEST_SORT_MODES:
+            raise ValueError(
+                f"未知的水刀/激光排序 {sort_name!r}；"
+                f"可选值：{', '.join(_DEEPNEST_SORT_MODES)}"
+            )
+        score_mode = _normalize_score_mode(score_mode)
+        candidate_order = str(candidate_order).casefold()
+        if candidate_order not in _DEEPNEST_CANDIDATE_ORDERS:
+            raise ValueError(
+                f"未知的候选坐标顺序 {candidate_order!r}；"
+                f"可选值：{', '.join(_DEEPNEST_CANDIDATE_ORDERS)}"
+            )
+        config = (
+            sort_name,
+            score_mode,
+            int(config_seed),
+            candidate_order,
+            reflex,
+        )
+        if config not in normalized:
+            normalized.append(config)
+
+    return normalized
+
+
 def _greedy_pass(parts: list, sheet_w: float, sheet_h: float,
                  cache: dict, rotations: tuple,
                  arbitrary_rotation: bool, sort_key,
@@ -534,7 +767,8 @@ def _greedy_pass(parts: list, sheet_w: float, sheet_h: float,
                  angle_mode: str = "edge",
                  score_mode: str = "bottom_left",
                  candidate_order: str = "legacy",
-                 use_reflex: bool = False) -> list:
+                 use_reflex: bool = False,
+                 candidate_mode: str = "bbox") -> list:
     """一轮 Bottom-Left Fill：逐张开板，无法放入当前板的进入下一张。"""
     remaining = sorted(parts, key=sort_key)
     sheets_pl = []
@@ -555,14 +789,14 @@ def _greedy_pass(parts: list, sheet_w: float, sheet_h: float,
                         part, geoms, tree, sheet_w, sheet_h,
                         cache, rotations, arbitrary_rotation,
                         rotation_step, angle_mode, score_mode,
-                        candidate_order, use_reflex,
+                        candidate_order, use_reflex, candidate_mode,
                     )
             else:
                 placement = _find_placement(
                     part, geoms, tree, sheet_w, sheet_h,
                     cache, rotations, arbitrary_rotation,
                     rotation_step, angle_mode, score_mode,
-                    candidate_order, use_reflex,
+                    candidate_order, use_reflex, candidate_mode,
                 )
             if placement is None:
                 nxt.append(part)
@@ -586,6 +820,11 @@ def _sheet_used_area(placements: list) -> float:
     return sum(pl.part.area for pl in placements)
 
 
+def _sheet_outer_area(placements: list) -> float:
+    """用于可行性判断的外包络面积（不能用扣孔后的净面积高估容量）。"""
+    return sum(pl.poly.area for pl in placements)
+
+
 def _improve_low_fill_sheets(
     sheets_pl: list,
     sheet_w: float,
@@ -601,61 +840,179 @@ def _improve_low_fill_sheets(
     score_mode: str = "bottom_left",
     candidate_order: str = "legacy",
     use_reflex: bool = False,
+    candidate_mode: str = "bbox",
     threshold: float = 0.6,
     seed: int = 0,
+    configs: list | None = None,
+    improve_budget: float = 0.0,
+    max_attempts: int = _LOW_FILL_MAX_ATTEMPTS,
+    max_subset: int = _LOW_FILL_MAX_SUBSET,
+    max_rounds: int = _LOW_FILL_MAX_ROUNDS,
+    stats: dict | None = None,
 ) -> list:
-    """低填充板重排（改进计划 Step 2）。
+    """有界低填充板重排（改进计划 Step 2）。
 
     纯贪心"当前板放不下就开新板、永不回头"，会留下 sheet 7 那种"2 件占一板"
-    的碎片板。这里把填充率低于 ``threshold`` 的板合成一个池子，**用多种排序
-    各排一遍取最优**（池子小，多跑几轮很便宜），并且只在板数减少时接受，
-    因此永远不会让结果变差。
+    的碎片板。这里先尝试所有低填充板，再尝试"最弱板 + 若干 donor 板"的小子集；
+    每个子集用多套排序/放置准则重排，只有板数严格减少时才接受。
 
-    注意：用同一个排序键重排必然复现原结果，所以必须换排序/换策略才有意义。
+    ``max_attempts`` 是确定性护栏，``improve_budget``（>0）是可选墙钟护栏。
+    任何护栏都只停止后续尝试，不会丢掉当前完整布局，因此结果始终包含全部
+    零件且不会比输入布局更差。使用 ``sort_key`` 仅用于兼容旧调用；新搜索优先
+    使用 ``configs``，其中的候选顺序与凹角开关也会实际生效。
     """
     sheet_area = sheet_w * sheet_h
-    if sheet_area <= 0:
-        return sheets_pl
-    low_indices = {
-        index
-        for index, placements in enumerate(sheets_pl)
-        if _sheet_used_area(placements) < threshold * sheet_area
-    }
-    if len(low_indices) < 2:
+    if sheet_area <= 0 or len(sheets_pl) < 2:
         return sheets_pl
 
-    kept = [
-        placements
-        for index, placements in enumerate(sheets_pl)
-        if index not in low_indices
-    ]
-    pool = [
-        pl.part
-        for index, placements in enumerate(sheets_pl)
-        if index in low_indices
-        for pl in placements
-    ]
-    best_retry = None
-    best_retry_key = None
-    for name in ("area", "short", "long", "jitter"):
-        retry = _greedy_pass(
-            pool, sheet_w, sheet_h, cache, rotations, arbitrary_rotation,
-            _make_sort_key(name, seed),
-            first_part_left_edge=first_part_left_edge,
-            rotation_step=rotation_step,
-            angle_mode=angle_mode,
-            score_mode=score_mode,
-            candidate_order=candidate_order,
-            use_reflex=use_reflex,
+    # 重排是一个独立的小子问题：即使基础搜索只给了一套配置，也应换用不同
+    # 排序和放置准则，否则重排会机械复现原布局。
+    rework_configs = list(configs or [])
+    # 先沿用历史上表现最稳定的桥切 quick 组合；DeepNest 的放置评分接受
+    # skyline/column 语义，配置只影响候选顺序，不改变工艺合法性。
+    rework_configs.extend([
+        ("short", "skyline", seed, candidate_order, use_reflex),
+        ("short", "column", seed, candidate_order, use_reflex),
+        ("area", "skyline", seed, candidate_order, use_reflex),
+        ("long", "column", seed, candidate_order, use_reflex),
+    ])
+    rework_configs.extend(
+        (sort_name, mode, seed, candidate_order, use_reflex)
+        for sort_name in _DEEPNEST_SORT_MODES
+        for mode in ("bottom_left", "skyline", "column", "contact")
+    )
+    search_configs = _expand_search_configs(
+        rework_configs,
+        trials=1,
+        seed=seed,
+        default_score_mode=score_mode,
+        default_candidate_order=candidate_order,
+        use_reflex=use_reflex,
+    )
+    deadline = (
+        time.monotonic() + improve_budget
+        if improve_budget and improve_budget > 0
+        else None
+    )
+    attempts = 0
+    current = sheets_pl
+    accepted_rounds = 0
+    budget_exhausted = False
+    attempt_limit_hit = False
+
+    def _selection_candidates(layout: list) -> list[list[int]]:
+        n = len(layout)
+        fill_order = sorted(
+            range(n), key=lambda i: (_sheet_outer_area(layout[i]), i)
         )
-        key = (len(retry), _compactness(retry))
-        if best_retry_key is None or key < best_retry_key:
-            best_retry_key = key
-            best_retry = retry
+        weakest = fill_order[0]
+        low = [
+            i for i in fill_order
+            if _sheet_used_area(layout[i]) < threshold * sheet_area
+        ]
+        selections: list[list[int]] = []
+        seen: set[tuple[int, ...]] = set()
 
-    if best_retry is not None and len(kept) + len(best_retry) < len(sheets_pl):
-        return kept + best_retry
-    return sheets_pl
+        def add(indices: list[int]) -> None:
+            key = tuple(sorted(indices))
+            if len(key) < 2 or key in seen:
+                return
+            seen.add(key)
+            selections.append(list(key))
+
+        # 小池子先整体重排通常最划算；大池子放最后，避免一次尝试吃掉预算。
+        if 2 <= len(low) <= max_subset:
+            add(low)
+        by_parts = sorted(range(n), key=lambda i: (-len(layout[i]), i))
+        rng = random.Random(seed * 1009 + n)
+        for k in range(2, min(max_subset, n) + 1):
+            add(fill_order[:k])
+            add([weakest] + [
+                i for i in by_parts if i != weakest
+            ][:k - 1])
+            pool = [i for i in fill_order if i != weakest]
+            if len(pool) >= k - 1:
+                add([weakest] + rng.sample(pool, k - 1))
+            if k == 2:
+                # 最弱板与每个 donor 单独试一次，覆盖"两张并一张"的最常见场景。
+                for donor in fill_order[1:min(len(fill_order), 13)]:
+                    add([weakest, donor])
+        if len(low) >= 2:
+            add(low)
+        return selections
+
+    for _round in range(max(1, max_rounds)):
+        before_count = len(current)
+        best_layout = None
+        best_key = None
+        stopped = False
+
+        for selection in _selection_candidates(current):
+            if stopped:
+                break
+            selected_area = sum(
+                _sheet_outer_area(current[i]) for i in selection
+            )
+            target_sheets = len(selection) - 1
+            if selected_area > target_sheets * sheet_area * _LOW_FILL_AREA_CAP:
+                continue
+
+            selected_set = set(selection)
+            kept = [
+                placements
+                for index, placements in enumerate(current)
+                if index not in selected_set
+            ]
+            pool = [
+                placement.part
+                for index in selection
+                for placement in current[index]
+            ]
+            for config in search_configs:
+                if attempts >= max(1, max_attempts):
+                    stopped = True
+                    attempt_limit_hit = True
+                    break
+                if deadline is not None and time.monotonic() >= deadline:
+                    stopped = True
+                    budget_exhausted = True
+                    break
+                attempts += 1
+                sort_name, config_mode, config_seed, order, reflex = config
+                retry = _greedy_pass(
+                    pool, sheet_w, sheet_h, cache, rotations,
+                    arbitrary_rotation, _make_sort_key(sort_name, config_seed),
+                    first_part_left_edge=first_part_left_edge,
+                    rotation_step=rotation_step,
+                    angle_mode=angle_mode,
+                    score_mode=config_mode,
+                    candidate_order=order,
+                    use_reflex=reflex,
+                    candidate_mode=candidate_mode,
+                )
+                if len(retry) > target_sheets:
+                    continue
+                candidate_layout = kept + retry
+                key = (len(candidate_layout), _compactness(candidate_layout))
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best_layout = candidate_layout
+
+        if stopped and best_layout is None:
+            break
+        if best_layout is None or len(best_layout) >= before_count:
+            break
+        current = best_layout
+        accepted_rounds += 1
+
+    if stats is not None:
+        stats.update({
+            "deepnest_low_fill_attempts": attempts,
+            "deepnest_low_fill_accepted_rounds": accepted_rounds,
+            "deepnest_low_fill_budget_exhausted": budget_exhausted,
+            "deepnest_low_fill_attempt_limit_hit": attempt_limit_hit,
+        })
+    return current
 
 
 def _compactness(sheets_pl: list) -> float:
@@ -730,52 +1087,102 @@ def nest_parts_deepnest(parts: list, sheet_width: float, sheet_height: float,
                         score_mode: str = "bottom_left",
                         candidate_order: str = "legacy",
                         use_reflex: bool = False,
+                        candidate_mode: str = "bbox",
                         low_fill_rework: bool = False,
                         low_fill_threshold: float = 0.6,
+                        stats: dict | None = None,
                         progress=None) -> NestingResult:
     """DeepNest 风格排板入口。
 
-    注意：``improve_budget`` 与 ``configs`` 目前仅为了与桥切引擎保持同构的
-    调用签名而保留，**尚未实现 LNS 搜索**（水刀侧的时间预算暂不生效）；
-    当前的质量提升来自 ``low_fill_rework`` 的低填充板重排。
+    ``configs`` 现在会实际驱动排序、放置准则、候选顺序和凹角候选搜索；
+    与桥切兼容的配置至少包含前三个元素 ``(sort, score_mode, seed)``。
+    ``configs`` 优先于 ``trials``。``improve_budget`` 是可选墙钟护栏：
+    只在开始下一套完整配置前检查，不会截断一套配置而产生丢件。
+
+    ``low_fill_rework`` 开启后，在全部基础配置完成后对低填充板和小子集做
+    有界联合重排；只接受板数严格减少的完整结果。
     """
     if not parts:
         raise ValueError("DeepNest 排板需要至少一个零件")
 
+    candidate_mode = _normalize_candidate_mode(candidate_mode)
+    search_configs = _expand_search_configs(
+        configs,
+        trials=trials,
+        seed=seed,
+        default_score_mode=score_mode,
+        default_candidate_order=candidate_order,
+        use_reflex=use_reflex,
+    )
+    if stats is not None:
+        stats.update({
+            "deepnest_search_configs": len(search_configs),
+            "deepnest_low_fill_rework": bool(low_fill_rework),
+            "deepnest_low_fill_threshold": float(low_fill_threshold),
+            "deepnest_candidate_mode": candidate_mode,
+        })
     cache: dict = {}
     best_pl = None
     best_key = None
-    order_names = ["area", "short", "long", "jitter"]
+    started = time.monotonic()
 
-    for trial in range(max(1, trials)):
-        name = order_names[trial % len(order_names)]
-        sort_key = _make_sort_key(name, seed + trial)
+    for config in search_configs:
+        if (
+            best_pl is not None
+            and improve_budget
+            and improve_budget > 0
+            and time.monotonic() - started >= improve_budget
+        ):
+            break
+        name, config_mode, config_seed, order, reflex = config
+        sort_key = _make_sort_key(name, config_seed)
         sheets_pl = _greedy_pass(parts, sheet_width, sheet_height, cache,
                                  rotations, arbitrary_rotation, sort_key,
                                  first_part_left_edge=first_part_left_edge,
                                  rotation_step=rotation_step,
                                  angle_mode=angle_mode,
-                                 score_mode=score_mode,
-                                 candidate_order=candidate_order,
-                                 use_reflex=use_reflex)
-        if low_fill_rework:
-            sheets_pl = _improve_low_fill_sheets(
-                sheets_pl, sheet_width, sheet_height, cache,
-                rotations, arbitrary_rotation, sort_key,
+                                 score_mode=config_mode,
+                                 candidate_order=order,
+                                 use_reflex=reflex,
+                                 candidate_mode=candidate_mode)
+        key = (len(sheets_pl), _compactness(sheets_pl))
+        if best_key is None or key < best_key:
+            best_key = key
+            best_pl = sheets_pl
+
+    if low_fill_rework and best_pl is not None:
+        elapsed = time.monotonic() - started
+        remaining_budget = (
+            max(0.0, improve_budget - elapsed)
+            if improve_budget and improve_budget > 0
+            else 0.0
+        )
+        if not (improve_budget and improve_budget > 0
+                and remaining_budget <= 0):
+            best_pl = _improve_low_fill_sheets(
+                best_pl, sheet_width, sheet_height, cache,
+                rotations, arbitrary_rotation,
+                _make_sort_key("area", seed),
                 first_part_left_edge=first_part_left_edge,
                 rotation_step=rotation_step,
                 angle_mode=angle_mode,
                 score_mode=score_mode,
                 candidate_order=candidate_order,
                 use_reflex=use_reflex,
+            candidate_mode=candidate_mode,
                 threshold=low_fill_threshold,
-                seed=seed + trial,
+                seed=seed,
+                configs=search_configs,
+                improve_budget=remaining_budget,
+                stats=stats,
             )
-        key = (len(sheets_pl), _compactness(sheets_pl))
-        if best_key is None or key < best_key:
-            best_key = key
-            best_pl = sheets_pl
 
+    placed_count = sum(len(sheet) for sheet in (best_pl or []))
+    if placed_count != len(parts):
+        raise RuntimeError(
+            f"DeepNest 排板结果不完整：输入 {len(parts)} 件，"
+            f"输出 {placed_count} 件"
+        )
     result = _materialize(best_pl, sheet_width, sheet_height,
                           sheet_thickness, unit, len(parts))
     errors = validate_nesting(result, sheet_width, sheet_height)

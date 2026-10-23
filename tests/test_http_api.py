@@ -3,6 +3,7 @@ import time
 from types import SimpleNamespace
 
 import httpx
+import pytest
 from httpx import ASGITransport
 
 from src.http_api import (
@@ -40,6 +41,34 @@ class SyncASGIClient:
 def TestClient(app):
     """Synchronous ASGI test client that avoids fastapi.testclient's warning."""
     return SyncASGIClient(app)
+
+
+def test_job_request_rejects_invalid_low_fill_combinations():
+    base = dict(
+        dxf_path="input.dxf",
+        width_mm=3200,
+        height_mm=1800,
+        kerf_mm=5,
+    )
+    with pytest.raises(ValueError, match="requires process"):
+        JobCreateRequest(
+            **base,
+            process="bridge",
+            low_fill_rework=True,
+        )
+    with pytest.raises(ValueError, match="cannot be combined"):
+        JobCreateRequest(
+            **base,
+            process="waterjet",
+            pairing=True,
+            low_fill_rework=True,
+        )
+    with pytest.raises(ValueError, match="candidate_mode=nfp_lite"):
+        JobCreateRequest(
+            **base,
+            process="bridge",
+            candidate_mode="nfp_lite",
+        )
 
 
 def _ok_handlers():

@@ -346,6 +346,14 @@ python main.py input.dxf 3200 1600 20 --process waterjet --quick --budget 0 --no
 # 水刀 DeepNest + 相同形状共边配对（可选增强）
 python main.py input.dxf 3200 1600 20 --process waterjet --pairing --quick --budget 0 --no-confirm
 
+# 水刀低填充板联合重排（非配对模式，只接受板数减少的完整结果）
+python main.py input.dxf 3200 1800 20 --process waterjet --quick \
+    --low-fill-rework --low-fill-threshold 0.6 --budget 60 --no-confirm
+
+# 水刀/激光 NFP-lite：增加轮廓顶点接触候选，用于进入 U/L 形凹槽
+python main.py input.dxf 3200 1800 20 --process waterjet --quick \
+    --candidate-mode nfp_lite --no-confirm
+
 # 水刀 DeepNest，禁止旋转但启用共边配对
 python main.py input.dxf 3200 1600 20 --process waterjet --no-rotation --pairing --quick --budget 0 --no-confirm
 
@@ -558,6 +566,8 @@ ZIGZAG 线型的大样图标记必须排除，否则会被误识别为规格板�
 （外轮廓/外包络 ≥ 0.98，带小倒角的矩形也满足）、`min_gap ≤ 0`、允许 90° 旋转、
 未启用 `first_part_left_edge`。命中时直接走 `src/rect_nesting.py`，**跳过**
 贪心配置、束搜索、LNS 与压缩，报告 `parameters.optimizer.rect_fast_path=true`。
+CLI/Agent 工具可用 `--no-rect-fast`（`rect_fast=false`）强制关闭该通道，
+便于和通用引擎做同口径 A/B。
 
 **算法**：按外轮廓分尺寸档（长边/短边）→ 生成每张板的**行模式**（横带，带内
 按长边排）与**列模式**（竖列，列内同类堆叠），两者都是 guillotine 切法 →
@@ -803,11 +813,43 @@ BLF 留下了可观的合并余地。注意：管线目前**只在桥切路径�
   整单唯一开关 → 同一张图里台面 + 异形混排时只能人工拆图，或整单用一种工艺
   （按件分派是待确认的架构改动）。
 
-### 水刀引擎的时间预算目前不生效（死参数）
-`nest_parts_deepnest(improve_budget=..., configs=...)` 两个参数**从未被使用**，
-而 `workflow.py` 的水刀路径会传 `improve_budget=budget`（CLI 默认 180s）——
-即用户要求的长时搜索被静默丢弃。改动水刀质量时必须先看这一点，不要以为
-拉大 `--budget` 会有收益。
+### 水刀搜索参数与低填充板重排（2026-10-22 更新）
+
+`nest_parts_deepnest(configs=...)` 现在会实际驱动排序、放置准则、候选顺序与
+凹角候选；`configs` 优先于 `trials`。`improve_budget` 是墙钟护栏，只在开始
+下一套完整配置或低填充重排子问题前检查，不会截断单次结果，因此不会丢件。
+
+CLI 的 `--low-fill-rework` 开启有界低填充板联合重排：先尝试全部低填充板，
+再尝试“最弱板 + donor 板”的小子集，用多套排序/放置准则重排；只有板数
+严格减少时才接受。`--low-fill-threshold` 默认 0.6。搜索同时受固定尝试上限
+（96 次）和 `--budget` 约束。它暂不支持与 `--pairing` 组合，CLI 会明确报错，
+不会静默忽略。
+
+CGR45final 203 件 @3200x1800 实测：
+
+| 模式 | 板数 | 出材率 | 耗时 |
+|---|---:|---:|---:|
+| 单套边对齐基线 | 54 | 67.55% | 10.7s |
+| `--low-fill-rework --budget 60` | **53** | **68.82%** | 45.6s |
+
+水刀仍没有跨全部板面的 LNS；低填充重排是定位碎板、按子集压缩的安全增量，
+不是解决东莞类大单的完整搜索层。
+
+### NFP-lite 顶点接触候选（2026-10-22）
+
+水刀/激光可显式使用 `--candidate-mode nfp_lite`（API/工具字段
+`candidate_mode`）。它不是完整 Minkowski NFP，而是在现有包围盒候选之外增加
+“待放轮廓顶点与已放轮廓顶点接触”的平移候选：
+
+- 去掉重复点和共线冗余点，单方向候选上限 8000；
+- 所有候选仍经过现有 DE-9IM 精确重叠检测，共边不算重叠；
+- 只用于水刀/激光；桥切、矩形快通道保持 `bbox`；
+- U 形凹槽合成回归：默认候选 2 张板，NFP-lite **1 张板**；
+- CGR45 203 件 A/B 不退化：两种模式均为 54 张 / 67.55%，耗时约
+  10.7–11.8s（候选检查有轻微开销）。
+
+下一步要在真实异形大单上验证，并增加按“几何签名 + 旋转角”的候选/NFP
+缓存。当前没有把它设为默认。
 
 已隔离验证过、对 CGR45 板数**无效**的开关（保留为显式实验入口，默认 legacy）：
 `score_mode`（bottom_left/skyline/column/contact）、`candidate_order`、

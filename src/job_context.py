@@ -66,6 +66,13 @@ class JobContext:
     budget: float = 0.0
     quick: bool = True
     pairing: bool = False
+    beam: bool = True
+    beam_width: int | None = None
+    compress: bool = True
+    rect_fast: bool = True
+    low_fill_rework: bool = False
+    low_fill_threshold: float = 0.6
+    candidate_mode: str = "bbox"
     skip_unnumbered: bool = True
 
     output_dir: Path | None = None
@@ -112,6 +119,20 @@ class JobContext:
             ),
             "sheet": sheet_payload,
             "process_policy": process_payload,
+            "optimizer": {
+                "trials": self.trials,
+                "seed": self.seed,
+                "budget": self.budget,
+                "quick": self.quick,
+                "pairing": self.pairing,
+                "beam": self.beam,
+                "beam_width": self.beam_width,
+                "compress": self.compress,
+                "rect_fast": self.rect_fast,
+                "low_fill_rework": self.low_fill_rework,
+                "low_fill_threshold": self.low_fill_threshold,
+                "candidate_mode": self.candidate_mode,
+            },
             "counts": {
                 "parts_data": (
                     len(self.parts_data) if self.parts_data is not None else 0

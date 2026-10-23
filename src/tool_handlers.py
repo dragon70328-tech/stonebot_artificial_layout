@@ -190,6 +190,20 @@ def _nest_parts(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
     ctx.budget = float(args.get("budget", ctx.budget))
     ctx.quick = bool(args.get("quick", ctx.quick))
     ctx.pairing = bool(args.get("pairing", ctx.pairing))
+    rect_fast = bool(args.get("rect_fast", True))
+    low_fill_rework = bool(args.get("low_fill_rework", False))
+    low_fill_threshold = float(args.get("low_fill_threshold", 0.6))
+    candidate_mode = str(args.get("candidate_mode", "bbox")).casefold()
+    if not 0.0 < low_fill_threshold <= 1.0:
+        raise ValueError("low_fill_threshold must be in (0, 1]")
+    if candidate_mode not in {"bbox", "nfp_lite"}:
+        raise ValueError("candidate_mode must be bbox or nfp_lite")
+    if low_fill_rework and not profile.uses_deepnest:
+        raise ValueError("low_fill_rework requires waterjet or laser")
+    if candidate_mode != "bbox" and not profile.uses_deepnest:
+        raise ValueError("non-bbox candidate_mode requires waterjet or laser")
+    if low_fill_rework and ctx.pairing:
+        raise ValueError("low_fill_rework cannot be combined with pairing")
 
     groups: list[str | None]
     if (
@@ -260,6 +274,16 @@ def _nest_parts(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
         ctx.budget,
         ctx.quick,
         ctx.pairing,
+        beam=bool(args.get("beam", True)),
+        beam_width=(
+            int(args["beam_width"]) if args.get("beam_width") is not None
+            else None
+        ),
+        compress=bool(args.get("compress", True)),
+        rect_fast=rect_fast,
+        low_fill_rework=low_fill_rework,
+        low_fill_threshold=low_fill_threshold,
+        candidate_mode=candidate_mode,
     )
     ctx.nesting_outcome = outcome
     ctx.result = outcome.result

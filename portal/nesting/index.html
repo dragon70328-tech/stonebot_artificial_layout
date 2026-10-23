@@ -664,9 +664,24 @@
             <label class="field">刀厚 / 有效刀缝 (mm)
               <input id="param-kerf" type="number" min="0" step="0.1" value="5">
             </label>
+            <label class="field">低填充阈值 (0~1)
+              <input id="param-low-fill-threshold" type="number" min="0.05" max="1" step="0.05" value="0.6" disabled>
+            </label>
             <label class="checkbox-field">
               <input id="param-oversize-enabled" type="checkbox">
               利用让尺
+            </label>
+            <label class="checkbox-field">
+              <input id="param-rect-fast" type="checkbox" checked>
+              桥切矩形快通道
+            </label>
+            <label class="checkbox-field">
+              <input id="param-low-fill-rework" type="checkbox">
+              水刀/激光低填充重排
+            </label>
+            <label class="checkbox-field">
+              <input id="param-nfp-lite" type="checkbox">
+              水刀/激光凹槽接触候选
             </label>
           </div>
           <div id="derived-size" class="derived-size">实际可用尺寸：3200 × 1800 mm</div>
@@ -755,6 +770,10 @@
       oversizeWidth: document.getElementById("param-oversize-width"),
       oversizeHeight: document.getElementById("param-oversize-height"),
       kerf: document.getElementById("param-kerf"),
+      lowFillRework: document.getElementById("param-low-fill-rework"),
+      lowFillThreshold: document.getElementById("param-low-fill-threshold"),
+      rectFast: document.getElementById("param-rect-fast"),
+      nfpLite: document.getElementById("param-nfp-lite"),
       derivedSize: document.getElementById("derived-size"),
     };
 
@@ -768,6 +787,15 @@
       parameterEls.oversizeMode.disabled = !oversizeEnabled;
       parameterEls.oversizeWidth.disabled = !oversizeEnabled;
       parameterEls.oversizeHeight.disabled = !oversizeEnabled;
+      const isBridge = parameterEls.process.value === "bridge";
+      parameterEls.rectFast.disabled = !isBridge;
+      parameterEls.lowFillRework.disabled = isBridge;
+      parameterEls.nfpLite.disabled = isBridge;
+      parameterEls.lowFillThreshold.disabled = (
+        isBridge || !parameterEls.lowFillRework.checked
+      );
+      if (isBridge) parameterEls.lowFillRework.checked = false;
+      if (isBridge) parameterEls.nfpLite.checked = false;
 
       const dimensions = ui.effectiveSheetDimensions({
         usableWidth: parameterNumber(parameterEls.usableWidth),
@@ -794,6 +822,12 @@
       const oversizeWidth = parameterNumber(parameterEls.oversizeWidth);
       const oversizeHeight = parameterNumber(parameterEls.oversizeHeight);
       const kerf = parameterNumber(parameterEls.kerf);
+      const lowFillRework = (
+        process !== "bridge" && parameterEls.lowFillRework.checked
+      );
+      const lowFillThreshold = parameterNumber(
+        parameterEls.lowFillThreshold, 0.6,
+      );
 
       const validationErrors = ui.validateNestingParameters({
         process,
@@ -806,6 +840,8 @@
         oversizeWidth,
         oversizeHeight,
         kerf,
+        lowFillRework,
+        lowFillThreshold,
       });
       if (validationErrors.length) throw new Error(validationErrors[0]);
 
@@ -824,7 +860,13 @@
         profile: process === "waterjet" ? "waterjet" : process === "laser" ? "laser" : "min_sheets",
         rotation_degrees: process === "bridge" ? [0, 90, 180, 270] : null,
         allow_shared_edge: true,
-        pairing: process !== "bridge",
+        ...ui.optimizerParameters({
+          process,
+          rectFast: parameterEls.rectFast.checked,
+          lowFillRework,
+          lowFillThreshold,
+          nfpLite: parameterEls.nfpLite.checked,
+        }),
         skip_unnumbered: true,
       };
     }

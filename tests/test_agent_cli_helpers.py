@@ -43,10 +43,22 @@ def test_plan_after_numbering_confirmation_starts_nesting():
         budget=0,
         quick=True,
         pairing=False,
+        beam=True,
+        beam_width=250,
+        compress=True,
+        rect_fast=False,
+        low_fill_rework=True,
+        low_fill_threshold=0.45,
+        candidate_mode="nfp_lite",
     )
 
     assert [call.tool for call in plan] == ["confirm_numbering", "nest_parts"]
     assert plan[1].arguments["sheet_width"] == 3200
+    assert plan[1].arguments["beam_width"] == 250
+    assert plan[1].arguments["rect_fast"] is False
+    assert plan[1].arguments["low_fill_rework"] is True
+    assert plan[1].arguments["low_fill_threshold"] == 0.45
+    assert plan[1].arguments["candidate_mode"] == "nfp_lite"
 
 
 def test_plan_after_sheet_confirmation_runs_postprocess():

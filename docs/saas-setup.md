@@ -24,7 +24,7 @@
 | 多租户 | `src/tenant_store.py` + API Key（`X-API-Key` / `X-Tenant-Id`） |
 | 前端 | 静态门户 `portal/`，由 API 直接挂载：`/` 识图排板、`/admin` 模型运维 |
 | 部署 | `Dockerfile` + `docker-compose.yml`（api + worker 两个服务） |
-| CI | GitHub Actions 跑 `python -X utf8 -m pytest -q -m "not slow"` |
+| CI | GitHub Actions 跑 Python 快测、前端逻辑测试与快速 benchmark |
 
 ---
 
@@ -44,7 +44,7 @@ python -m venv .venv
 | 文件 | 作用 |
 |---|---|
 | `requirements.txt` | **允许的版本区间**（人工维护的唯一来源） |
-| `requirements.lock.txt` | **实测版本快照**（2026-10-13 在 `.venv` 冻结；该组合下 `pytest -q -m "not slow"` = 443 passed）。CI 与部署建议用它锁定 |
+| `requirements.lock.txt` | **实测版本快照**（2026-10-13 在 `.venv` 冻结）。CI 与部署建议用它锁定 |
 | `requirements-dev.txt` | `-r requirements.lock.txt` + `pytest` + `httpx`（测试/开发用） |
 
 历史说明：2026-10-13 之前本项目**一直直接用系统 Python**

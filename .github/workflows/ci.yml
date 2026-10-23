@@ -29,6 +29,14 @@ jobs:
       - name: Run fast unit tests
         run: python -X utf8 -m pytest -q -m "not slow"
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run frontend logic tests
+        run: node tests/frontend_ui.test.cjs
+
       - name: Run golden benchmark (fast subset)
         run: python -X utf8 scripts/benchmark.py --json benchmark_report.json
 

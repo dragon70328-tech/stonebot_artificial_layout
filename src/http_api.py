@@ -86,6 +86,13 @@ JOB_PARAMETER_KEYS = {
     "allow_shared_edge",
     "process",
     "profile",
+    "beam",
+    "beam_width",
+    "compress",
+    "rect_fast",
+    "low_fill_rework",
+    "low_fill_threshold",
+    "candidate_mode",
     "pairing",
     "skip_unnumbered",
 }
@@ -127,6 +134,13 @@ class JobCreateRequest(BaseModel):
     budget: float = 0.0
     quick: bool = True
     pairing: bool = False
+    beam: bool = True
+    beam_width: int | None = Field(default=None, ge=1)
+    compress: bool = True
+    rect_fast: bool = True
+    low_fill_rework: bool = False
+    low_fill_threshold: float = Field(default=0.6, gt=0, le=1)
+    candidate_mode: Literal["bbox", "nfp_lite"] = "bbox"
     skip_unnumbered: bool = True
     project_id: str | None = None
 
@@ -138,6 +152,21 @@ class JobCreateRequest(BaseModel):
     def validate_process_parameters(self) -> "JobCreateRequest":
         if self.process == "bridge" and self.kerf_mm <= 0:
             raise ValueError("bridge process requires kerf_mm > 0")
+        if self.low_fill_rework and self.process not in {"waterjet", "laser"}:
+            raise ValueError(
+                "low_fill_rework requires process=waterjet or process=laser"
+            )
+        if (
+            self.candidate_mode != "bbox"
+            and self.process not in {"waterjet", "laser"}
+        ):
+            raise ValueError(
+                "candidate_mode=nfp_lite requires process=waterjet or laser"
+            )
+        if self.low_fill_rework and self.pairing:
+            raise ValueError(
+                "low_fill_rework cannot be combined with pairing"
+            )
         return self
 
 
@@ -453,6 +482,13 @@ class JobManager:
             quick=request.quick,
             pairing=request.pairing,
             skip_unnumbered=request.skip_unnumbered,
+            beam=request.beam,
+            beam_width=request.beam_width,
+            compress=request.compress,
+            rect_fast=request.rect_fast,
+            low_fill_rework=request.low_fill_rework,
+            low_fill_threshold=request.low_fill_threshold,
+            candidate_mode=request.candidate_mode,
             object_store=self.object_store,
             artifact_object_prefix=f"jobs/{job_id}/artifacts",
             session_store=self._session_store_for(request),
@@ -1193,6 +1229,19 @@ def respond_to_conversation(
                 budget=float(intent.get("budget", 0.0)),
                 quick=bool(intent.get("quick", True)),
                 pairing=bool(intent.get("pairing", False)),
+                beam=bool(intent.get("beam", True)),
+                beam_width=(
+                    int(intent["beam_width"])
+                    if intent.get("beam_width") is not None
+                    else None
+                ),
+                compress=bool(intent.get("compress", True)),
+                rect_fast=bool(intent.get("rect_fast", True)),
+                low_fill_rework=bool(intent.get("low_fill_rework", False)),
+                low_fill_threshold=float(
+                    intent.get("low_fill_threshold", 0.6)
+                ),
+                candidate_mode=str(intent.get("candidate_mode", "bbox")),
                 skip_unnumbered=bool(intent.get("skip_unnumbered", True)),
             )
             runtime = manager.create(request, run_in_background=True)

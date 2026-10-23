@@ -104,14 +104,14 @@ def parse_args():
     p.add_argument("--no-beam", action="store_true",
                    help="关闭逐板最佳填充束搜索，只用多轮贪心配置")
     p.add_argument("--beam-width", type=int, default=None,
-                   help="束搜索每层保留的布局数（默认 full=1000 / quick=400）")
+                   help="束搜索每层保留的布局数（默认 1000；quick 也不降低该值）")
     p.add_argument("--beam-budget", type=float, default=None,
                    help="束搜索时间上限（秒）；0=不限（质量优先）；"
                         "不给则沿用 --budget")
     p.add_argument("--pattern-reuse", type=int, default=4,
                    help="板型复用上限（同配方最多复制几张，含原板；1=关闭）")
     p.add_argument("--parallel-workers", type=int, default=1,
-                   help="并行进程数：按材料分组并行，同材料超 800 件再分层切批"
+                   help="并行进程数：按材料分组并行，同材料超 500 件再分层切批"
                         "并做尾部合并（1=关闭）")
     p.add_argument("--imperial", action="store_true",
                    help="英制模式（默认公制）")
@@ -145,6 +145,15 @@ def parse_args():
                    help="禁止所有旋转，规格板保持原始角度")
     p.add_argument("--pairing", action="store_true",
                    help="启用相同形状 180° 共边配对预排（可选增强）")
+    p.add_argument("--low-fill-rework", action="store_true",
+                   help="水刀/激光（非配对模式）：启用有界低填充板联合重排；"
+                        "只接受板数减少的完整结果")
+    p.add_argument("--low-fill-threshold", type=float, default=0.6,
+                   help="低填充板阈值（0~1，默认 0.6），配合 --low-fill-rework")
+    p.add_argument("--candidate-mode", type=str, default="bbox",
+                   choices=["bbox", "nfp_lite"],
+                   help="水刀/激光候选位置：bbox=包围盒边缘（默认）；"
+                        "nfp_lite=增加轮廓顶点接触候选，可进入凹槽")
     p.add_argument("--min-gap", type=float, default=None,
                    help="最小切割间距 mm")
     p.add_argument("--group", type=str, default=None,
@@ -163,6 +172,8 @@ def parse_args():
     p.add_argument("--no-compress", action="store_true",
                    help="关闭多板联合重排压缩（默认开启：把 k 张最低填充板"
                         "联合重排进 k-1 张，是压缩板数的显式通道）")
+    p.add_argument("--no-rect-fast", action="store_true",
+                   help="关闭桥切矩形快通道，强制使用通用贪心/束搜索引擎")
     p.add_argument("--cold-start", action="store_true",
                    help="冷启动：忽略模板/已验证案例/审图缓存，仅用原始 DXF + 配置")
     p.add_argument("--review-budget", type=float, default=0.0,
@@ -760,6 +771,10 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         pattern_reuse: int = 4,
         parallel_workers: int = 1,
         compress: bool = True,
+        rect_fast: bool = True,
+        low_fill_rework: bool = False,
+        low_fill_threshold: float = 0.6,
+        candidate_mode: str = "bbox",
         material_filter: list[str] | None = None) -> None:
     """核心排板流程
 
@@ -769,6 +784,12 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     """
     if profile is None:
         profile = PROFILE_MIN_SHEETS
+    if not 0.0 < low_fill_threshold <= 1.0:
+        raise ValueError("low_fill_threshold 必须在 (0, 1] 范围内")
+    if low_fill_rework and not profile.uses_deepnest:
+        raise ValueError("low_fill_rework 只适用于水刀/激光加工")
+    if candidate_mode != "bbox" and not profile.uses_deepnest:
+        raise ValueError("非 bbox 候选模式只适用于水刀/激光加工")
 
     if cold_start:
         use_template = False
@@ -1015,6 +1036,9 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
             pattern_reuse=pattern_reuse,
             stats=optimizer_stats,
             compress=compress,
+            rect_fast=rect_fast,
+            low_fill_rework=low_fill_rework,
+            low_fill_threshold=low_fill_threshold,
             workers=parallel_workers,
         )
     if nesting is None:
@@ -1028,6 +1052,9 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
             pattern_reuse=pattern_reuse,
             stats=optimizer_stats,
             compress=compress,
+            rect_fast=rect_fast,
+            low_fill_rework=low_fill_rework,
+            low_fill_threshold=low_fill_threshold,
         )
     result = nesting.result
     print(f"布局来源: 模板 {layout_source}" if template_result
@@ -1467,6 +1494,9 @@ def main():
     layers = args.layers.split(",") if args.layers else None
     exclude_layers = args.exclude_layers.split(",") if args.exclude_layers else None
     unit = UnitSystem.IMPERIAL if args.imperial else UnitSystem.METRIC
+    if not 0.0 < args.low_fill_threshold <= 1.0:
+        print("错误：--low-fill-threshold 必须在 (0, 1] 范围内")
+        sys.exit(1)
 
     trials = args.trials
     budget = args.budget
@@ -1512,6 +1542,15 @@ def main():
 
     if overrides:
         profile = profile.with_overrides(**overrides)
+    if args.low_fill_rework and not profile.uses_deepnest:
+        print("错误：--low-fill-rework 只适用于水刀/激光加工")
+        sys.exit(1)
+    if args.candidate_mode != "bbox" and not profile.uses_deepnest:
+        print("错误：非 bbox 候选模式只适用于水刀/激光加工")
+        sys.exit(1)
+    if args.low_fill_rework and args.pairing:
+        print("错误：--low-fill-rework 暂不与 --pairing 组合使用")
+        sys.exit(1)
 
     raw_oversize = parse_sheet_oversize(args.sheet_oversize)
     sheet_oversize = (
@@ -1535,6 +1574,13 @@ def main():
                 quick=quick,
                 pairing=args.pairing,
                 skip_unnumbered=not args.include_unnumbered,
+                beam=not args.no_beam,
+                beam_width=args.beam_width,
+                compress=not args.no_compress,
+                rect_fast=not args.no_rect_fast,
+                low_fill_rework=args.low_fill_rework,
+                low_fill_threshold=args.low_fill_threshold,
+                candidate_mode=args.candidate_mode,
             )
         )
 
@@ -1565,6 +1611,10 @@ def main():
         pattern_reuse=args.pattern_reuse,
         parallel_workers=args.parallel_workers,
         compress=not args.no_compress,
+        rect_fast=not args.no_rect_fast,
+        low_fill_rework=args.low_fill_rework,
+        low_fill_threshold=args.low_fill_threshold,
+        candidate_mode=args.candidate_mode,
         material_filter=parse_material_filter(args.material),
     )
     if args.check_only:

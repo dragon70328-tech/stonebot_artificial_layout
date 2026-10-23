@@ -163,6 +163,10 @@ def run_nesting_case(case: dict[str, Any], dxf_path: Path) -> dict[str, Any]:
         quick=bool(case.get("quick", True)),
         kerf_mm=kerf_mm,
         sheet_oversize=sheet_oversize,
+        rect_fast=bool(case.get("rect_fast", True)),
+        low_fill_rework=bool(case.get("low_fill_rework", False)),
+        low_fill_threshold=float(case.get("low_fill_threshold", 0.6)),
+        candidate_mode=str(case.get("candidate_mode", "bbox")),
         auto_review=False,
         cold_start=True,
     )

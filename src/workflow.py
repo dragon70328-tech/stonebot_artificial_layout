@@ -561,7 +561,9 @@ def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
                     effective_thickness, unit, profile, drawing_profile,
                     trials, seed, budget, quick, pairing=False,
                     beam=True, beam_width=None, stats=None, compress=True,
-                    beam_budget=None, pattern_reuse=4):
+                    beam_budget=None, pattern_reuse=4,
+                    rect_fast=True, low_fill_rework=False,
+                    low_fill_threshold=0.6, candidate_mode="bbox"):
     """Nest one material group and return result plus group stats."""
     normal_parts = []
     special_parts = []
@@ -620,6 +622,11 @@ def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
             if group_parts else 0
         )
         if profile.uses_deepnest:
+            if pairing and low_fill_rework:
+                raise ValueError(
+                    "--low-fill-rework 暂不与 --pairing 组合使用；"
+                    "配对单元重排尚未实现"
+                )
             if pairing:
                 results.append(nest_parts_deepnest_paired(
                     group_parts, width_mm, height_mm, effective_thickness,
@@ -636,7 +643,15 @@ def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
                     arbitrary_rotation=profile.arbitrary_rotation,
                     first_part_left_edge=first_left,
                     rotation_step=15.0 if quick else 5.0,
-                    configs=QUICK_CONFIGS if quick else None))
+                    # 普通 quick 保持单套边对齐基线（~11s），不直接复用
+                    # bridge 的昂贵 col 配置。打开低填充重排时则使用 4 套
+                    # 配置先构造更可压缩的 54 张布局，再进入子集重排。
+                    configs=(QUICK_CONFIGS if quick and low_fill_rework
+                             else None),
+                    low_fill_rework=low_fill_rework,
+                    low_fill_threshold=low_fill_threshold,
+                    candidate_mode=candidate_mode,
+                    stats=stats))
         else:
             results.append(nest_parts(
                 group_parts, width_mm, height_mm, effective_thickness,
@@ -654,6 +669,7 @@ def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
                 compress=compress,
                 beam_budget=beam_budget,
                 pattern_reuse=pattern_reuse,
+                rect_fast=rect_fast,
                 configs=QUICK_CONFIGS if quick else None))
     if special_parts:
         results.append(nest_special_parts(
@@ -696,7 +712,9 @@ def nest_groups(parts, groups, width_mm, height_mm, special_w, special_h,
                 effective_thickness, unit, profile, drawing_profile,
                 trials, seed, budget, quick, pairing=False,
                 beam=True, beam_width=None, stats=None,
-                compress=True, beam_budget=None, pattern_reuse=4) -> GroupNestingOutcome:
+                compress=True, beam_budget=None, pattern_reuse=4,
+                rect_fast=True, low_fill_rework=False,
+                low_fill_threshold=0.6, candidate_mode="bbox") -> GroupNestingOutcome:
     """Nest every material group and combine into a single NestingResult."""
     t0 = time.time()
     group_results = []
@@ -719,7 +737,10 @@ def nest_groups(parts, groups, width_mm, height_mm, special_w, special_h,
                 trials, seed, budget, quick, pairing,
                 beam=beam, beam_width=beam_width, stats=stats,
                 compress=compress, beam_budget=beam_budget,
-                pattern_reuse=pattern_reuse,
+                pattern_reuse=pattern_reuse, rect_fast=rect_fast,
+                low_fill_rework=low_fill_rework,
+                low_fill_threshold=low_fill_threshold,
+                candidate_mode=candidate_mode,
             )
         )
         group_results.append(group_result)
@@ -759,6 +780,8 @@ def nest_groups_parallel(parts, groups, width_mm, height_mm,
                          profile, drawing_profile, trials, seed, budget, quick,
                          pairing=False, beam=True, beam_width=None, stats=None,
                          compress=True, beam_budget=None, pattern_reuse=4,
+                         rect_fast=True, low_fill_rework=False,
+                         low_fill_threshold=0.6, candidate_mode="bbox",
                          workers=4, batch_threshold=500):
     """并行排板：按材料分组并行；同材料超过阈值再分层切批 + 尾部合并。"""
     t0 = time.time()
@@ -796,6 +819,7 @@ def nest_groups_parallel(parts, groups, width_mm, height_mm,
         compress=compress,
         beam_budget=beam_budget,
         pattern_reuse=pattern_reuse,
+        rect_fast=rect_fast,
     )
     if quick:
         base_kwargs["configs"] = QUICK_CONFIGS

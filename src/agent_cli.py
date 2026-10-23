@@ -92,6 +92,13 @@ def plan_after_confirmation(
     budget: float,
     quick: bool,
     pairing: bool,
+    beam: bool = True,
+    beam_width: int | None = None,
+    compress: bool = True,
+    rect_fast: bool = True,
+    low_fill_rework: bool = False,
+    low_fill_threshold: float = 0.6,
+    candidate_mode: str = "bbox",
 ) -> list[ToolCall]:
     if stage == WorkflowStage.AUDITED.value:
         return [
@@ -107,6 +114,13 @@ def plan_after_confirmation(
                     "budget": budget,
                     "quick": quick,
                     "pairing": pairing,
+                    "beam": beam,
+                    "beam_width": beam_width,
+                    "compress": compress,
+                    "rect_fast": rect_fast,
+                    "low_fill_rework": low_fill_rework,
+                    "low_fill_threshold": low_fill_threshold,
+                    "candidate_mode": candidate_mode,
                 },
             ),
         ]
@@ -135,6 +149,13 @@ def run_agent_mode(
     quick: bool,
     pairing: bool,
     skip_unnumbered: bool,
+    beam: bool = True,
+    beam_width: int | None = None,
+    compress: bool = True,
+    rect_fast: bool = True,
+    low_fill_rework: bool = False,
+    low_fill_threshold: float = 0.6,
+    candidate_mode: str = "bbox",
 ) -> int:
     from src.agent_runtime import AgentRuntime
 
@@ -154,6 +175,13 @@ def run_agent_mode(
             quick=quick,
             pairing=pairing,
             skip_unnumbered=skip_unnumbered,
+            beam=beam,
+            beam_width=beam_width,
+            compress=compress,
+            rect_fast=rect_fast,
+            low_fill_rework=low_fill_rework,
+            low_fill_threshold=low_fill_threshold,
+            candidate_mode=candidate_mode,
             output_dir=output_dir,
         )
     except (LLMError, ValueError) as exc:

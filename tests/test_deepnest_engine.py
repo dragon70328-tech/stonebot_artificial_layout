@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from shapely.geometry import box
+from shapely.geometry import Polygon, box
 
 from src.models import Part
 from src.deepnest_engine import (
@@ -24,6 +24,19 @@ def make_part(number: str, width: float, height: float) -> Part:
         original_number=number,
         area=poly.area,
         label_position=(width / 2.0, height / 2.0),
+    )
+
+
+def make_polygon_part(number: str, poly: Polygon) -> Part:
+    return Part(
+        id=abs(hash(number)) % 1_000_000,
+        number=number,
+        polygon=poly,
+        outer_polygon=poly,
+        holes=[],
+        original_number=number,
+        area=poly.area,
+        label_position=(poly.centroid.x, poly.centroid.y),
     )
 
 
@@ -211,3 +224,121 @@ def test_low_fill_rework_respects_explicit_disable():
     signature = inspect.signature(nest_parts_deepnest)
     assert signature.parameters["low_fill_rework"].default is False
     assert signature.parameters["angle_mode"].default == "edge"
+
+
+def test_deepnest_configs_drive_search_without_losing_parts():
+    parts = [
+        make_part("wide", 700.0, 300.0),
+        make_part("tall", 300.0, 700.0),
+        make_part("small", 250.0, 250.0),
+    ]
+    configs = [
+        ("short", "skyline", 2, "sorted", False),
+        ("long", "col", 3, "legacy", False),
+    ]
+    stats = {}
+
+    result = nest_parts_deepnest(
+        parts,
+        1000.0,
+        1000.0,
+        20.0,
+        configs=configs,
+        improve_budget=0.0,
+        stats=stats,
+        rotations=(0, 90, 180, 270),
+        arbitrary_rotation=False,
+    )
+
+    assert result.total_parts == len(parts)
+    assert sum(len(sheet.parts) for sheet in result.sheets) == len(parts)
+    assert validate_nesting(result, 1000.0, 1000.0) == []
+    assert stats["deepnest_search_configs"] == 2
+    assert stats["deepnest_candidate_mode"] == "bbox"
+
+
+def test_low_fill_rework_repacks_bad_subset_and_keeps_all_parts():
+    from src.deepnest_engine import _Placement, _improve_low_fill_sheets
+
+    parts = [make_part(f"P{i}", 400.0, 400.0) for i in range(6)]
+    sheets_pl = [
+        [
+            _Placement(parts[0], 0.0, box(0.0, 0.0, 400.0, 400.0)),
+            _Placement(parts[1], 0.0, box(500.0, 0.0, 900.0, 400.0)),
+        ],
+        [
+            _Placement(parts[2], 0.0, box(0.0, 0.0, 400.0, 400.0)),
+            _Placement(parts[3], 0.0, box(500.0, 0.0, 900.0, 400.0)),
+        ],
+        [
+            _Placement(parts[4], 0.0, box(0.0, 0.0, 400.0, 400.0)),
+            _Placement(parts[5], 0.0, box(500.0, 0.0, 900.0, 400.0)),
+        ],
+    ]
+
+    stats = {}
+    improved = _improve_low_fill_sheets(
+        sheets_pl,
+        1000.0,
+        1000.0,
+        {},
+        (0, 90, 180, 270),
+        False,
+        None,
+        threshold=0.6,
+        seed=0,
+        configs=[
+            ("area", "bottom_left", 0, "legacy", False),
+            ("short", "skyline", 0, "sorted", False),
+        ],
+        improve_budget=0.0,
+        stats=stats,
+    )
+
+    assert len(improved) == 2
+    assert sum(len(sheet) for sheet in improved) == len(parts)
+    assert stats["deepnest_low_fill_accepted_rounds"] >= 1
+
+
+def test_nfp_lite_places_rectangle_inside_u_shaped_notch():
+    u_shape = make_polygon_part(
+        "U",
+        Polygon([
+            (0.0, 0.0),
+            (800.0, 0.0),
+            (800.0, 800.0),
+            (500.0, 800.0),
+            (500.0, 200.0),
+            (300.0, 200.0),
+            (300.0, 800.0),
+            (0.0, 800.0),
+        ]),
+    )
+    insert = make_part("insert", 200.0, 600.0)
+    kwargs = dict(
+        rotations=(0,),
+        arbitrary_rotation=False,
+        trials=1,
+        seed=0,
+    )
+
+    baseline = nest_parts_deepnest(
+        [u_shape, insert],
+        800.0,
+        800.0,
+        20.0,
+        candidate_mode="bbox",
+        **kwargs,
+    )
+    nfp_lite = nest_parts_deepnest(
+        [u_shape, insert],
+        800.0,
+        800.0,
+        20.0,
+        candidate_mode="nfp_lite",
+        **kwargs,
+    )
+
+    assert baseline.total_sheets == 2
+    assert nfp_lite.total_sheets == 1
+    assert validate_nesting(nfp_lite, 800.0, 800.0) == []

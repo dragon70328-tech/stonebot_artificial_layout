@@ -228,6 +228,10 @@ def test_structured_parameters_create_job_without_llm(tmp_path, monkeypatch):
                 "usable_height_mm": 1800,
                 "process": "bridge",
                 "kerf_mm": 5,
+                "beam": True,
+                "beam_width": 250,
+                "compress": False,
+                "rect_fast": False,
             },
         },
     )
@@ -239,6 +243,10 @@ def test_structured_parameters_create_job_without_llm(tmp_path, monkeypatch):
     assert manager.created[0].dxf_path == "C:/uploads/structured.dxf"
     assert manager.created[0].process == "bridge"
     assert manager.created[0].kerf_mm == 5
+    assert manager.created[0].beam_width == 250
+    assert manager.created[0].compress is False
+    assert manager.created[0].rect_fast is False
+    assert manager.created[0].candidate_mode == "bbox"
 
 
 def test_respond_create_job_prefers_intent_dxf_path(tmp_path, monkeypatch):

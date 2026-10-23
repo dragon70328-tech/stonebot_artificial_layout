@@ -173,6 +173,52 @@ test("validateNestingParameters requires bridge kerf and positive sheets", () =>
   );
 });
 
+test("optimizerParameters maps process-specific controls without conflicts", () => {
+  const bridge = ui.optimizerParameters({
+    process: "bridge",
+    rectFast: true,
+    lowFillRework: true,
+    lowFillThreshold: 0.5,
+  });
+  assert.equal(bridge.rect_fast, true);
+  assert.equal(bridge.compress, true);
+  assert.equal(bridge.low_fill_rework, false);
+  assert.equal(bridge.pairing, false);
+  assert.equal(bridge.candidate_mode, "bbox");
+
+  const waterjet = ui.optimizerParameters({
+    process: "waterjet",
+    rectFast: true,
+    lowFillRework: true,
+    lowFillThreshold: 0.45,
+    nfpLite: true,
+  });
+  assert.equal(waterjet.rect_fast, false);
+  assert.equal(waterjet.compress, false);
+  assert.equal(waterjet.low_fill_rework, true);
+  assert.equal(waterjet.low_fill_threshold, 0.45);
+  assert.equal(waterjet.pairing, false);
+  assert.equal(waterjet.candidate_mode, "nfp_lite");
+});
+
+test("validateNestingParameters checks low-fill threshold", () => {
+  const valid = {
+    process: "waterjet",
+    width: 3200,
+    height: 1800,
+    thickness: 20,
+    usableWidth: 3200,
+    usableHeight: 1800,
+    lowFillRework: true,
+    lowFillThreshold: 0.6,
+  };
+  assert.deepEqual(ui.validateNestingParameters(valid), []);
+  assert.match(
+    ui.validateNestingParameters({ ...valid, lowFillThreshold: 0 })[0],
+    /低填充阈值/,
+  );
+});
+
 test("artifactLabel exposes numbered DXF and diff revisions", () => {
   assert.equal(ui.artifactLabel("correction_diff_r3"), "纠正差异 v3");
   assert.equal(ui.artifactLabel("numbered_dxf_r2"), "原位DXF v2");

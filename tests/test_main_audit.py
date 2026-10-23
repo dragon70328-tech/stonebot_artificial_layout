@@ -20,6 +20,30 @@ def test_parse_args_audit_flag(monkeypatch):
     assert args.accept_issue == "1,3"
 
 
+def test_parse_args_optimizer_escape_hatches(monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "main.py",
+            "input.dxf",
+            "3200",
+            "1600",
+            "20",
+            "--no-rect-fast",
+            "--low-fill-rework",
+            "--low-fill-threshold",
+            "0.45",
+            "--candidate-mode",
+            "nfp_lite",
+        ],
+    )
+    args = app.parse_args()
+    assert args.no_rect_fast is True
+    assert args.low_fill_rework is True
+    assert args.low_fill_threshold == 0.45
+    assert args.candidate_mode == "nfp_lite"
+
+
 def test_split_issue_ids():
     assert audit_cli.split_issue_ids("1,3, 5") == ["1", "3", "5"]
     assert audit_cli.split_issue_ids(None) == []
