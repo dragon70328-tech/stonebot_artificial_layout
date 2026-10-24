@@ -10,6 +10,12 @@ SaaS 化人造石加工规划系统围绕五个支柱建设：项目架构约束
 调度循环、边界。AI 只生成结构化意图和配置，不直接执行生产代码；真实执行由可信
 Python 工具完成，工作流状态机统一调度。详见 `docs/saas-architecture-goal.md`。
 
+**2026-10-24 产品方向调整：** 主产品形态改为本地、模型无关的 MCP 插件。Codex、DeepSeek
+Harness 或其他支持工具调用的客户端负责对话、模型选择和 token 计费；本仓库提供确定性 DXF
+读图、材料确认、排板、工艺校验和文件生成。`portal/`、多租户 SaaS、HTTP API 和任务队列保留为
+兼容/批处理能力，不再作为前端产品的默认开发方向。详见
+`docs/plugin-first-architecture.md`。MCP 入口位于 `plugins/stonebot/`。
+
 当前读图范围仅 DXF 一种格式；DWG 转换与 PDF/手绘草图读图均已放弃
 （2026-08-19 范围调整，相关代码归档于 `_archive/legacy/intake_dwg_pdf/`）。
 
