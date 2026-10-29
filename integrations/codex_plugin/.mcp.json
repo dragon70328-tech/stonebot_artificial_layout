@@ -1,0 +1,44 @@
+{
+  "mcpServers": {
+    "stonebot": {
+      "command": "python",
+      "args": [
+        "-X",
+        "utf8",
+        ".\\scripts\\launch_mcp.py"
+      ],
+      "cwd": ".",
+      "env_vars": [
+        "STONEBOT_MCP_DATA_ROOT",
+        "STONEBOT_PYTHON",
+        "STONEBOT_TOOL_PROFILE",
+        "STONEBOT_LOG_LEVEL"
+      ],
+      "startup_timeout_sec": 20,
+      "tool_timeout_sec": 3600,
+      "tools": {
+        "stonebot_confirm_drawing": {
+          "approval_mode": "prompt"
+        },
+        "stonebot_confirm_nesting": {
+          "approval_mode": "prompt"
+        },
+        "stonebot_finalize_job": {
+          "approval_mode": "prompt"
+        },
+        "stonebot_export_word_report": {
+          "approval_mode": "prompt"
+        },
+        "stonebot_accept_profile_patch": {
+          "approval_mode": "prompt"
+        },
+        "stonebot_rollback_profile_override": {
+          "approval_mode": "prompt"
+        },
+        "stonebot_cancel_job": {
+          "approval_mode": "prompt"
+        }
+      }
+    }
+  }
+}

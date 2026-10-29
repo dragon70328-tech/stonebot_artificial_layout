@@ -34,6 +34,8 @@ class JobContext:
 
     fingerprint: dict[str, Any] | None = None
     drawing_profile: Any | None = None
+    drawing_profile_override: dict[str, Any] | None = None
+    drawing_profile_source: str | None = None
     parts_data: list[dict[str, Any]] | None = None
     parts: list[Any] | None = None
     closed_entities: list[dict[str, Any]] = field(default_factory=list)
@@ -107,6 +109,7 @@ class JobContext:
                 if self.drawing_profile is not None
                 else None
             ),
+            "profile_source": self.drawing_profile_source,
             "nesting_profile": (
                 {
                     "processing_class": self.nesting_profile.processing_class,

@@ -15,7 +15,12 @@ from typing import Any
 from src.constraints import PROFILE_MIN_SHEETS
 from src.correction_contracts import CorrectionPlan
 from src.drawing_corrections import apply_correction_plan
-from src.drawing_profile import analyze_drawing, audit_drawing, read_dxf_with_profile
+from src.drawing_profile import (
+    DrawingProfile,
+    analyze_drawing,
+    audit_drawing,
+    read_dxf_with_profile,
+)
 from src.dxf_reader import extract_closed_entity_candidates, read_dxf
 from src.dxf_writer import write_nested_dxf, write_numbered_parts_dxf
 from src.job_context import JobContext
@@ -58,14 +63,28 @@ def _analyze_drawing(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
 
 def _match_profile(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
     path = _set_input_path(ctx, args)
-    ctx.drawing_profile = resolve_drawing_profile(
-        path, use_case_library=ctx.use_case_library
-    )
+    if ctx.drawing_profile_override is not None:
+        ctx.drawing_profile = DrawingProfile.from_dict(
+            ctx.drawing_profile_override
+        )
+        ctx.drawing_profile_source = (
+            ctx.drawing_profile_source or "project_override"
+        )
+    else:
+        ctx.drawing_profile = resolve_drawing_profile(
+            path, use_case_library=ctx.use_case_library
+        )
+        ctx.drawing_profile_source = (
+            "matched_profile"
+            if ctx.drawing_profile is not None
+            else "none"
+        )
     return {
         "matched": ctx.drawing_profile is not None,
         "profile": (
             ctx.drawing_profile.name if ctx.drawing_profile is not None else None
         ),
+        "source": ctx.drawing_profile_source,
     }
 
 
