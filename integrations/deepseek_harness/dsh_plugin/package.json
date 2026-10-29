@@ -1,6 +1,6 @@
 {
   "name": "dsh-stonebot-artificial-stone-layout",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DeepSeek Harness adapter for Stonebot DXF audit and nesting through MCP.",
   "type": "module",
   "main": "lib/index.js",
@@ -44,6 +44,7 @@
   },
   "files": [
     "cordis.patch.yml",
-    "lib"
+    "lib",
+    "locale"
   ]
 }

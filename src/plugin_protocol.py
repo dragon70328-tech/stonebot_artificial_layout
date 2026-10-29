@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 
-PLUGIN_VERSION = "0.2.0"
+PLUGIN_VERSION = "0.2.1"
 SCHEMA_VERSION = "0.1.0"
 MCP_PROTOCOL_VERSION = "2025-06-18"
 
