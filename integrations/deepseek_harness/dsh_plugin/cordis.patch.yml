@@ -1,0 +1,15 @@
+# DSH loads the host's MCP client as a normal Cordis plugin row. The Stonebot
+# launcher remains outside DSH so Python and CAD dependencies can be upgraded
+# independently from the Harness.
+- insert:
+    - id: mcp-stonebot
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: stonebot
+        transport: stdio
+        command: !!js process.env.STONEBOT_PYTHON || "python"
+        args:
+          - "-X"
+          - "utf8"
+          - !!js process.env.STONEBOT_LAUNCHER
+        failOnStartupError: false

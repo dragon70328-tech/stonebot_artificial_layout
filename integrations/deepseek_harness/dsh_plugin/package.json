@@ -1,0 +1,49 @@
+{
+  "name": "dsh-stonebot-artificial-stone-layout",
+  "version": "0.2.0",
+  "description": "DeepSeek Harness adapter for Stonebot DXF audit and nesting through MCP.",
+  "type": "module",
+  "main": "lib/index.js",
+  "private": true,
+  "keywords": [
+    "deepseek",
+    "dsh-plugin",
+    "stonebot",
+    "dxf",
+    "nesting",
+    "mcp"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "compatibility": {
+      "dsh": ">=0.2.0-rc.1 <0.3.0-0"
+    }
+  },
+  "dshhub": {
+    "schemaVersion": 1,
+    "displayName": "StoneBot-Artificial-Stone-Layout",
+    "summary": "Audit DXF drawings and iterate artificial-stone nesting through Stonebot MCP tools.",
+    "categories": [
+      "Manufacturing",
+      "MCP"
+    ],
+    "surfaces": [
+      "host"
+    ],
+    "capabilities": {
+      "provides": [
+        "mcp:stonebot"
+      ]
+    },
+    "compatibility": {
+      "dsh": ">=0.2.0-rc.1 <0.3.0-0",
+      "node": ">=20"
+    }
+  },
+  "files": [
+    "cordis.patch.yml",
+    "lib"
+  ]
+}

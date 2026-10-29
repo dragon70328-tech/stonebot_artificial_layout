@@ -1,0 +1,37 @@
+{
+  "name": "stonebot-artificial-stone-layout",
+  "version": "0.2.0",
+  "description": "Conversational DXF review and nesting through the deterministic Stonebot workflow, with explicit human confirmation gates.",
+  "author": {
+    "name": "Stonebot"
+  },
+  "license": "Proprietary",
+  "keywords": [
+    "dxf",
+    "artificial-stone",
+    "nesting",
+    "drawing-audit",
+    "manufacturing"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "StoneBot-Artificial-Stone-Layout",
+    "shortDescription": "Audit DXF drawings and iterate nesting by conversation",
+    "longDescription": "Stonebot reads local DXF drawings, audits recognized panels and holes, applies structured corrections, nests confirmed parts on manufacturing sheets and validates the result. Final delivery contains only an in-place DXF and a nested DXF in a folder selected by the user. Word reports are generated only on explicit request.",
+    "developerName": "Stonebot",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "审计这张 DXF 图纸并告诉我需要确认的问题",
+      "用桥切机为这张图排板，先报告板数和出材率",
+      "检查当前排板方案并告诉我还能如何优化"
+    ],
+    "brandColor": "#2563EB",
+    "screenshots": []
+  }
+}

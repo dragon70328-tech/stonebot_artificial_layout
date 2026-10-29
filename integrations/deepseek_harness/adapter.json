@@ -1,0 +1,28 @@
+{
+  "adapter_id": "deepseek-stonebot-artificial-stone-layout",
+  "version": "0.2.0",
+  "harness": "deepseek",
+  "transport": "mcp_stdio",
+  "requested_tool_profile": "compact",
+  "server_module": "src.mcp_server",
+  "command": [
+    "python",
+    "-X",
+    "utf8",
+    "-m",
+    "src.mcp_server",
+    "--tool-profile",
+    "compact"
+  ],
+  "working_directory": "../..",
+  "system_prompt": "system_prompt.md",
+  "dsh_local_plugin": "dsh_plugin",
+  "contract_exports": {
+    "contract": "python -X utf8 -m src.agent_contract --profile compact",
+    "openai_tools": "python -X utf8 -m src.agent_contract --profile compact --format openai-tools"
+  },
+  "fallback": {
+    "mode": "service_driven",
+    "gate_tool": "stonebot_advance_until_gate"
+  }
+}
