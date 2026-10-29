@@ -9,6 +9,9 @@ from src.mcp_server import MCPServer, serve_stdio
 from src.plugin_protocol import TOOL_DEFINITIONS
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
 class FakeService:
     def analyze_drawing(self, args):
         return {
@@ -59,6 +62,31 @@ def test_mcp_initialize_and_tool_discovery():
     assert {
         tool["name"] for tool in listed["result"]["tools"]
     } == {tool["name"] for tool in TOOL_DEFINITIONS}
+
+
+def test_dsh_plugin_exposes_localized_product_name():
+    plugin_root = (
+        PROJECT_ROOT
+        / "integrations"
+        / "deepseek_harness"
+        / "dsh_plugin"
+    )
+    manifest = json.loads(
+        (plugin_root / "package.json").read_text(encoding="utf-8")
+    )
+
+    assert manifest["version"] == "0.2.1"
+    assert "locale" in manifest["files"]
+    for language in ("en", "zh"):
+        locale = json.loads(
+            (plugin_root / "locale" / f"{language}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert (
+            locale["meta"]["title"]
+            == "StoneBot-Artificial-Stone-Layout"
+        )
 
 
 def test_mcp_tool_call_returns_text_and_structured_content():
