@@ -37,6 +37,27 @@ def _make_dxf(path):
     doc.saveas(path)
 
 
+def _make_unprofiled_label_rich_dxf(path):
+    doc = ezdxf.new("R2010")
+    doc.layers.add("VC - 预算组")
+    doc.layers.add("FF-TEXT-01")
+    msp = doc.modelspace()
+    msp.add_lwpolyline(
+        [(0, 0), (1000, 0), (1000, 600), (0, 600), (0, 0)],
+        close=True,
+        dxfattribs={"layer": "VC - 预算组"},
+    )
+    msp.add_lwpolyline(
+        [(1200, 0), (1800, 0), (1800, 600), (1200, 600), (1200, 0)],
+        close=True,
+        dxfattribs={"layer": "VC - 预算组"},
+    )
+    for x in (30000, 30500, 31000, 31500):
+        text = msp.add_text("A-1", dxfattribs={"layer": "FF-TEXT-01"})
+        text.set_placement((x, 30000))
+    doc.saveas(path)
+
+
 def _profile():
     return DrawingProfile(
         name="handler_test",
@@ -113,6 +134,43 @@ def test_real_handlers_numbering_confirmation_chain(tmp_path):
     assert assigned["parts"] == 2
     assert numbered["parts"] == 2
     assert numbered_path.exists()
+
+
+def test_real_handlers_block_automatic_numbering_without_profile(tmp_path):
+    dxf_path = tmp_path / "label-rich-unprofiled.dxf"
+    _make_unprofiled_label_rich_dxf(dxf_path)
+    context = JobContext(
+        dxf_path=str(dxf_path),
+        nesting_profile=app.PROFILES["quick"],
+        skip_unnumbered=False,
+    )
+    handlers = build_tool_handlers(context)
+
+    handlers["analyze_drawing"]({"path": str(dxf_path)})
+    handlers["read_dxf"]({"path": str(dxf_path)})
+
+    with pytest.raises(ValueError, match="automatic numbering blocked"):
+        handlers["assign_numbers"](
+            {"path": str(dxf_path), "skip_unnumbered": False}
+        )
+    assert not context.parts
+
+
+def test_real_handlers_report_zero_matched_parts_before_dxf_write(tmp_path):
+    dxf_path = tmp_path / "label-rich-unprofiled-default.dxf"
+    _make_unprofiled_label_rich_dxf(dxf_path)
+    context = JobContext(
+        dxf_path=str(dxf_path),
+        nesting_profile=app.PROFILES["quick"],
+    )
+    handlers = build_tool_handlers(context)
+
+    handlers["analyze_drawing"]({"path": str(dxf_path)})
+    handlers["read_dxf"]({"path": str(dxf_path)})
+
+    with pytest.raises(ValueError, match="numbering blocked: 0 panels"):
+        handlers["assign_numbers"]({"path": str(dxf_path)})
+    assert not context.parts
 
 
 def test_real_handlers_nest_postprocess_write_chain(tmp_path):

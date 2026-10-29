@@ -229,7 +229,14 @@ class MCPServer:
         # redirected to stderr while an invocation is in progress.
         with redirect_stdout(sys.stderr):
             payload = handler(arguments)
-        return tool_result(payload)
+        is_error = (
+            isinstance(payload, dict)
+            and (
+                payload.get("ok") is False
+                or payload.get("blocked") is True
+            )
+        )
+        return tool_result(payload, is_error=is_error)
 
     def _list_resources(self, _params: dict[str, Any]) -> dict[str, Any]:
         jobs = self.service.list_jobs({}).get("jobs", [])

@@ -132,14 +132,51 @@ def _audit_drawing(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
     return {"issues": len(ctx.audit_issues)}
 
 
+def _text_entity_count(ctx: JobContext) -> int:
+    counts = (ctx.fingerprint or {}).get("entity_counts", {})
+    return sum(
+        int(counts.get(entity_type, 0) or 0)
+        for entity_type in ("TEXT", "MTEXT")
+    )
+
+
+def _matched_original_number_count(
+    parts_data: list[dict[str, Any]],
+) -> int:
+    return sum(
+        1
+        for part in parts_data
+        if str(part.get("original_number") or "").strip()
+    )
+
+
 def _assign_numbers(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
     if not ctx.parts_data:
         raise ValueError("assign_numbers requires read_dxf to run first")
     ctx.skip_unnumbered = bool(args.get("skip_unnumbered", ctx.skip_unnumbered))
+    matched_numbers = _matched_original_number_count(ctx.parts_data)
+    text_entities = _text_entity_count(ctx)
+    if (
+        not ctx.skip_unnumbered
+        and ctx.drawing_profile is None
+        and matched_numbers == 0
+        and text_entities > 0
+    ):
+        raise ValueError(
+            "automatic numbering blocked: the drawing contains text labels "
+            "but no panel received an original number; match a drawing "
+            "profile or correct the closed panel geometry instead of "
+            "treating arbitrary closed frames as panels"
+        )
     parts = assign_numbers(
         ctx.parts_data,
         skip_unnumbered=ctx.skip_unnumbered,
     )
+    if not parts:
+        raise ValueError(
+            "numbering blocked: 0 panels matched original numbers; provide a "
+            "drawing profile or a DXF with valid closed, numbered panels"
+        )
     skipped_material_numbers: list[str] = []
     if (
         ctx.drawing_profile is not None
@@ -171,7 +208,10 @@ def _confirm_numbering(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
 
 def _write_numbered_dxf(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
     if not ctx.parts:
-        raise ValueError("write_numbered_dxf requires assign_numbers first")
+        raise ValueError(
+            "write_numbered_dxf received no numbered panels; numbering must "
+            "complete successfully before an in-place DXF can be written"
+        )
     path = str(Path(args["path"]))
     write_numbered_parts_dxf(ctx.parts, path, unit_system=ctx.unit.value)
     ctx.numbered_dxf_path = Path(path)

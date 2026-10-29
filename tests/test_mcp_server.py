@@ -75,7 +75,7 @@ def test_dsh_plugin_exposes_localized_product_name():
         (plugin_root / "package.json").read_text(encoding="utf-8")
     )
 
-    assert manifest["version"] == "0.2.1"
+    assert manifest["version"] == "0.2.2"
     assert "locale" in manifest["files"]
     for language in ("en", "zh"):
         locale = json.loads(
@@ -110,6 +110,51 @@ def test_mcp_tool_call_returns_text_and_structured_content():
     assert json.loads(result["content"][0]["text"]) == (
         result["structuredContent"]
     )
+
+
+def test_mcp_marks_blocked_stonebot_state_as_tool_error():
+    class BlockedService(FakeService):
+        def analyze_drawing(self, args):
+            return {
+                "ok": False,
+                "job_id": "job-blocked",
+                "stage": "blocked",
+                "blocked": True,
+                "errors": [
+                    "numbering blocked: 0 panels matched original numbers",
+                ],
+            }
+
+    server = MCPServer(BlockedService())
+    response = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "tools/call",
+            "params": {
+                "name": "stonebot_analyze_drawing",
+                "arguments": {"dxf_path": "blocked.dxf"},
+            },
+        }
+    )
+
+    result = response["result"]
+    assert result["isError"] is True
+    assert result["structuredContent"]["blocked"] is True
+
+
+def test_mcp_analyze_schema_does_not_expose_numbering_bypass():
+    server = MCPServer(FakeService())
+    listed = server.handle(
+        {"jsonrpc": "2.0", "id": 11, "method": "tools/list", "params": {}}
+    )
+    analyze = next(
+        tool
+        for tool in listed["result"]["tools"]
+        if tool["name"] == "stonebot_analyze_drawing"
+    )
+
+    assert "skip_unnumbered" not in analyze["inputSchema"]["properties"]
 
 
 def test_mcp_unknown_tool_is_a_structured_tool_error():

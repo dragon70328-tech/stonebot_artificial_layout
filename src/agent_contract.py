@@ -185,6 +185,7 @@ def agent_contract(profile: str = "full") -> dict[str, Any]:
             "base_profile_is_immutable": True,
             "maximum_automatic_retry_rounds": 3,
             "stop_when_blocked": True,
+            "automatic_numbering_requires_existing_panel_labels": True,
             "confirmation_decisions": ["confirm", "cancel"],
             "artifact_delivery": "user_selected_directory_only",
             "default_deliverables": [

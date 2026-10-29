@@ -58,6 +58,10 @@ validation, internal staging and user-controlled artifact delivery.
 - Do not claim a final DXF exists unless `stage=completed` and the artifact
   reference exists.
 - Never edit DXF files, reports or job manifests directly.
+- Never use Rhino, CAD automation, shell scripts or ad-hoc reconstruction
+  scripts to replace a Stonebot analysis.
+- If Stonebot blocks, stop and report the block together with the next
+  supported Stonebot action. Do not bypass the gate through another MCP.
 - Never activate or reject a profile patch without an explicit user decision.
 - If MCP resources are available, read `stonebot://agent-contract` for the
   current policies and tool definitions.

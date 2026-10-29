@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 
-PLUGIN_VERSION = "0.2.1"
+PLUGIN_VERSION = "0.2.2"
 SCHEMA_VERSION = "0.1.0"
 MCP_PROTOCOL_VERSION = "2025-06-18"
 
@@ -46,14 +46,14 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "Create a Stonebot job from a local DXF path, match a drawing "
             "profile, read geometry, audit the drawing, assign numbers and "
             "write an in-place numbered DXF. Returns the first human "
-            "confirmation gate."
+            "confirmation gate. Automatic numbering of unprofiled, "
+            "label-rich drawings is blocked."
         ),
         "inputSchema": _object_schema(
             {
                 "dxf_path": {"type": "string", "minLength": 1},
                 "tenant_id": {"type": "string", "default": "default"},
                 "project_id": {"type": "string"},
-                "skip_unnumbered": {"type": "boolean", "default": True},
                 "cold_start": {"type": "boolean", "default": False},
                 "use_template": {"type": "boolean", "default": False},
             },

@@ -50,7 +50,7 @@ packaging layer.
 
 ## Local verification
 
-Verified on 2026-10-28 against DeepSeek Harness Desktop 0.2.1-rc.3:
+Verified on 2026-10-29 against DeepSeek Harness Desktop 0.2.1-rc.3:
 
 - the local plugin bundle loaded into the desktop profile;
 - the plugin detail page showed `@deepseek-ai/dsh-mcp-client` running as
@@ -60,6 +60,9 @@ Verified on 2026-10-28 against DeepSeek Harness Desktop 0.2.1-rc.3:
   `total: 0`, and an empty job list without reading any files.
 - the model called `stonebot_analyze_drawing` on a real Chinese-path DXF and
   returned 6 panels, 4 holes, 0 audit issues and the `audited` human gate.
+- plugin `0.2.2` blocks automatic numbering when text labels exist but no
+  panel receives an original number, preventing arbitrary closed frames from
+  being reported as audited panels.
 
 The sandboxed development environment could not use DSH's normal pnpm installer
 because the existing pnpm store could not be hard-linked. The local test was
