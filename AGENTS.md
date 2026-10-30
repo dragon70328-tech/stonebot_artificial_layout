@@ -3,12 +3,18 @@
 ## Role
 人造石加工规划系统，读取 CAD 导出的 DXF 文件，识别实线封闭图形作为规格件
 （台面板、挡水条、异形件等），自动匹配原始编号，在指定尺寸大板内进行二维不规则
-排样，输出排板 DXF 和出材率报告。仅接受 DXF 输入，其他格式须先由用户自行转为 DXF。
+排样。业务默认只交付原位 DXF 和排板 DXF；Word/出材率报告仅在用户明确要求时生成，
+且保存目录必须由用户选择。仅接受 DXF 输入，其他格式须先由用户自行转为 DXF。
 
 ## 长期目标
-SaaS 化人造石加工规划系统围绕五个支柱建设：项目架构约束、本体/数据契约、工具/确定性执行、
-调度循环、边界。AI 只生成结构化意图和配置，不直接执行生产代码；真实执行由可信
-Python 工具完成，工作流状态机统一调度。详见 `docs/saas-architecture-goal.md`。
+
+StoneBot 是一个平台无关的 DXF 审图与排板 Runtime，通过标准 MCP 和薄插件连接
+Codex、DeepSeek Harness、Claude Code、Kimi Code 等对话平台。平台负责理解用户、
+发起工具调用和展示结果；StoneBot Core 负责识别、校验、修正、排板、回滚和交付。
+
+关键业务闭环必须由 StoneBot 的确定性 Python 状态机完成，不能依赖某个 Agent 的临场
+规划能力。AI 只生成结构化意图、配置、解释和受约束的动作，不直接执行生产代码。
+详见 `docs/product-direction-2026-10-30.md` 和 `docs/saas-architecture-goal.md`。
 
 当前读图范围仅 DXF 一种格式；DWG 转换与 PDF/手绘草图读图均已放弃
 （2026-08-19 范围调整，相关代码归档于 `_archive/legacy/intake_dwg_pdf/`）。
@@ -93,7 +99,8 @@ stonebot_artificial_layout/
 
 | 文档 | 内容 |
 |---|---|
-| `docs/saas-architecture-goal.md` | SaaS 长期目标与五个支柱（判断代码改动的标准） |
+| `docs/product-direction-2026-10-30.md` | 当前产品方向：平台无关 Runtime、薄插件、确定性闭环与画像包 |
+| `docs/saas-architecture-goal.md` | 平台长期架构与五个支柱（判断代码改动的标准） |
 | `docs/saas-setup.md` | 当前搭建/运行/环境变量/租户认证 |
 | `docs/drawing-intake-subsystem.md` | 读图子系统设计（DXF 唯一输入） |
 | `docs/process-aware-nesting-improvement-plan.md` | 统一工艺排板改进计划（契约、刀缝、版本重排） |

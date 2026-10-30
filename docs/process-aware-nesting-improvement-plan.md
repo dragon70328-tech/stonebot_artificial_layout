@@ -2,6 +2,11 @@
 
 日期：2026-09-18
 
+> 2026-10-30 调整：本文的读图确认与统一工艺排板仍是核心业务目标，但 Web/CLI 不再是
+> 唯一入口。StoneBot Core 现在是平台无关 Runtime；Codex、DSH、Claude Code、Kimi Code
+> 和 Web/CLI 通过标准 MCP/薄适配器接入。识别、排板、校验和回读闭环必须在 Core 内完成。
+> 完整路线见 `docs/product-direction-2026-10-30.md`。
+
 ## 1. 目标
 
 将系统改进为面向任意 DXF 图纸的加工规划平台，主链路固定为：

@@ -6,12 +6,14 @@ The first plugin milestone adds a stable Agent-facing boundary without changing
 the existing CLI, API, portal, drawing profiles or nesting algorithms.
 
 ```text
-Codex / DeepSeek Harness
+Codex / DeepSeek Harness / Claude Code / Kimi Code / Web / CLI
   -> stonebot_* tools
   -> PluginJobService
   -> AgentRuntime + WorkflowSession
   -> existing deterministic Stonebot core
 ```
+
+MCP 是主协议；各平台插件是薄适配器，不得复制 StoneBot 的识别、排板或校验逻辑。
 
 ## Stable workflow
 
@@ -38,6 +40,11 @@ The plugin publishes a portable Agent contract at
 
 Both profiles call the same `PluginJobService`, workflow state machine and
 verification code.
+
+The target adapter matrix is Codex, DeepSeek Harness, Claude Code and Kimi Code.
+Codex and DeepSeek Harness are the current reference implementations. A new
+platform is supported only after it passes the shared golden cases and delivery
+policy; listing or invoking tools alone is not sufficient.
 
 ## Adaptive profile learning
 
@@ -111,8 +118,11 @@ remains on `master`. Plugin jobs use `STONEBOT_MCP_DATA_ROOT`; the default is
 - MCP jobs use a versioned JSON/WKT context snapshot. Drawing parts, holes,
   correction revisions, nesting results, validation state and artifact paths
   can be restored after a process restart without pickling Shapely objects.
-- The MVP does not install itself globally. Codex integration is validated
-  through the local plugin manifest and MCP stdio launcher first.
-- DeepSeek Harness uses the same MCP server through its local plugin adapter;
-  the full drawing, gate, nesting, validation and final-artifact workflow has
-  been exercised in the installed desktop profile.
+- The DSH adapter currently links to an external Python runtime; it is not yet
+  a self-contained cross-machine Runtime package.
+- Claude Code and Kimi Code adapters are planned targets, not completed
+  integrations.
+- Cloud profile-pack ingestion, validation, signing and rollback are not yet
+  implemented.
+- Cross-platform business-result conformance is the release gate; tool
+  discovery alone is not considered successful integration.
