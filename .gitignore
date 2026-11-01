@@ -39,6 +39,10 @@ output/*.bak
 # benchmark 报告（可再生成）
 benchmark_report.json
 
+# 客户图纸原始分析数据（含项目坐标/尺寸，不入库）
+_analysis/*_raw.txt
+_analysis/yuefu_views_report*.txt
+
 # timestamped output subdirs
 output/*_*/
 output/.cache/

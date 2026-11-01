@@ -563,7 +563,8 @@ def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
                     beam=True, beam_width=None, stats=None, compress=True,
                     beam_budget=None, pattern_reuse=4,
                     rect_fast=True, low_fill_rework=False,
-                    low_fill_threshold=0.6, candidate_mode="bbox"):
+                    low_fill_threshold=0.6, candidate_mode="bbox",
+                    certified=False):
     """Nest one material group and return result plus group stats."""
     normal_parts = []
     special_parts = []
@@ -622,6 +623,11 @@ def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
             if group_parts else 0
         )
         if profile.uses_deepnest:
+            if certified:
+                raise ValueError(
+                    "认证确定性模式当前只支持桥切（bridge）工艺；"
+                    "水刀/激光（deepnest）引擎尚未纳入认证范围"
+                )
             if pairing and low_fill_rework:
                 raise ValueError(
                     "--low-fill-rework 暂不与 --pairing 组合使用；"
@@ -670,7 +676,8 @@ def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
                 beam_budget=beam_budget,
                 pattern_reuse=pattern_reuse,
                 rect_fast=rect_fast,
-                configs=QUICK_CONFIGS if quick else None))
+                configs=QUICK_CONFIGS if quick else None,
+                certified=certified))
     if special_parts:
         results.append(nest_special_parts(
             special_parts, special_w, special_h, effective_thickness,
@@ -714,7 +721,8 @@ def nest_groups(parts, groups, width_mm, height_mm, special_w, special_h,
                 beam=True, beam_width=None, stats=None,
                 compress=True, beam_budget=None, pattern_reuse=4,
                 rect_fast=True, low_fill_rework=False,
-                low_fill_threshold=0.6, candidate_mode="bbox") -> GroupNestingOutcome:
+                low_fill_threshold=0.6, candidate_mode="bbox",
+                certified=False) -> GroupNestingOutcome:
     """Nest every material group and combine into a single NestingResult."""
     t0 = time.time()
     group_results = []
@@ -741,6 +749,7 @@ def nest_groups(parts, groups, width_mm, height_mm, special_w, special_h,
                 low_fill_rework=low_fill_rework,
                 low_fill_threshold=low_fill_threshold,
                 candidate_mode=candidate_mode,
+                certified=certified,
             )
         )
         group_results.append(group_result)

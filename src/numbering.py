@@ -59,6 +59,10 @@ def assign_numbers(parts_data: list[dict],
             outer_shape=data.get("outer_shape"),
             outer_arcs=data.get("outer_arcs") or [],
             hole_shapes=data.get("hole_shapes") or [],
+            outer_polyline=data.get("outer_polyline"),
+            outer_curve=data.get("outer_curve"),
+            thickness_mm=float(data.get("thickness_mm", 0.0) or 0.0),
+            thickness_source=str(data.get("thickness_source") or "default"),
         )
         parts.append(part)
 

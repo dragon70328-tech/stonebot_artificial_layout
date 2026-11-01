@@ -46,6 +46,7 @@ class JobContext:
     nesting_outcome: Any | None = None
     result: NestingResult | None = None
     template_result: bool = False
+    template_name: str | None = None
     # 模板命中必须显式开启：默认只用算法排板，避免复用历史布局。
     use_template: bool = False
     # 冷启动关闭 validated_cases 匹配，只用原始图纸 + 画像配置。
@@ -55,6 +56,22 @@ class JobContext:
     kerf_metrics: dict[str, Any] | None = None
     correction_revision: int = 0
     correction_history: list[dict[str, Any]] = field(default_factory=list)
+    # 编号确认后的不可变快照：排板唯一输入。digest/signature 用于在
+    # nest_parts 前检测确认后的零件漂移（fail closed），revision_no 记录
+    # 重复确认（修正后重确认）的版本链。
+    confirmed_drawing: Any | None = None
+    confirmed_drawing_digest: str | None = None
+    confirmed_drawing_path: Path | None = None
+    confirmed_parts_signature: str | None = None
+    confirmed_revision_no: int = 0
+    # 排板版本链：每次 nest_parts 追加一个不可变 NestingRevision，
+    # active_revision_id 指向当前生效版本；回滚只切换指针，不覆盖历史。
+    # postprocess_revision_id 记录后处理校验针对的版本，write_dxf 据此
+    # 拒绝"版本已切换但校验未更新"的出图。
+    nesting_revisions: list[Any] = field(default_factory=list)
+    active_revision_id: str | None = None
+    nesting_revision_paths: dict[str, str] = field(default_factory=dict)
+    postprocess_revision_id: str | None = None
     recognition_feedback: list[dict[str, Any]] = field(default_factory=list)
     recognition_memory: dict[str, Any] = field(default_factory=dict)
     recognition_memory_path: Path | None = None
@@ -67,6 +84,8 @@ class JobContext:
     seed: int = 0
     budget: float = 0.0
     quick: bool = True
+    # 认证确定性模式：排板解除一切墙钟分支，结果可复现并进版本血缘。
+    certified: bool = False
     pairing: bool = False
     beam: bool = True
     beam_width: int | None = None
@@ -145,6 +164,23 @@ class JobContext:
             },
             "correction_revision": self.correction_revision,
             "correction_history": self.correction_history,
+            "confirmed_drawing": (
+                {
+                    "confirmed_id": self.confirmed_drawing.confirmed_id,
+                    "revision_id": self.confirmed_drawing.revision_id,
+                    "revision_no": self.confirmed_revision_no,
+                    "digest": self.confirmed_drawing_digest,
+                    "parts_signature": self.confirmed_parts_signature,
+                    "panels": len(self.confirmed_drawing.panels),
+                    "path": (
+                        str(self.confirmed_drawing_path)
+                        if self.confirmed_drawing_path is not None
+                        else None
+                    ),
+                }
+                if self.confirmed_drawing is not None
+                else None
+            ),
             "recognition_feedback_count": len(self.recognition_feedback),
             "recognition_memory": {
                 "feedback_count": int(self.recognition_memory.get("feedback_count", 0)),
@@ -168,6 +204,26 @@ class JobContext:
                 if result is not None and outcome is not None
                 else None
             ),
+            "nesting_revisions": {
+                "active": self.active_revision_id,
+                "count": len(self.nesting_revisions),
+                "items": [
+                    {
+                        "revision_id": revision.revision_id,
+                        "algorithm": revision.algorithm,
+                        "sheets": revision.metrics.get("total_sheets"),
+                        "yield_rate": revision.metrics.get("yield_rate"),
+                        "elapsed_seconds": revision.metrics.get(
+                            "elapsed_seconds"
+                        ),
+                        "validation_errors": len(revision.validation_errors),
+                        "path": self.nesting_revision_paths.get(
+                            revision.revision_id
+                        ),
+                    }
+                    for revision in self.nesting_revisions
+                ],
+            },
             "artifacts": {
                 "numbered_dxf": (
                     str(self.numbered_dxf_path)

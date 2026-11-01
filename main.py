@@ -176,6 +176,12 @@ def parse_args():
                    help="关闭桥切矩形快通道，强制使用通用贪心/束搜索引擎")
     p.add_argument("--cold-start", action="store_true",
                    help="冷启动：忽略模板/已验证案例/审图缓存，仅用原始 DXF + 配置")
+    p.add_argument("--certified", action="store_true",
+                   help="认证确定性模式：解除排板链路的一切墙钟分支"
+                        "（束搜索不限时、多板尾解无 deadline、LNS 只受"
+                        "迭代/耐心预算控制），同输入同环境必得同结果。"
+                        "当前仅支持桥切；与 --parallel-workers>1 不兼容"
+                        "（自动退回单批）。运行更慢，仅用于认证交付")
     p.add_argument("--review-budget", type=float, default=0.0,
                    help="自动回看的总时间上限（秒）。0（默认）= 不用墙钟上限，"
                         "只受确定性上限约束（reductions/donor 次数/搜索节点数），"
@@ -770,6 +776,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         beam_budget: float | None = None,
         pattern_reuse: int = 4,
         parallel_workers: int = 1,
+        certified: bool = False,
         compress: bool = True,
         rect_fast: bool = True,
         low_fill_rework: bool = False,
@@ -949,7 +956,8 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         )
         numbered_original = out_dir / f"{stem}_numbered_原位.dxf"
         write_numbered_parts_dxf(parts, str(numbered_original),
-                                 unit_system=unit.value)
+                                 unit_system=unit.value,
+                                 source_path=str(dxf_path))
         _track_artifact(WorkflowStage.READ, recognized_json)
         _track_artifact(WorkflowStage.READ, numbered_original)
         # 规格板尺寸清单（材料 × 区域 分组）——审图参考产物，
@@ -963,6 +971,12 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         spec_json, spec_csv = write_spec_list_files(spec, out_dir, stem)
         _track_artifact(WorkflowStage.READ, spec_json)
         _track_artifact(WorkflowStage.READ, spec_csv)
+        from src.material_summary import write_material_summary_xlsx
+
+        summary_xlsx = write_material_summary_xlsx(
+            parts, out_dir / f"{stem}_材料统计.xlsx"
+        )
+        _track_artifact(WorkflowStage.READ, summary_xlsx)
         print(f"规格清单: {spec_csv.name} "
               f"({spec['totals']['groups']} 组 / "
               f"{spec['totals']['parts']} 件)")
@@ -1015,6 +1029,17 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
 
     # 优化器诊断：确定性预算消耗、是否被墙钟护栏截断（进报告 parameters.optimizer）
     optimizer_stats: dict = {}
+    if certified:
+        if profile.uses_deepnest:
+            raise SystemExit(
+                "--certified 当前只支持桥切（bridge）工艺；"
+                "水刀/激光（deepnest）引擎尚未纳入认证范围"
+            )
+        if parallel_workers > 1:
+            # 分批并行按尺寸档切批（每批自带尾板），批间合并引入
+            # 额外布局来源；认证口径只承诺单批引擎路径逐位一致。
+            print("认证确定性模式：--parallel-workers 强制为 1（单批引擎路径）")
+            parallel_workers = 1
     if nesting is None and parallel_workers > 1 and not profile.uses_deepnest \
             and special_w is None:
         from src.parallel_nesting import probe_multiprocessing
@@ -1051,6 +1076,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
             beam_budget=beam_budget,
             pattern_reuse=pattern_reuse,
             stats=optimizer_stats,
+            certified=certified,
             compress=compress,
             rect_fast=rect_fast,
             low_fill_rework=low_fill_rework,
@@ -1572,6 +1598,7 @@ def main():
                 seed=args.seed,
                 budget=budget,
                 quick=quick,
+                certified=args.certified,
                 pairing=args.pairing,
                 skip_unnumbered=not args.include_unnumbered,
                 beam=not args.no_beam,
@@ -1610,6 +1637,7 @@ def main():
         beam_budget=args.beam_budget,
         pattern_reuse=args.pattern_reuse,
         parallel_workers=args.parallel_workers,
+        certified=args.certified,
         compress=not args.no_compress,
         rect_fast=not args.no_rect_fast,
         low_fill_rework=args.low_fill_rework,

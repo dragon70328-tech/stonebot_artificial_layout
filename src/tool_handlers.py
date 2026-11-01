@@ -13,20 +13,35 @@ from pathlib import Path
 from typing import Any
 
 from src.constraints import PROFILE_MIN_SHEETS
+from src.confirmed_drawing import (
+    build_confirmed_drawing,
+    parts_signature,
+    persist_confirmed_drawing,
+)
 from src.correction_contracts import CorrectionPlan
 from src.drawing_corrections import apply_correction_plan
 from src.drawing_profile import (
     DrawingProfile,
     analyze_drawing,
     audit_drawing,
+    curve_fidelity_issues,
+    machine_readiness_drawing_issues,
     read_dxf_with_profile,
 )
 from src.dxf_reader import extract_closed_entity_candidates, read_dxf
 from src.dxf_writer import write_nested_dxf, write_numbered_parts_dxf
 from src.job_context import JobContext
 from src.numbering import assign_numbers
-from src.nesting_contracts import CuttingProcess
-from src.postprocess import estimate_kerf_material, validate_kerf_material
+from src.nesting_revisions import (
+    build_nesting_request,
+    build_nesting_revision,
+    outcome_from_revision,
+    persist_nesting_revision,
+    result_from_revision,
+    update_revision_after_postprocess,
+)
+from src.nesting_readback import sheets_payload_from_result, verify_nested_dxf
+from src.nesting_validation import run_full_validation
 from src.recognized_contract import parts_data_to_recognized_drawing
 from src.template_nesting import match_template, nest_from_template
 from src.units import UNIT_LABELS
@@ -127,7 +142,24 @@ def _read_dxf(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
 def _audit_drawing(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
     path = _set_input_path(ctx, args)
     if ctx.drawing_profile is None:
-        return {"issues": 0, "skipped": True}
+        # 没有命中画像时规则审图跳过，但"曲线没能保真复写"是通用
+        # 安全问题，必须照常报出来。
+        ctx.audit_issues = curve_fidelity_issues(ctx.parts_data or [])
+        import ezdxf
+
+        try:
+            doc = ezdxf.readfile(str(path))
+        except Exception:  # noqa: BLE001 - 读不回就只保留曲线问题
+            doc = None
+        if doc is not None:
+            regions = [
+                part.get("outer_polygon") or part.get("polygon")
+                for part in (ctx.parts_data or [])
+            ]
+            ctx.audit_issues.extend(
+                machine_readiness_drawing_issues(doc, regions=regions)
+            )
+        return {"issues": len(ctx.audit_issues), "profile_audit_skipped": True}
     ctx.audit_issues = audit_drawing(path, ctx.drawing_profile)
     return {"issues": len(ctx.audit_issues)}
 
@@ -200,10 +232,32 @@ def _assign_numbers(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _confirm_numbering(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
-    return {
+    result: dict[str, Any] = {
         "decision": args.get("decision"),
         "parts": len(ctx.parts) if ctx.parts is not None else 0,
     }
+    decision = str(args.get("decision") or "").strip().lower()
+    if decision not in {"confirm", "confirmed", "yes", "y"}:
+        return result
+    # 确认动作物化为不可变快照：排板阶段的唯一输入来源。
+    drawing = build_confirmed_drawing(ctx)
+    ctx.confirmed_drawing = drawing
+    ctx.confirmed_drawing_digest = drawing.confirmed_digest
+    ctx.confirmed_parts_signature = parts_signature(ctx.parts)
+    ctx.confirmed_drawing_path = persist_confirmed_drawing(ctx, drawing)
+    result["confirmed_drawing"] = {
+        "confirmed_id": drawing.confirmed_id,
+        "revision_id": drawing.revision_id,
+        "revision_no": ctx.confirmed_revision_no,
+        "digest": drawing.confirmed_digest,
+        "panels": len(drawing.panels),
+        "path": (
+            str(ctx.confirmed_drawing_path)
+            if ctx.confirmed_drawing_path is not None
+            else None
+        ),
+    }
+    return result
 
 
 def _write_numbered_dxf(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -213,7 +267,12 @@ def _write_numbered_dxf(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]
             "complete successfully before an in-place DXF can be written"
         )
     path = str(Path(args["path"]))
-    write_numbered_parts_dxf(ctx.parts, path, unit_system=ctx.unit.value)
+    write_numbered_parts_dxf(
+        ctx.parts,
+        path,
+        unit_system=ctx.unit.value,
+        source_path=str(ctx.dxf_path) if ctx.dxf_path else None,
+    )
     ctx.numbered_dxf_path = Path(path)
     return {"path": path, "parts": len(ctx.parts)}
 
@@ -227,12 +286,54 @@ def _apply_drawing_corrections(
         raise ValueError("apply_drawing_corrections requires a plan object")
     plan = CorrectionPlan.model_validate(raw_plan)
     result = apply_correction_plan(ctx, plan)
-    return result.model_dump(mode="json")
+    payload = result.model_dump(mode="json")
+    if ctx.confirmed_drawing is not None and ctx.parts:
+        # 确认后的修正会使既有快照失配；nest_parts 会据此拒绝排板，
+        # 这里先把"需要重新确认"显式暴露给调用方。
+        payload["confirmed_drawing_stale"] = (
+            parts_signature(ctx.parts) != ctx.confirmed_parts_signature
+        )
+    return payload
+
+
+def _record_nesting_revision(ctx: JobContext) -> dict[str, Any]:
+    """把本次排板结果固化为不可变 NestingRevision 并置为 active。"""
+    request = build_nesting_request(ctx)
+    revision = build_nesting_revision(ctx, request)
+    path = persist_nesting_revision(ctx, revision)
+    ctx.nesting_revisions.append(revision)
+    ctx.active_revision_id = revision.revision_id
+    if path is not None:
+        ctx.nesting_revision_paths[revision.revision_id] = str(path)
+    # 新版本生效后，旧的校验/后处理状态全部作废，必须重新 postprocess。
+    ctx.postprocess_revision_id = None
+    ctx.validation_errors = []
+    return {
+        "revision_id": revision.revision_id,
+        "request_id": revision.request.request_id,
+        "algorithm": revision.algorithm,
+        "path": str(path) if path is not None else None,
+    }
 
 
 def _nest_parts(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
     if not ctx.parts:
         raise ValueError("nest_parts requires assign_numbers first")
+    # 排板只消费"用户确认过的快照"：没有快照或确认后零件被改动都 fail
+    # closed，要求重新确认，避免把未核对的内容送上大板。
+    if ctx.confirmed_drawing is None or ctx.confirmed_parts_signature is None:
+        raise ValueError(
+            "nest_parts requires confirm_numbering first: the confirmed "
+            "drawing snapshot is the only allowed nesting input"
+        )
+    current_signature = parts_signature(ctx.parts)
+    if current_signature != ctx.confirmed_parts_signature:
+        raise ValueError(
+            "parts changed since numbering confirmation "
+            f"(confirmed r{ctx.confirmed_revision_no}, digest "
+            f"{ctx.confirmed_drawing_digest}); re-run confirm_numbering "
+            "before nesting"
+        )
     profile = ctx.nesting_profile or PROFILE_MIN_SHEETS
     # 排板空间 = 可利用尺寸。契约（SheetSpec.usable_*）是权威来源；工具参数
     # 只作为没有契约时的回退（旧路径）。
@@ -248,7 +349,15 @@ def _nest_parts(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
     ctx.seed = int(args.get("seed", ctx.seed))
     ctx.budget = float(args.get("budget", ctx.budget))
     ctx.quick = bool(args.get("quick", ctx.quick))
+    # 认证确定性模式：解除排板链路的一切墙钟分支，同输入同环境必得
+    # 同结果；默认关闭，探索性用法（墙钟预算/并行）行为不变。
+    ctx.certified = bool(args.get("certified", ctx.certified))
     ctx.pairing = bool(args.get("pairing", ctx.pairing))
+    if ctx.certified and profile.uses_deepnest:
+        raise ValueError(
+            "certified mode currently supports bridge process only; "
+            "waterjet/laser (deepnest) is outside the certified envelope"
+        )
     rect_fast = bool(args.get("rect_fast", True))
     low_fill_rework = bool(args.get("low_fill_rework", False))
     low_fill_threshold = float(args.get("low_fill_threshold", 0.6))
@@ -309,14 +418,20 @@ def _nest_parts(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
                 )
                 ctx.result = template_result
                 ctx.template_result = True
+                ctx.template_name = template_record.name
+                revision_info = _record_nesting_revision(ctx)
                 return {
                     "total_sheets": ctx.result.total_sheets,
                     "total_parts": ctx.result.total_parts,
                     "yield_rate": round(ctx.result.yield_rate, 2),
                     "elapsed_seconds": 0.0,
                     "template": template_record.name,
+                    # 模板复刻天然逐位确定；certified 只承诺引擎路径。
+                    "certified": False,
+                    "revision": revision_info,
                 }
 
+    optimizer_stats: dict[str, Any] = {}
     outcome = nest_groups(
         ctx.parts,
         groups,
@@ -333,6 +448,7 @@ def _nest_parts(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
         ctx.budget,
         ctx.quick,
         ctx.pairing,
+        stats=optimizer_stats,
         beam=bool(args.get("beam", True)),
         beam_width=(
             int(args["beam_width"]) if args.get("beam_width") is not None
@@ -340,18 +456,26 @@ def _nest_parts(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
         ),
         compress=bool(args.get("compress", True)),
         rect_fast=rect_fast,
+        certified=ctx.certified,
         low_fill_rework=low_fill_rework,
         low_fill_threshold=low_fill_threshold,
         candidate_mode=candidate_mode,
     )
     ctx.nesting_outcome = outcome
     ctx.result = outcome.result
-    return {
+    revision_info = _record_nesting_revision(ctx)
+    output = {
         "total_sheets": ctx.result.total_sheets,
         "total_parts": ctx.result.total_parts,
         "yield_rate": round(ctx.result.yield_rate, 2),
         "elapsed_seconds": round(outcome.elapsed_seconds, 1),
+        "certified": bool(optimizer_stats.get("certified")),
+        "revision": revision_info,
     }
+    hazards = optimizer_stats.get("determinism_hazards")
+    if hazards:
+        output["determinism_hazards"] = hazards
+    return output
 
 
 def _postprocess(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -365,74 +489,85 @@ def _postprocess(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
         }
     else:
         ctx.manufacturing_metrics = postprocess_result(ctx.result, profile)
-    # 几何校验 + 桥切刀缝材料校验（口径与 CLI 相同：允许 = 可利用 + 让尺）。
+    # 统一验证器：完整性/编号唯一/几何/材料不共板/孔洞跟随/刀缝材料。
     # ctx.validation_errors 是"阻塞出图"的总集，write_dxf 会据此拒绝写文件。
-    ctx.validation_errors = validate_mixed_nesting(
-        ctx.result, min_gap=profile.min_gap
-    )
-    kerf_errors = _kerf_material_errors(ctx)
-    ctx.validation_errors.extend(kerf_errors)
+    categories = run_full_validation(ctx)
+    ctx.validation_errors = list(categories["all"])
+    # 校验结果归档到当前生效的排板版本，并标记该版本已完成校验。
+    ctx.postprocess_revision_id = ctx.active_revision_id
+    if ctx.active_revision_id is not None:
+        for revision in ctx.nesting_revisions:
+            if revision.revision_id == ctx.active_revision_id:
+                update_revision_after_postprocess(ctx, revision)
+                repersisted = persist_nesting_revision(ctx, revision)
+                if repersisted is not None:
+                    ctx.nesting_revision_paths[revision.revision_id] = str(
+                        repersisted
+                    )
+                break
     return {
-        "geometry_errors": len(ctx.validation_errors),
-        "kerf_material_errors": len(kerf_errors),
+        "geometry_errors": len(categories["geometry"]),
+        "kerf_material_errors": len(categories["kerf_material"]),
+        "completeness_errors": len(categories["completeness"]),
+        "validation_categories": {
+            name: len(errors)
+            for name, errors in categories.items()
+            if name != "all"
+        },
         "manufacturability": ctx.manufacturing_metrics,
     }
-
-
-def _kerf_material_params(ctx: JobContext):
-    """返回 (kerf_mm, allowance_x, allowance_y)；不适用时为 None。
-
-    口径（与 CLI 的 `resolve_sheet_caliber` 一致）：刀缝校验允许尺寸 = 实物
-    尺寸 = 可利用尺寸 + 让尺（让尺只计一次）。契约里可利用尺寸是
-    `SheetSpec.usable_*`，让尺是 `SheetSpec.oversize_added_*`。
-    水刀/激光按口径"刀缝可不计"，不走这项校验。
-    """
-    policy = ctx.process_policy
-    spec = ctx.sheet_spec
-    if policy is None or ctx.result is None:
-        return None
-    if policy.process != CuttingProcess.BRIDGE:
-        return None
-    kerf_mm = float(policy.kerf_mm or 0.0)
-    if kerf_mm <= 0:
-        return None
-    if spec is None:
-        return (kerf_mm, 0.0, 0.0)
-    return (
-        kerf_mm,
-        float(spec.nominal_width_mm + spec.oversize_added_width_mm
-              - spec.usable_width_mm),
-        float(spec.nominal_height_mm + spec.oversize_added_height_mm
-              - spec.usable_height_mm),
-    )
-
-
-def _kerf_material_errors(ctx: JobContext) -> list[str]:
-    """桥切刀缝材料校验；同时把指标写进 ctx 供报告使用。"""
-    params = _kerf_material_params(ctx)
-    if params is None:
-        ctx.kerf_metrics = None
-        return []
-    kerf_mm, allowance_x, allowance_y = params
-    ctx.kerf_metrics = estimate_kerf_material(ctx.result.sheets, kerf_mm)
-    return validate_kerf_material(
-        ctx.result.sheets,
-        kerf_mm,
-        allowance_x_mm=allowance_x,
-        allowance_y_mm=allowance_y,
-    )
 
 
 def _write_dxf(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
     if ctx.result is None:
         raise ValueError("write_dxf requires postprocess first")
+    active_revision = None
+    if (
+        ctx.active_revision_id is not None
+        and ctx.postprocess_revision_id != ctx.active_revision_id
+    ):
+        raise ValueError(
+            "write_dxf requires postprocess on the active nesting revision "
+            f"({ctx.active_revision_id}); run postprocess before writing"
+        )
+    elif ctx.active_revision_id is not None:
+        active_revision = next(
+            (
+                item
+                for item in ctx.nesting_revisions
+                if item.revision_id == ctx.active_revision_id
+            ),
+            None,
+        )
     if ctx.validation_errors:
         raise ValueError(
             "validation failed (geometry/kerf, "
             f"{len(ctx.validation_errors)} 处); final DXF is blocked"
         )
     path = str(Path(args["path"]))
-    write_nested_dxf(ctx.result, path, unit_system=ctx.unit.value)
+    # 交付永远以 active 版本记录为准（含后处理后的交付态几何）；
+    # 无版本记录的旧路径回退到 ctx.result。
+    deliverable = (
+        result_from_revision(active_revision)
+        if active_revision is not None
+        else ctx.result
+    )
+    write_nested_dxf(deliverable, path, unit_system=ctx.unit.value)
+    # 回读门禁：写出的 DXF 必须能读回且与期望布局逐件一致，
+    # 否则删除文件并拒绝交付（fail closed）。
+    expected_sheets = (
+        active_revision.layout["sheets"]
+        if active_revision is not None
+        else sheets_payload_from_result(ctx.result)
+    )
+    readback_errors = verify_nested_dxf(path, expected_sheets)
+    if readback_errors:
+        Path(path).unlink(missing_ok=True)
+        raise ValueError(
+            "write_dxf read-back verification failed "
+            f"({len(readback_errors)} 处), file removed: "
+            + "; ".join(readback_errors[:3])
+        )
     ctx.nested_dxf_path = Path(path)
     return {"path": path, "sheets": ctx.result.total_sheets}
 
@@ -489,6 +624,87 @@ def _write_report(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
     return {"path": path, "total_sheets": ctx.result.total_sheets}
 
 
+def _rollback_nesting(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
+    """把 active 排板版本切换到历史版本；历史版本不被覆盖。"""
+    revision_id = str(args.get("revision_id") or "").strip()
+    if not revision_id:
+        raise ValueError("rollback_nesting requires revision_id")
+    revision = next(
+        (
+            item
+            for item in ctx.nesting_revisions
+            if item.revision_id == revision_id
+        ),
+        None,
+    )
+    if revision is None:
+        known = [item.revision_id for item in ctx.nesting_revisions]
+        raise ValueError(
+            f"unknown nesting revision: {revision_id}; known: {known}"
+        )
+    # 图纸修正后，旧版本的布局是针对旧几何排的：回滚会交付一张
+    # 与当前确认图纸不一致的排板图。按确认摘要拦截。
+    revision_digest = (
+        getattr(revision.request.confirmed_drawing, "confirmed_digest", None)
+        if revision.request.confirmed_drawing is not None
+        else None
+    )
+    if (
+        ctx.confirmed_drawing_digest
+        and revision_digest
+        and revision_digest != ctx.confirmed_drawing_digest
+    ):
+        raise ValueError(
+            f"revision {revision_id} belongs to a different confirmed "
+            f"drawing (revision {revision_digest[:12]}, current "
+            f"{ctx.confirmed_drawing_digest[:12]}); the drawing was "
+            "corrected after this layout was nested, so it cannot be "
+            "rolled back — re-nest the corrected drawing instead"
+        )
+    result = result_from_revision(revision)
+    ctx.result = result
+    ctx.nesting_outcome = outcome_from_revision(revision, result)
+    ctx.active_revision_id = revision.revision_id
+    ctx.template_result = bool(revision.layout.get("template"))
+    # 版本记录携带自己的校验状态：已校验的版本回滚后可直接交付；
+    # 未校验的必须重新 postprocess。旧产物路径一律作废。
+    postprocess_state = revision.layout.get("postprocess") or {}
+    validated = bool(postprocess_state.get("postprocessed"))
+    ctx.postprocess_revision_id = revision.revision_id if validated else None
+    ctx.validation_errors = (
+        list(revision.validation_errors) if validated else []
+    )
+    ctx.manufacturing_metrics = (
+        dict(postprocess_state.get("manufacturing_metrics") or {})
+        if validated
+        else {}
+    )
+    ctx.kerf_metrics = (
+        postprocess_state.get("kerf_metrics") if validated else None
+    )
+    ctx.nested_dxf_path = None
+    ctx.report_path = None
+    return {
+        "revision_id": revision.revision_id,
+        "algorithm": revision.algorithm,
+        "total_sheets": result.total_sheets,
+        "total_parts": result.total_parts,
+        "yield_rate": round(result.yield_rate, 2),
+        "requires_postprocess": not validated,
+        "validation_errors": len(ctx.validation_errors),
+        "history": [
+            {
+                "revision_id": item.revision_id,
+                "algorithm": item.algorithm,
+                "sheets": item.metrics.get("total_sheets"),
+                "yield_rate": item.metrics.get("yield_rate"),
+                "active": item.revision_id == ctx.active_revision_id,
+            }
+            for item in ctx.nesting_revisions
+        ],
+    }
+
+
 def build_tool_handlers(ctx: JobContext | None = None) -> dict[str, Any]:
     """Return the real handler registry bound to one job context."""
     context = ctx or JobContext()
@@ -502,6 +718,7 @@ def build_tool_handlers(ctx: JobContext | None = None) -> dict[str, Any]:
         "write_numbered_dxf": lambda args: _write_numbered_dxf(context, args),
         "apply_drawing_corrections": lambda args: _apply_drawing_corrections(context, args),
         "nest_parts": lambda args: _nest_parts(context, args),
+        "rollback_nesting": lambda args: _rollback_nesting(context, args),
         "postprocess": lambda args: _postprocess(context, args),
         "write_dxf": lambda args: _write_dxf(context, args),
         "write_report": lambda args: _write_report(context, args),

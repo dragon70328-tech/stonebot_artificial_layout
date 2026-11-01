@@ -65,6 +65,7 @@ class AgentRuntime:
         low_fill_rework: bool = False,
         low_fill_threshold: float = 0.6,
         candidate_mode: str = "bbox",
+        certified: bool = False,
         object_store: ObjectStore | None = None,
         artifact_object_prefix: str | None = None,
         session_store: WorkflowSessionStore | SqliteWorkflowSessionStore | None = None,
@@ -127,6 +128,7 @@ class AgentRuntime:
             seed=seed,
             budget=budget,
             quick=quick,
+            certified=certified,
             pairing=pairing,
             beam=beam,
             beam_width=beam_width,
@@ -281,6 +283,7 @@ class AgentRuntime:
                     seed=self.context.seed,
                     budget=self.context.budget,
                     quick=self.context.quick,
+                    certified=self.context.certified,
                     pairing=self.context.pairing,
                     beam=self.context.beam,
                     beam_width=self.context.beam_width,
@@ -336,6 +339,177 @@ class AgentRuntime:
         )
         self.last_error = None
         return result.output
+
+    def rollback_nesting(self, revision_id: str) -> dict[str, Any]:
+        """把 active 排板版本切换到历史版本（不覆盖历史）。
+
+        已校验版本回滚后可直接交付；后处理确认之后回滚会让会话退回到
+        nested_reported，与编排器行为一致。
+        """
+        revision_id = str(revision_id or "").strip()
+        if not revision_id:
+            raise RuntimeError("rollback_nesting requires revision_id")
+        allowed_stages = {
+            WorkflowStage.NESTED_REPORTED,
+            WorkflowStage.POSTPROCESS_CONFIRMED,
+        }
+        if self.session.stage not in allowed_stages:
+            raise RuntimeError(
+                "rollback_nesting is not allowed in stage "
+                f"{self.session.stage.value}"
+            )
+        result = self.worker.execute(
+            ToolCall("rollback_nesting", {"revision_id": revision_id}),
+            stage=self.session.stage,
+        )
+        if not result.ok:
+            raise RuntimeError(result.error or "rollback_nesting failed")
+        if self.session.stage == WorkflowStage.POSTPROCESS_CONFIRMED:
+            self.session.backtrack(
+                WorkflowStage.NESTED_REPORTED,
+                reason="rollback_nesting",
+            )
+        self._refresh_gate_result()
+        self._record_artifacts()
+        self.store.save(self.session)
+        return result.output
+
+    def renest(self, *, reason: str = "用户调整排板条件") -> AgentLoopResult:
+        """按当前排板参数重排一次，不重新读图、不重新确认图纸。
+
+        用于"同一张确认图纸，换一种排板条件再排一版"：旋转限制、
+        让尺是否参与、大板尺寸、刀缝、工艺等。每次重排追加一个
+        不可变 NestingRevision，旧版本全部保留，可随时回滚比对。
+
+        重排失败（例如新尺寸放不下、参数组合非法）时不阻塞会话：
+        恢复原阶段与原排板结果，把错误抛给调用方，用户改完条件
+        可以直接再试。
+        """
+        allowed_stages = {
+            WorkflowStage.NESTED_REPORTED,
+            WorkflowStage.POSTPROCESS_CONFIRMED,
+        }
+        if self.session.stage not in allowed_stages:
+            raise RuntimeError(
+                "renest is not allowed in stage "
+                f"{self.session.stage.value}"
+            )
+        if self.context.confirmed_drawing is None:
+            raise RuntimeError(
+                "renest requires a confirmed drawing snapshot"
+            )
+        previous_stage = self.session.stage
+        context = self.context
+        snapshot = {
+            "result": context.result,
+            "nesting_outcome": context.nesting_outcome,
+            "active_revision_id": context.active_revision_id,
+            "postprocess_revision_id": context.postprocess_revision_id,
+            "validation_errors": list(context.validation_errors or []),
+            "manufacturing_metrics": dict(context.manufacturing_metrics or {}),
+            "kerf_metrics": context.kerf_metrics,
+            "template_result": context.template_result,
+            "template_name": context.template_name,
+            "nested_dxf_path": context.nested_dxf_path,
+            "report_path": context.report_path,
+        }
+        self.session.backtrack(
+            WorkflowStage.NUMBERING_CONFIRMED,
+            reason=reason,
+        )
+        # 旧的后处理结果与新版本无关，必须重新校验后才能出图。
+        context.postprocess_revision_id = None
+        context.nested_dxf_path = None
+        context.report_path = None
+        plan = plan_after_confirmation(
+            WorkflowStage.NUMBERING_CONFIRMED.value,
+            width_mm=context.width_mm,
+            height_mm=context.height_mm,
+            thickness_mm=context.thickness_mm,
+            nested_path=self.nested_path,
+            report_path=self.report_path,
+            trials=context.trials,
+            seed=context.seed,
+            budget=context.budget,
+            quick=context.quick,
+            certified=context.certified,
+            pairing=context.pairing,
+            beam=context.beam,
+            beam_width=context.beam_width,
+            compress=context.compress,
+            rect_fast=context.rect_fast,
+            low_fill_rework=context.low_fill_rework,
+            low_fill_threshold=context.low_fill_threshold,
+            candidate_mode=context.candidate_mode,
+        )
+        if not plan:
+            self._restore_after_failed_renest(snapshot, previous_stage)
+            raise RuntimeError("no re-nesting plan could be built")
+        result = self.worker.execute(plan[0], stage=self.session.stage)
+        if not result.ok:
+            self._restore_after_failed_renest(snapshot, previous_stage)
+            raise RuntimeError(result.error or "re-nesting failed")
+        # worker 只执行工具，不改会话阶段；推进与编排器保持一致。
+        self.session.transition(
+            WorkflowStage.NESTED_REPORTED,
+            summary={"tool": plan[0].tool, "reason": "renest"},
+        )
+        self._refresh_gate_result()
+        self._record_artifacts()
+        self.store.save(self.session)
+        return self.last_result
+
+    def _restore_after_failed_renest(
+        self,
+        snapshot: dict[str, Any],
+        previous_stage: WorkflowStage,
+    ) -> None:
+        """重排失败时把会话与排板结果恢复原样。
+
+        会话停在 NUMBERING_CONFIRMED（已回溯），逐级前进回原阶段；
+        JobContext 的排板结果/版本指针全部还原，旧版本仍可交付。
+        """
+        context = self.context
+        context.result = snapshot["result"]
+        context.nesting_outcome = snapshot["nesting_outcome"]
+        context.active_revision_id = snapshot["active_revision_id"]
+        context.postprocess_revision_id = snapshot["postprocess_revision_id"]
+        context.validation_errors = snapshot["validation_errors"]
+        context.manufacturing_metrics = snapshot["manufacturing_metrics"]
+        context.kerf_metrics = snapshot["kerf_metrics"]
+        context.template_result = snapshot["template_result"]
+        context.template_name = snapshot["template_name"]
+        context.nested_dxf_path = snapshot["nested_dxf_path"]
+        context.report_path = snapshot["report_path"]
+        target_index = FORWARD_FLOW.index(previous_stage)
+        while True:
+            current_index = FORWARD_FLOW.index(self.session.stage)
+            if current_index >= target_index:
+                break
+            self.session.transition(
+                FORWARD_FLOW[current_index + 1],
+                reason="renest_failed_restore",
+            )
+        self._refresh_gate_result()
+        self._record_artifacts()
+        self.store.save(self.session)
+
+    def _refresh_gate_result(self) -> None:
+        """把待确认门状态同步成当前阶段。
+
+        回滚/重排会改变会话阶段但不经过 loop，若不刷新，
+        下一次 `confirm()` 会按旧的 last_result.stage 生成计划，
+        把命令发到错误的阶段。
+        """
+        stage = self.session.stage
+        self.last_result = AgentLoopResult(
+            session_id=self.session.session_id,
+            stage=stage.value,
+            completed=stage == WorkflowStage.COMPLETED,
+            blocked=stage == WorkflowStage.BLOCKED,
+            confirmation_required=stage in AgentLoop.confirmation_stages,
+            tool_results=[],
+        )
 
     def resume(self) -> AgentLoopResult:
         """Continue a recovered non-gate session from its current stage."""
@@ -402,6 +576,7 @@ class AgentRuntime:
             "nested_dxf": self.context.nested_dxf_path,
             "report": self.context.report_path,
             "check": self.context.check_path,
+            "confirmed_drawing": self.context.confirmed_drawing_path,
             "recognition_confirmation": (
                 self.context.recognition_confirmation_artifact_path
             ),

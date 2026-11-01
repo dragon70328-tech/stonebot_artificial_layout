@@ -326,7 +326,8 @@ def _beam_pass(parts, tiers, counts, sheet_w, sheet_h, cache,
                multi_tail: bool = True, multi_beam_width: int = 500,
                pattern_reuse: int = _PATTERN_REUSE_CAP,
                reuse_min_fill: float = _PATTERN_REUSE_MIN_FILL,
-               stats: dict | None = None):
+               stats: dict | None = None,
+               certified: bool = False):
     """单遍逐板束搜索：从给定库存排完全部零件。"""
     sheets = []
     t0 = time.time()
@@ -355,7 +356,9 @@ def _beam_pass(parts, tiers, counts, sheet_w, sheet_h, cache,
                 k = max(1, math.ceil(rem_area / sheet_area))
                 sub_tiers = [[k2, v, deque(dq), h]
                              for k2, v, dq, h in tiers]
-                deadline = time.time() + 20.0
+                # 认证模式：deadline 是本引擎唯一的时间相关分支，
+                # 显式解除（无上限，搜索过程确定）。
+                deadline = None if certified else time.time() + 20.0
                 got = _beam_pack_multi(counts, sub_tiers, k, sheet_w,
                                        sheet_h, multi_beam_width, min_gap,
                                        deadline=deadline)
@@ -413,6 +416,10 @@ def _beam_pass(parts, tiers, counts, sheet_w, sheet_h, cache,
             progress(len(sheets), sum(counts))
         if time_budget_s is not None and sum(counts) > 0 \
                 and time.time() - t0 > time_budget_s:
+            # 墙钟截断：截断点取决于机器速度，结果不可复现——
+            # 记录标志，供上层把本次结果标注为非确定性。
+            if stats is not None:
+                stats["beam_budget_exhausted"] = True
             if greedy_fallback is None:
                 break
             remaining = [parts[idx]
@@ -448,7 +455,8 @@ def beam_layout(parts: list, sheet_w: float, sheet_h: float,
                 pattern_reuse: int = _PATTERN_REUSE_CAP,
                 reuse_min_fill: float = _PATTERN_REUSE_MIN_FILL,
                 stats: dict | None = None,
-                progress=None) -> list:
+                progress=None,
+                certified: bool = False) -> list:
     """逐板束搜索排板，返回与 `_nest_single` 相同的 list[list[_Placement]]。
 
     beam_width：每层保留的部分布局数（越大越优越慢，CGR45 上 1000 约 40s）；
@@ -460,8 +468,13 @@ def beam_layout(parts: list, sheet_w: float, sheet_h: float,
     refine_tail：两遍法——第一遍找出尾板（低填充板上的难排件），
     第二遍给难排件加权，让它们尽早在满库存里找到最优搭档，
     避免尾板互相卡死；两遍取较优者，不会比单遍差；
+    certified：认证确定性模式——解除一切墙钟分支（time_budget_s 强制
+    不限、多板尾解无 deadline），固定 beam_width 下搜索过程完全确定；
     其余参数与 `_nest_single` 同义。
     """
+    if certified:
+        # 认证模式：墙钟预算是确定性的唯一威胁，显式解除。
+        time_budget_s = None
     tiers = _build_tiers(parts, cache, rotations)
     if not tiers:
         raise ValueError("没有可排板的零件")
@@ -471,7 +484,8 @@ def beam_layout(parts: list, sheet_w: float, sheet_h: float,
                         beam_width, rotations, max_pieces, min_gap,
                         0.0, time_budget_s, greedy_fallback, progress,
                         pattern_reuse=pattern_reuse,
-                        reuse_min_fill=reuse_min_fill, stats=stats)
+                        reuse_min_fill=reuse_min_fill, stats=stats,
+                        certified=certified)
     if not refine_tail or len(sheets) < 3:
         return sheets
     if len(parts) > _REFINE_TAIL_MAX_PARTS:
@@ -509,7 +523,8 @@ def beam_layout(parts: list, sheet_w: float, sheet_h: float,
                          beam_width, rotations, max_pieces, min_gap,
                          sheet_area, time_budget_s, greedy_fallback, progress,
                          pattern_reuse=pattern_reuse,
-                         reuse_min_fill=reuse_min_fill, stats=stats)
+                         reuse_min_fill=reuse_min_fill, stats=stats,
+                         certified=certified)
     return sheets2 if len(sheets2) <= len(sheets) else sheets
 
 

@@ -99,31 +99,39 @@ def plan_after_confirmation(
     low_fill_rework: bool = False,
     low_fill_threshold: float = 0.6,
     candidate_mode: str = "bbox",
+    certified: bool = False,
 ) -> list[ToolCall]:
+    nest_call = ToolCall(
+        "nest_parts",
+        {
+            "sheet_width": width_mm,
+            "sheet_height": height_mm,
+            "thickness": thickness_mm,
+            "trials": trials,
+            "seed": seed,
+            "budget": budget,
+            "quick": quick,
+            "certified": certified,
+            "pairing": pairing,
+            "beam": beam,
+            "beam_width": beam_width,
+            "compress": compress,
+            "rect_fast": rect_fast,
+            "low_fill_rework": low_fill_rework,
+            "low_fill_threshold": low_fill_threshold,
+            "candidate_mode": candidate_mode,
+        },
+    )
     if stage == WorkflowStage.AUDITED.value:
         return [
             ToolCall("confirm_numbering", {"decision": "confirmed"}),
-            ToolCall(
-                "nest_parts",
-                {
-                    "sheet_width": width_mm,
-                    "sheet_height": height_mm,
-                    "thickness": thickness_mm,
-                    "trials": trials,
-                    "seed": seed,
-                    "budget": budget,
-                    "quick": quick,
-                    "pairing": pairing,
-                    "beam": beam,
-                    "beam_width": beam_width,
-                    "compress": compress,
-                    "rect_fast": rect_fast,
-                    "low_fill_rework": low_fill_rework,
-                    "low_fill_threshold": low_fill_threshold,
-                    "candidate_mode": candidate_mode,
-                },
-            ),
+            nest_call,
         ]
+    # 图纸已确认、只是换了排板条件（旋转/让尺/大板尺寸…）：
+    # 直接重排，不重新读图也不重新确认图纸。新版本追加进版本链，
+    # 旧版本保留可回滚。
+    if stage == WorkflowStage.NUMBERING_CONFIRMED.value:
+        return [nest_call]
     if stage == WorkflowStage.NESTED_REPORTED.value:
         return [ToolCall("postprocess", {"result": {}})]
     if stage == WorkflowStage.POSTPROCESS_CONFIRMED.value:
@@ -156,6 +164,7 @@ def run_agent_mode(
     low_fill_rework: bool = False,
     low_fill_threshold: float = 0.6,
     candidate_mode: str = "bbox",
+    certified: bool = False,
 ) -> int:
     from src.agent_runtime import AgentRuntime
 
@@ -173,6 +182,7 @@ def run_agent_mode(
             seed=seed,
             budget=budget,
             quick=quick,
+            certified=certified,
             pairing=pairing,
             skip_unnumbered=skip_unnumbered,
             beam=beam,

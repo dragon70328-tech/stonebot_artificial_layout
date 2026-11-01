@@ -2363,7 +2363,98 @@ def read_dxf_with_profile(
         )
     # 源实体类型（圆/圆弧）挂到零件上，供原位 DXF 如实复写
     attach_source_curves(parts_data, doc)
+    from src.material_thickness import attach_thickness
+
+    attach_thickness(parts_data, doc)
     return parts_data, doc
+
+
+def curve_fidelity_issues(
+    parts_data: list[dict[str, Any]],
+) -> list[DrawingIssue]:
+    """把零件上的曲线保真缺口转成审图问题（不依赖画像命中）。"""
+    issues: list[DrawingIssue] = []
+    for panel in parts_data:
+        for item in panel.get("curve_fidelity_issues") or []:
+            _make_issue(
+                issues,
+                severity="warning",
+                type_="curve_not_reproduced",
+                entity=None,
+                layer=str(panel.get("layer") or ""),
+                coordinates=(
+                    float(item["coordinates"][0]),
+                    float(item["coordinates"][1]),
+                ),
+                message=str(item.get("message") or "曲线未能保真复写"),
+                suggestion=(
+                    "该曲线无法按原样写入交付 DXF（当前按折线近似）。"
+                    "机床直接加工前请人工确认，或在 CAD 中改为圆弧/闭合多段线。"
+                ),
+                entity_type=str(item.get("type") or "").upper(),
+                metadata={
+                    "handle": item.get("handle"),
+                    "ring": item.get("ring"),
+                },
+            )
+    return issues
+
+
+def machine_readiness_drawing_issues(
+    doc,
+    panel_layer: str | None = None,
+    regions: list | None = None,
+) -> list[DrawingIssue]:
+    """机床就绪检查 → 审图问题（不依赖画像是否命中）。"""
+    from src.machine_readiness import findings
+
+    issues: list[DrawingIssue] = []
+    for item in findings(doc, panel_layer=panel_layer, regions=regions):
+        _make_issue(
+            issues,
+            severity=str(item.get("severity") or "warning"),
+            type_=str(item.get("type") or "machine_readiness"),
+            entity=None,
+            layer=str(item.get("layer") or ""),
+            coordinates=tuple(item.get("coordinates") or (0.0, 0.0)),
+            message=str(item.get("message") or ""),
+            suggestion=str(item.get("suggestion") or ""),
+            entity_type=item.get("entity_type"),
+            metadata=dict(item.get("metadata") or {}),
+        )
+    return issues
+
+
+def _add_machine_readiness_issues(
+    doc,
+    profile: DrawingProfile,
+    panels: list[dict[str, Any]],
+    issues: list[DrawingIssue],
+) -> None:
+    regions = [
+        panel.get("outer_polygon") or panel.get("polygon")
+        for panel in panels
+    ]
+    issues.extend(
+        machine_readiness_drawing_issues(
+            doc,
+            panel_layer=profile.panel_layer,
+            regions=regions,
+        )
+    )
+
+
+def _add_curve_fidelity_issues(
+    doc: ezdxf.document.Drawing,
+    panels: list[dict[str, Any]],
+    issues: list[DrawingIssue],
+) -> None:
+    """曲线保真兜底：贴合零件轮廓却写不回原样的曲线必须报出来。"""
+    try:
+        attach_source_curves(panels, doc)
+    except Exception:  # noqa: BLE001 - 审图兜底不得阻断主流程
+        return
+    issues.extend(curve_fidelity_issues(panels))
 
 
 def _add_entity_filter_issues(
@@ -3058,6 +3149,8 @@ def audit_drawing(
     _add_small_area_issues(panels, profile, issues)
     _add_hole_outside_panel_issues(doc, profile, panels, issues)
     _add_panel_confidence_issues(panels, profile, issues)
+    _add_curve_fidelity_issues(doc, panels, issues)
+    _add_machine_readiness_issues(doc, profile, panels, issues)
 
     texts = _collect_profile_number_texts(doc, profile)
     zone_texts = _collect_zone_texts(doc, profile)
@@ -3211,6 +3304,11 @@ _AUDIT_ISSUE_LABELS = {
     "non_panel_text": "非编号文字",
     "low_confidence_entity": "低置信度实体",
     "material_conflict": "材料冲突",
+    "curve_not_reproduced": "曲线未能保真复写",
+    "units_missing": "未声明单位",
+    "zero_length_entity": "零长度实体",
+    "duplicate_entity": "重复实体",
+    "panel_on_default_layer": "面板在 0 层",
 }
 
 

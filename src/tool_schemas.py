@@ -147,6 +147,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
             "seed": "number",
             "budget": "number",
             "quick": "boolean",
+            "certified": "boolean",
             "pairing": "boolean",
             "beam": "boolean",
             "beam_width": "number",
@@ -165,6 +166,17 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         description="Run postprocessing and geometry validation.",
         fields={"result": "object"},
         required=("result",),
+    ),
+    "rollback_nesting": ToolSpec(
+        name="rollback_nesting",
+        stage=WorkflowStage.NESTED_REPORTED,
+        advances_to=None,
+        description=(
+            "Switch the active nesting result to a previous immutable "
+            "revision; history is never overwritten. 后处理与出图必须重做。"
+        ),
+        fields={"revision_id": "string"},
+        required=("revision_id",),
     ),
     "write_dxf": ToolSpec(
         name="write_dxf",

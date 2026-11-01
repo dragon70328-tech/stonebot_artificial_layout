@@ -100,6 +100,7 @@ stonebot_artificial_layout/
 | 文档 | 内容 |
 |---|---|
 | `docs/product-direction-2026-10-30.md` | 当前产品方向：平台无关 Runtime、薄插件、确定性闭环与画像包 |
+| `docs/execution-plan-2026-10-31.md` | 经营与技术执行总纲：服务化定位、确定性闭环优先级、90 天节奏 |
 | `docs/saas-architecture-goal.md` | 平台长期架构与五个支柱（判断代码改动的标准） |
 | `docs/saas-setup.md` | 当前搭建/运行/环境变量/租户认证 |
 | `docs/drawing-intake-subsystem.md` | 读图子系统设计（DXF 唯一输入） |
@@ -111,6 +112,7 @@ stonebot_artificial_layout/
 | `docs/recognition-model-operations.md` | 识别模型训练/监控/回滚/保留 |
 | `docs/modularization-plan.md` | 大文件拆分计划与安全规则 |
 | `docs/drawing-profile-*.md` | 具体项目画像说明 |
+| `docs/yuefu-elevation-extraction-rules.md` | 悦府立面审图/规格板提取/原位 DXF 制图规则 |
 
 ## 工作步骤
 
@@ -168,6 +170,25 @@ stonebot_artificial_layout/
 - 面板外轮廓 + 孔洞（独立图层）+ 编号 TEXT（质心居中）
 - 坐标保持原位，不做平移旋转
 - 用途：用户检查面板识别和编号准确性
+
+**原位 DXF = 源图副本 + 重分层 + 加编号**（2026-11-01 起，用户要求）：
+`write_numbered_parts_dxf(..., source_path=...)` 直接以源文件为底稿，**不重画
+几何**——原图的尺寸标注（DIMENSION/DIMSTYLE/精度）、文字说明、填充（HATCH）、
+图块（INSERT）、`$INSUNITS` 单位全部原样保留。只做两件事：
+
+1. 按语义重新归层（英文图层名，源图堆在 0 层也能变成标准图纸）：
+   `OUTER` 面板外轮廓、`HOLES` 孔洞、`NUMBERS` 编号、`MATERIALS` 材料+厚度、
+   `MATERIAL_HEADER` 原图列头材料、`DIMENSIONS` 尺寸标注、`TEXT` 文字、
+   `HATCH` 填充、`BLOCKS` 图块、`OTHER` 其他、`CHECK_CLOSURE` 未闭合提示。
+2. 叠加编号与材料注释：不同材料的外轮廓用不同颜色的实线（红/绿/蓝/品红/
+   青/橙/黄/灰循环），并在编号下方写「材料名 厚度mm」。
+
+厚度口径：先按图纸文字识别（"厚 18"、"18mm 厚"、"T=20" 等，只认明确语境，
+避免把 1200mm 长度误判），全图仅一个厚度值时套用；未注明或出现多个互相
+矛盾的值时按常用 **20mm**，注释带「(默认)」。
+
+注意：原位 DXF 是**审图底稿**，包含完整原图，不能直接下料；下料只认排板
+DXF。修正图纸（corrections）仍走重画路径（几何以修正结果为准）。
 - 画像启用列头材料（`material_column_enabled`）时文件名带 `_房号材料`，
   并多写两个图层：`MATERIALS`（零件材料号，绿色，居编号下方，与零件同 GROUP）
   和 `MATERIAL_HEADER`（原图「材料：ST-x」列头标签按原坐标复写）
@@ -177,8 +198,43 @@ stonebot_artificial_layout/
   （`dxf_reader.attach_source_curves` → `Part.outer_shape` / `outer_arcs` /
   `hole_shapes`），写入端不重新解析源图。雪花白洗手台结果：HOLES 4 个 CIRCLE
   （Ø25 龙头孔、Ø50 盆孔），OUTER 5 段 ARC（r25 台面圆角 ×4、r5 小圆角）+ 6 条
-  折线（直线边界与立板）。排板 DXF 目前仍是折线（`write_nested_dxf` 未接，
-  如需 CNC 直接按圆弧走刀可复用同一批 spec + 平移量）。
+  折线（直线边界与立板）。
+
+  **排板 DXF 同样如实复写圆弧**（2026-10-31 起，用户机床按 DXF 直接加工）：
+  读图阶段额外把"带 bulge 圆弧段的 LWPOLYLINE"按 handle 记下来
+  （`Part.outer_polyline` / `hole_shapes` 的 `type=polyline`），排板时随零件
+  带上 `source_outer_polygon` + `placement_rot`，写入端按"源外轮廓 → 当前
+  外包框"反推平移量（后处理只做平移）把圆弧映射到落位坐标。原位 DXF 与
+  排板 DXF 都写真 ARC / 真 bulge 多段线，回滚交付同样保留（版本布局载荷
+  序列化了曲线谱）。回读门禁改为按"零件组边界几何"比对（Hausdorff 2mm +
+  周长 2%），能识别 ARC/CIRCLE/bulge，相邻共边零件不会被合并误判。
+  门禁：`tests/test_arc_fidelity.py`。
+
+  **椭圆与样条**（2026-10-31 起）：`ELLIPSE` 此前完全不参与识别，椭圆孔
+  会被**静默丢掉**（实测 1 个椭圆孔读成 0 个），现已按参数展平参与识别与
+  层级判定，并在原位/排板 DXF 写回真 ELLIPSE。闭合样条按原样复写
+  （控制点 + 节点 + 权重 + 阶数；B 样条仿射不变，排板旋转平移精确），
+  整段贴合轮廓的样条同样原样复写；源图声明 CLOSED 的样条即使展平首尾
+  不重合也按闭合处理（部分 CAD 导出如此）。
+
+  **不静默兜底**：识别到、贴合零件轮廓、却无法原样复写的曲线（目前主要
+  是被裁剪的部分样条），写入端按折线近似的同时必须在审图报告里出
+  `curve_not_reproduced` 警告并给出坐标与 handle；该检查不依赖图纸画像
+  是否命中（无画像时仍执行）。门禁：`tests/test_ellipse_spline_fidelity.py`。
+
+  **立面图规格板提取与原位 DXF 制图**（2026-11-01 起，悦府项目沉淀）：
+  规则详见 `docs/yuefu-elevation-extraction-rules.md`。要点：
+  - 非实线（ZIGZAG/GAS_LINE/FENCELINE1）是边部做法，不能当废线过滤；
+    两条斜线相连是洞口（Z=过道、V=窗），25° 等长平行线组是轴测示意。
+  - 壁龛/凹槽按规则展开；分段总长不能整除时按**标注公称值**（如 1169），
+    不取几何测量值（1168/1168/1170）。
+  - 原位 DXF 只在用户指定的产出文件上就地修改，**绝不改原始图纸**；
+    一图一确认，未确认前不生成完整原位 DXF。
+  - 字体 `SimSun.ttf`，DXF R2000 + GBK + `$DWGCODEPAGE=ANSI_936`
+    （ezdxf 默认 ANSI_1252，保存后必须替换，否则中文乱码）。
+  - 尺寸按建筑制图标准（ARCHTICK、延伸线 20/40、字高 80、青色）；
+    文字注释不得压图或压尺寸线，图外注释用引线；**板号保留板内原位**。
+  - 移动文字必须用 `set_placement` 同时更新 insert 与 align_point。
 
   **两个必须避开的坑**（都是当天踩过、用户看图发现的）：
 
@@ -207,6 +263,19 @@ stonebot_artificial_layout/
   异形件（外轮廓面积/外包络 < 0.98）备注列标"尺寸为外包络"。
 - CSV 为 utf-8-sig（Excel/WPS 直接打开）；`--audit` 同批还产出原位 DXF
   （此前只有主流程有）；清单生成失败降级为警告，不阻断审图/排板主产物。
+
+**材料统计 Excel**（2026-11-01 起）：同批产出 `{name}_材料统计.xlsx`
+（材料名称 / 数量 / 长 / 宽 / 厚 / 单件面积 / 小计面积 / 编号清单 + 合计行），
+按「材料 + 长×宽×厚」分组。用纯标准库写出（`src/xlsx_writer.py`，无第三方
+依赖）。插件交付时随两张 DXF 一起放进用户选择的文件夹；统计失败不阻断
+DXF 交付。
+
+**机床就绪检查**（2026-11-01 起，`src/machine_readiness.py`）：
+- 单位未声明（`$INSUNITS` 为 0/缺失）→ 机床可能按英寸读，整图放大 25.4 倍；
+- 零长度实体 → 走空刀或报错；
+- 完全重复实体 → 重复切割（按图纸汇总成一条，带数量与样例 handle）；
+- 有零件区域时只检查零件包围盒内的实体，图框/详图的重复线不制造噪音。
+该检查在命中画像与未命中画像（`_audit_drawing` 不再直接 skipped）时都执行。
 
 ### Step 4.5: 材料分组（仅启用图纸画像的项目）
 
@@ -284,6 +353,31 @@ stonebot_artificial_layout/
 6. 排板结束后先报告使用大板数量，用户确认后再执行后处理推板；`--no-confirm` 可跳过确认
 7. 若指定 `--kerf`，排板后按每张板的贯穿通切刀数校验实际材料长度，
    材料长度 = 零件外包络跨度 + 通切刀数 × kerf，必须 ≤ 标称尺寸 + 让尺
+
+**认证确定性模式**（`--certified`，2026-10-31 起）：解除排板链路的一切
+墙钟分支——束搜索不限时、多板尾解无 deadline、LNS 只受迭代/耐心预算
+控制——同一确认图纸 + 同一请求参数 + 同一算法/依赖环境下，结果逐位一致
+（版本号、布局、交付 DXF 字节）。请求快照记录算法版本
+（`src/nesting.py` 的 `ALGORITHM_VERSION`，改动布局逻辑必须 bump）+
+python/shapely/ezdxf 版本 + 图纸画像内容摘要，任何一项变化都是不同的
+排板血缘（不同 request_id）。当前仅支持桥切单批：deepnest 直接拒绝，
+`--parallel-workers>1` 自动退回 1；运行更慢，只用于认证交付。认证模式
+下若仍触发任何墙钟截断标志（lns_budget_exhausted / multi_tail_timeout /
+beam_budget_exhausted）直接抛错 fail closed。探索性运行（默认）被墙钟
+截断时在 stats / 工具输出里带 `determinism_hazards` 标志，不作为认证结果。
+门禁：`tests/test_certified_determinism.py`（进程内双跑同版本号+同字节，
+跨 PYTHONHASHSEED 子进程同布局签名）。
+
+**对话式换条件重排**（2026-10-31 起）：`stonebot_configure_nesting`
+在 `nested_reported` / `postprocess_confirmed` 阶段调用时，应用新参数
+并立即用**同一份确认图纸**重排（不重读图、不重确认），返回
+`renested: true`；每次重排追加一个不可变 NestingRevision，旧版本保留
+可回滚比对。适用场景：改旋转限制、换大板尺寸、改刀缝/工艺、让尺是否
+参与规划（`usable_width_mm/usable_height_mm` 设为实物尺寸即参与）。
+重排失败（新尺寸放不下）返回 `RENEST_FAILED` 并恢复原配置与原布局，
+会话不阻塞，改条件可直接重试。图纸修正后旧版本按 `confirmed_digest`
+拦截，禁止回滚。确认快照与版本链已进插件上下文快照，MCP 进程重启后
+仍可重排/回滚/按原样交付。
 
 ### Step 6: 生成排板 DXF
 

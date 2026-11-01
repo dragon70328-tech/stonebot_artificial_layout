@@ -75,7 +75,15 @@ class Orchestrator:
                 )
 
             spec = get_tool_spec(call.tool)
-            if spec is not None and spec.advances_to is not None:
+            if call.tool == "rollback_nesting":
+                # 回滚是回退动作：在后处理确认之后发生时，会话退回到
+                # nested_reported，强制重新校验后才能再次出图。
+                if self.session.stage == WorkflowStage.POSTPROCESS_CONFIRMED:
+                    self.session.backtrack(
+                        WorkflowStage.NESTED_REPORTED,
+                        reason="rollback_nesting",
+                    )
+            elif spec is not None and spec.advances_to is not None:
                 self.session.transition(
                     spec.advances_to,
                     summary={"tool": call.tool},

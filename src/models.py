@@ -27,6 +27,17 @@ class Part:
     outer_shape: dict | None = None        # 整件就是一个圆时的圆心/半径
     outer_arcs: list[dict] = field(default_factory=list)   # 落在外轮廓上的圆弧
     hole_shapes: list[dict | None] = field(default_factory=list)  # 与 holes 一一对应
+    # 源图外轮廓是一条带 bulge 圆弧段的多段线时，按原样复写（原位/排板 DXF）
+    outer_polyline: dict | None = None
+    # 整件就是一条椭圆 / 样条时按原样复写
+    outer_curve: dict | None = None
+    # 材料厚度（mm）与来源：drawing=图纸注明，default=未注明按常用值
+    thickness_mm: float = 0.0
+    thickness_source: str = "default"
+    # 排板时用于把源曲线元数据映射到落位坐标：源外轮廓 + 施加的旋转角。
+    # 后处理只做平移，写入端据当前外包框反推平移量。
+    source_outer_polygon: Polygon | None = None
+    placement_rot: float = 0.0
 
     def __post_init__(self):
         if self.area == 0.0:

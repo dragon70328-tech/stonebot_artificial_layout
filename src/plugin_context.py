@@ -16,10 +16,11 @@ from typing import Any
 from shapely import wkt
 from shapely.geometry.base import BaseGeometry
 
-from src.contracts import RecognizedDrawing
+from src.contracts import ConfirmedDrawing, RecognizedDrawing
 from src.drawing_profile import DrawingIssue, load_profile
 from src.job_context import JobContext
 from src.models import NestingResult, Part, Sheet
+from src.nesting_contracts import NestingRevision
 from src.units import UnitSystem
 from src.workflow import GroupNestingOutcome
 
@@ -224,6 +225,25 @@ def context_snapshot(context: JobContext) -> dict[str, Any]:
         "kerf_metrics": _encode(context.kerf_metrics),
         "correction_revision": context.correction_revision,
         "correction_history": _encode(context.correction_history),
+        # 确认快照与排板版本链：重启后仍能重排/回滚/按原样交付。
+        "confirmed_drawing": (
+            context.confirmed_drawing.model_dump(mode="json")
+            if context.confirmed_drawing is not None
+            else None
+        ),
+        "confirmed_parts_signature": context.confirmed_parts_signature,
+        "confirmed_revision_no": context.confirmed_revision_no,
+        "nesting_revision_ids": [
+            revision.revision_id
+            for revision in (context.nesting_revisions or [])
+        ],
+        "nesting_revision_paths": dict(
+            context.nesting_revision_paths or {}
+        ),
+        "active_revision_id": context.active_revision_id,
+        "postprocess_revision_id": context.postprocess_revision_id,
+        "template_name": context.template_name,
+        "certified": bool(getattr(context, "certified", False)),
         "recognition_feedback": _encode(
             context.recognition_feedback
         ),
@@ -239,6 +259,28 @@ def context_snapshot(context: JobContext) -> dict[str, Any]:
             ),
         },
     }
+
+
+def _load_nesting_revisions(
+    revision_ids: list[Any],
+    paths: dict[str, str],
+) -> list[NestingRevision]:
+    """按落盘文件重建版本链（保持顺序）；缺失文件跳过并保留告警位。"""
+    revisions: list[NestingRevision] = []
+    for raw_id in revision_ids:
+        revision_id = str(raw_id)
+        raw_path = paths.get(revision_id)
+        if not raw_path:
+            continue
+        source = Path(raw_path)
+        if not source.exists():
+            continue
+        payload = json.loads(source.read_text(encoding="utf-8"))
+        try:
+            revisions.append(NestingRevision.model_validate(payload))
+        except Exception:  # noqa: BLE001 - 旧口径版本按原样恢复
+            revisions.append(NestingRevision.model_construct(**payload))
+    return revisions
 
 
 def save_context_snapshot(
@@ -321,6 +363,31 @@ def restore_context_snapshot(
     context.correction_history = _decode(
         payload.get("correction_history") or []
     )
+    confirmed = payload.get("confirmed_drawing")
+    context.confirmed_drawing = (
+        ConfirmedDrawing.model_validate(confirmed)
+        if confirmed is not None
+        else None
+    )
+    context.confirmed_parts_signature = payload.get(
+        "confirmed_parts_signature"
+    )
+    context.confirmed_revision_no = int(
+        payload.get("confirmed_revision_no", 0)
+    )
+    context.nesting_revision_paths = dict(
+        payload.get("nesting_revision_paths") or {}
+    )
+    context.nesting_revisions = _load_nesting_revisions(
+        payload.get("nesting_revision_ids") or [],
+        context.nesting_revision_paths,
+    )
+    context.active_revision_id = payload.get("active_revision_id")
+    context.postprocess_revision_id = payload.get(
+        "postprocess_revision_id"
+    )
+    context.template_name = payload.get("template_name")
+    context.certified = bool(payload.get("certified", False))
     context.recognition_feedback = _decode(
         payload.get("recognition_feedback") or []
     )

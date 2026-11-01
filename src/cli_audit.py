@@ -306,6 +306,11 @@ def run_audit(
             source_name=Path(dxf_path).name,
         )
         spec_json, spec_csv = write_spec_list_files(spec, out_dir, stem)
+        from src.material_summary import write_material_summary_xlsx
+
+        write_material_summary_xlsx(
+            spec_parts, out_dir / f"{stem}_材料统计.xlsx"
+        )
         numbered_dxf = out_dir / f"{stem}_numbered_原位.dxf"
         material_headers = (
             collect_column_materials(audit_doc, drawing_profile)
@@ -313,7 +318,10 @@ def run_audit(
             else None
         )
         write_numbered_parts_dxf(
-            spec_parts, str(numbered_dxf), material_headers=material_headers
+            spec_parts,
+            str(numbered_dxf),
+            material_headers=material_headers,
+            source_path=str(dxf_path),
         )
     except Exception as exc:
         print(f"警告：生成规格清单/原位 DXF 失败 - {exc}")

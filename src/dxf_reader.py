@@ -4,7 +4,7 @@ import ezdxf
 import math
 from shapely.geometry import Polygon, Point, MultiPolygon
 from shapely.ops import unary_union
-from ezdxf.entities import LWPolyline, Polyline, Circle, Arc, Spline
+from ezdxf.entities import Ellipse, LWPolyline, Polyline, Circle, Arc, Spline
 from ezdxf.math import bulge_to_arc
 import numpy as np
 import re
@@ -266,6 +266,27 @@ def _entity_to_polygon(entity, num_segments: int = 64,
                 return poly
             except Exception:
                 return None
+
+        elif isinstance(entity, Ellipse):
+            # 椭圆此前完全没有参与识别：椭圆孔会被静默丢掉。
+            try:
+                pts = [(p.x, p.y) for p in entity.flattening(0.1)]
+            except Exception:
+                return None
+            if len(pts) < 3:
+                return None
+            if math.hypot(pts[0][0] - pts[-1][0],
+                          pts[0][1] - pts[-1][1]) > closed_tolerance:
+                # 椭圆弧：按既有 ARC 口径用弦闭合，保证参与层级判定。
+                pts.append(pts[0])
+            poly = Polygon(pts)
+            if not poly.is_valid:
+                poly = poly.buffer(0)
+            if poly.is_empty:
+                return None
+            if poly.geom_type == "MultiPolygon":
+                poly = max(poly.geoms, key=lambda geom: geom.area)
+            return poly
     except Exception:
         return None
 
@@ -418,6 +439,27 @@ def _is_closed(entity, tolerance: float = 0.01) -> bool:
     if isinstance(entity, Circle):
         return True
     if isinstance(entity, Spline):
+        # 源图声明闭合（CLOSED 标志）就按闭合处理：部分 CAD 导出的闭合
+        # 样条 flattening 首尾并不重合，仅凭端点距离会误判成开放曲线。
+        if bool(getattr(entity, "closed", False)):
+            return True
+        try:
+            points = list(entity.flattening(0.1))
+        except Exception:
+            return False
+        if len(points) < 3:
+            return False
+        first = (float(points[0].x), float(points[0].y))
+        last = (float(points[-1].x), float(points[-1].y))
+        return math.hypot(first[0] - last[0], first[1] - last[1]) < tolerance
+    if isinstance(entity, Ellipse):
+        try:
+            start = float(entity.dxf.start_param)
+            end = float(entity.dxf.end_param)
+        except Exception:
+            return False
+        if abs(abs(end - start) - 2 * math.pi) <= 1e-6:
+            return True
         try:
             points = list(entity.flattening(0.1))
         except Exception:
@@ -598,7 +640,12 @@ def _sample_arc(spec: dict, samples: int = 24) -> list[tuple[float, float]]:
 
 
 def collect_source_curves(doc) -> dict[str, dict]:
-    """源图里可以"如实复写"的曲线：CIRCLE 与 ARC，按 handle 索引。"""
+    """源图里可以"如实复写"的曲线：CIRCLE / ARC / 带圆弧段的 LWPOLYLINE。
+
+    LWPOLYLINE 的 bulge 段在几何计算里会被采样成折线（排板需要精确多边形），
+    但原位 DXF 必须还原成同样的圆弧段——否则 CAD 里量不到半径、机床按折线
+    下料。这里按 handle 记下原始顶点与 bulge。
+    """
     specs: dict[str, dict] = {}
     if doc is None:
         return specs
@@ -621,7 +668,144 @@ def collect_source_curves(doc) -> dict[str, dict]:
                 "start_angle": float(entity.dxf.start_angle),
                 "end_angle": float(entity.dxf.end_angle),
             }
+        elif dtype == "LWPOLYLINE":
+            points = [
+                (float(x), float(y), float(bulge))
+                for x, y, bulge in entity.get_points("xyb")
+            ]
+            if len(points) >= 3 and any(
+                abs(bulge) > 1e-9 for _x, _y, bulge in points
+            ):
+                specs[handle] = {
+                    "type": "polyline",
+                    "vertices": [list(item) for item in points],
+                    "closed": bool(entity.closed),
+                }
+        elif dtype == "ELLIPSE":
+            try:
+                specs[handle] = {
+                    "type": "ellipse",
+                    "center": (
+                        float(entity.dxf.center.x),
+                        float(entity.dxf.center.y),
+                    ),
+                    "major_axis": (
+                        float(entity.dxf.major_axis.x),
+                        float(entity.dxf.major_axis.y),
+                    ),
+                    "ratio": float(entity.dxf.ratio),
+                    "start_param": float(entity.dxf.start_param),
+                    "end_param": float(entity.dxf.end_param),
+                }
+            except Exception:  # noqa: BLE001 - 异常椭圆不参与复写
+                pass
+        elif dtype == "SPLINE":
+            try:
+                bs = entity.construction_tool()
+                weights = list(bs.weights())
+                specs[handle] = {
+                    "type": "spline",
+                    "degree": int(bs.degree),
+                    "knots": [float(k) for k in bs.knots()],
+                    "control_points": [
+                        [float(p.x), float(p.y), float(getattr(p, "z", 0.0))]
+                        for p in bs.control_points
+                    ],
+                    "weights": [float(w) for w in weights],
+                    "closed": bool(entity.closed),
+                }
+            except Exception:  # noqa: BLE001 - 畸形样条不参与复写
+                pass
     return specs
+
+
+def _polyline_matches_ring(
+    spec: dict,
+    ring,
+    tol: float = SOURCE_CURVE_TOL_MM,
+) -> bool:
+    """源多段线（含 bulge 弧段）展开后是否就是这条环。"""
+    vertices = [
+        (float(x), float(y), float(bulge))
+        for x, y, bulge in spec.get("vertices") or []
+    ]
+    if len(vertices) < 3:
+        return False
+    points: list[tuple[float, float]] = []
+    for index in range(len(vertices)):
+        start = vertices[index]
+        end = vertices[(index + 1) % len(vertices)]
+        if index == len(vertices) - 1 and not spec.get("closed", True):
+            break
+        points.append((start[0], start[1]))
+        if abs(start[2]) > 1e-9:
+            points.extend(_bulge_arc_points(start[:2], end[:2], start[2])[1:])
+    if len(points) < 3:
+        return False
+    try:
+        candidate = Polygon(points)
+    except Exception:  # noqa: BLE001 - 畸形多段线不参与复写
+        return False
+    if candidate.is_empty or not candidate.is_valid:
+        return False
+    coords = list(ring.coords)
+    if len(coords) < 3:
+        return False
+    expected = Polygon(coords)
+    distance = expected.hausdorff_distance(candidate)
+    return distance <= tol
+
+
+def _spec_sample_points(spec: dict) -> list[tuple[float, float]]:
+    """把椭圆/样条谱采样成点列（用于判断是否落在零件轮廓上）。"""
+    kind = spec.get("type")
+    if kind == "ellipse":
+        cx, cy = spec["center"]
+        mx, my = spec["major_axis"]
+        ratio = float(spec["ratio"])
+        start = float(spec["start_param"])
+        end = float(spec["end_param"])
+        if end <= start:
+            end += 2 * math.pi
+        steps = 64
+        points = []
+        for index in range(steps + 1):
+            t = start + (end - start) * index / steps
+            cos_t, sin_t = math.cos(t), math.sin(t)
+            points.append(
+                (
+                    cx + mx * cos_t - my * ratio * sin_t,
+                    cy + my * cos_t + mx * ratio * sin_t,
+                )
+            )
+        return points
+    if kind == "spline":
+        try:
+            from ezdxf.math import BSpline
+
+            weights = spec.get("weights") or None
+            bs = BSpline(
+                [tuple(p) for p in spec["control_points"]],
+                order=int(spec["degree"]) + 1,
+                knots=[float(k) for k in spec["knots"]],
+                weights=weights,
+            )
+            return [(p.x, p.y) for p in bs.flattening(0.1)]
+        except Exception:  # noqa: BLE001 - 无法重建时不参与匹配
+            return []
+    return []
+
+
+def _curve_matches_ring(spec: dict, ring, tol: float) -> bool:
+    points = _spec_sample_points(spec)
+    if len(points) < 3:
+        return False
+    return all(ring.distance(Point(x, y)) <= tol for x, y in points)
+
+
+def _curve_touches_ring(spec: dict, ring, tol: float) -> bool:
+    points = _spec_sample_points(spec)
+    return any(ring.distance(Point(x, y)) <= tol for x, y in points)
 
 
 def _circle_matches_ring(spec: dict, ring, tol: float = SOURCE_CURVE_TOL_MM) -> bool:
@@ -671,6 +855,7 @@ def attach_source_curves(parts_data: list[dict], doc, tol: float = SOURCE_CURVE_
 
     circles = [spec for spec in specs.values() if spec["type"] == "circle"]
     arcs = [spec for spec in specs.values() if spec["type"] == "arc"]
+    reproduced: set[str] = set()
 
     for part in parts_data:
         outer = part.get("outer_polygon") or part.get("polygon")
@@ -683,6 +868,23 @@ def attach_source_curves(parts_data: list[dict], doc, tol: float = SOURCE_CURVE_
                 and _circle_matches_ring(spec, outer.exterior, tol)
             ):
                 part["outer_shape"] = spec
+                reproduced.add(outer_handle)
+            elif (
+                isinstance(spec, dict)
+                and spec.get("type") == "polyline"
+                and _polyline_matches_ring(spec, outer.exterior, tol)
+            ):
+                # 源图就是一条带圆弧段的多段线：原位 DXF 按原样写回 bulge。
+                part["outer_polyline"] = spec
+                reproduced.add(outer_handle)
+            elif (
+                isinstance(spec, dict)
+                and spec.get("type") in {"ellipse", "spline"}
+                and _curve_matches_ring(spec, outer.exterior, tol)
+            ):
+                # 整件就是一条椭圆/样条：原样复写（机床直接加工）。
+                part["outer_curve"] = spec
+                reproduced.add(outer_handle)
             else:
                 min_x, min_y, max_x, max_y = outer.bounds
                 nearby = [
@@ -693,6 +895,9 @@ def attach_source_curves(parts_data: list[dict], doc, tol: float = SOURCE_CURVE_
                 matched = _arcs_on_ring(outer.exterior, nearby, tol)
                 if matched:
                     part["outer_arcs"] = matched
+                    for arc_handle, candidate in specs.items():
+                        if any(candidate is item for item in matched):
+                            reproduced.add(arc_handle)
 
         holes = part.get("holes") or []
         handles = part.get("hole_handles") or []
@@ -707,9 +912,89 @@ def attach_source_curves(parts_data: list[dict], doc, tol: float = SOURCE_CURVE_
                 and _circle_matches_ring(spec, hole.exterior, tol)
             ):
                 shapes.append(spec)
+                if handle:
+                    reproduced.add(handle)
+            elif (
+                isinstance(spec, dict)
+                and spec.get("type") == "polyline"
+                and isinstance(hole, Polygon)
+                and _polyline_matches_ring(spec, hole.exterior, tol)
+            ):
+                shapes.append(spec)
+                if handle:
+                    reproduced.add(handle)
+            elif (
+                isinstance(spec, dict)
+                and spec.get("type") in {"ellipse", "spline"}
+                and isinstance(hole, Polygon)
+                and _curve_matches_ring(spec, hole.exterior, tol)
+            ):
+                shapes.append(spec)
+                if handle:
+                    reproduced.add(handle)
             else:
                 shapes.append(None)
         part["hole_shapes"] = shapes
+
+    # 不静默兜底：识别到、贴着零件轮廓、却没能按原样复写的曲线，
+    # 必须出现在审图问题里（悄悄退化成折线在机床上是危险行为）。
+    candidates: list[tuple[str, dict, list, tuple, tuple[float, float]]] = []
+    for handle, spec in specs.items():
+        if spec.get("type") not in {"ellipse", "spline", "polyline"}:
+            continue
+        if handle in reproduced:
+            continue
+        samples = _spec_sample_points(spec)
+        if len(samples) < 3:
+            continue
+        xs = [point[0] for point in samples]
+        ys = [point[1] for point in samples]
+        candidates.append(
+            (
+                handle,
+                spec,
+                samples,
+                (min(xs), min(ys), max(xs), max(ys)),
+                (sum(xs) / len(xs), sum(ys) / len(ys)),
+            )
+        )
+
+    for part in parts_data:
+        outer = part.get("outer_polygon") or part.get("polygon")
+        rings: list[tuple[str, Any]] = []
+        if outer is not None and not outer.is_empty:
+            rings.append(("outer", outer.exterior))
+        for index, hole in enumerate(part.get("holes") or []):
+            if isinstance(hole, Polygon) and not hole.is_empty:
+                rings.append((f"hole[{index}]", hole.exterior))
+        for handle, spec, samples, sample_bounds, centroid in candidates:
+            bounds = outer.bounds if outer is not None else None
+            if bounds is not None and (
+                sample_bounds[2] < bounds[0] - tol
+                or sample_bounds[0] > bounds[2] + tol
+                or sample_bounds[3] < bounds[1] - tol
+                or sample_bounds[1] > bounds[3] + tol
+            ):
+                continue
+            for ring_name, ring in rings:
+                if not _curve_touches_ring(spec, ring, tol):
+                    continue
+                part.setdefault("curve_fidelity_issues", []).append(
+                    {
+                        "type": spec.get("type"),
+                        "handle": handle,
+                        "ring": ring_name,
+                        "coordinates": (
+                            round(centroid[0], 3),
+                            round(centroid[1], 3),
+                        ),
+                        "message": (
+                            f"{spec.get('type')} 曲线贴合零件轮廓，但未能"
+                            "按原样复写（当前按折线近似）"
+                        ),
+                    }
+                )
+                break
 
 
 def _spec_near_box(spec: dict, min_x: float, min_y: float, max_x: float, max_y: float,
@@ -1188,5 +1473,9 @@ def read_dxf(filepath: str,
     # 源实体类型（圆/圆弧）挂到零件上：原位 DXF 按"源图是圆就写圆、源图是
     # 多段线就写多段线"输出，见 dxf_writer.write_numbered_parts_dxf。
     attach_source_curves(parts_data, doc)
+    # 材料厚度：图纸注明就用，未注明按常用 20mm 记录（带来源标记）。
+    from src.material_thickness import attach_thickness
+
+    attach_thickness(parts_data, doc)
 
     return parts_data, doc

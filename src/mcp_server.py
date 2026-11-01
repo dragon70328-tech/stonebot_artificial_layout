@@ -175,6 +175,7 @@ class MCPServer:
             "stonebot_rename_panels": self.service.rename_panels,
             "stonebot_confirm_drawing": self.service.confirm_drawing,
             "stonebot_confirm_nesting": self.service.confirm_nesting,
+            "stonebot_rollback_nesting": self.service.rollback_nesting,
             "stonebot_choose_output_directory": (
                 self.service.choose_output_directory
             ),

@@ -582,6 +582,11 @@ def _layout_key(sheets_pl: list, *, manufacture_score: float,
 _LNS_DEFAULT_ITERATIONS = 40
 _LNS_DEFAULT_PATIENCE = 12
 
+# 桥切排板算法版本：任何影响布局结果的逻辑改动都要 bump，
+# 认证确定性模式把它写进 NestingRequest 快照（digest 血缘），
+# 同一版本 + 同一输入 + 同一依赖环境 ⇒ 结果逐位一致。
+ALGORITHM_VERSION = "bridge-2026-10-31"
+
 
 def _sheet_outer_area(pls: list) -> float:
     """一张板上零件的**外包络**面积和。
@@ -888,9 +893,22 @@ def _materialize(sheets_pl: list, sheet_w: float, sheet_h: float,
                 holes=[tf(h) for h in part.holes],
                 original_number=part.original_number,
                 material_group=part.material_group,
+                material_column=part.material_column,
                 group_id=part.group_id,
                 area=part.area,
                 label_position=(label_pt.x, label_pt.y),
+                outer_handle=part.outer_handle,
+                hole_handles=list(part.hole_handles or []),
+                closure_gap=part.closure_gap,
+                # 源曲线谱原样带着走；落位坐标在写出时按
+                # source_outer_polygon + placement_rot + 当前外包框反推。
+                outer_shape=part.outer_shape,
+                outer_arcs=list(part.outer_arcs or []),
+                hole_shapes=list(part.hole_shapes or []),
+                outer_polyline=part.outer_polyline,
+                outer_curve=part.outer_curve,
+                source_outer_polygon=part.outer_polygon,
+                placement_rot=float(pl.rot or 0.0),
             )
             sheet.parts.append(placed)
         sheets.append(sheet)
@@ -1032,7 +1050,8 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
                rect_fast: bool = True,
                beam_budget: float | None = None,
                pattern_reuse: int = 4,
-               stats: dict | None = None) -> NestingResult:
+               stats: dict | None = None,
+               certified: bool = False) -> NestingResult:
     """排板主入口：多轮贪心 + 多次试验取最优。
 
     configs：可选，自定义 [(排序键, 评分模式, 种子)] 列表；
@@ -1051,6 +1070,11 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
     beam_budget：束搜索的时间上限（秒）。None=沿用 improve_budget；
     ≤0=不限（跑完整束搜索，质量最好但最慢）；
     pattern_reuse：板型复用上限（一张板排完后同配方可复制几张，含原板）；
+    certified：认证确定性模式。开启后所有墙钟分支全部解除（束搜索不限时、
+    多板尾解无 deadline、LNS 只受 max_iterations/patience 控制），
+    同输入同环境必得同结果；若运行中仍触发任何墙钟截断标志，
+    直接抛错（fail closed），绝不交付"不可复现却自称认证"的结果。
+    探索性模式（默认）行为不变：墙钟预算仍在，stats 里记录是否被截断。
     rect_fast：全部零件近似矩形（bbox 填充率 ≥0.98）时，先走矩形快通道
     （尺寸档 + 行/列 guillotine 模式 + 束搜索，见 src/rect_nesting.py），
     命中即直接返回（毫秒级、版式可桥切，跳过贪心/束搜索/LNS/压缩）。
@@ -1060,6 +1084,9 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
     best_key = None
     best_pl_global = None
     cache: dict = {}
+
+    if certified and stats is not None:
+        stats["certified_mode"] = True
 
     if rect_fast and not first_part_left_edge and min_gap <= 0:
         from src.rect_nesting import rect_fast_layout
@@ -1072,6 +1099,8 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
             if stats is not None:
                 stats["rect_fast_path"] = True
                 stats["rect_fast_sheets"] = len(rect_pl)
+                # rect_fast 通道无任何墙钟/随机分支，天然确定。
+                stats["certified"] = bool(certified)
             if progress:
                 progress(1, 1, len(rect_pl))
             return _materialize(rect_pl, sheet_width, sheet_height,
@@ -1115,7 +1144,10 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
             # 束搜索本身也必须受预算约束：此前这里没传 time_budget_s，
             # 束搜索会无上限地跑（2026-10-20 酒店 332 件、束宽 1000 跑了 35
             # 分钟无输出）。超出预算后由 greedy_fallback 收尾，结果仍完整。
-            if beam_budget is None:
+            # 认证模式：束搜索永不限时（fixed beam_width 下搜索本身确定）。
+            if certified:
+                beam_time_limit = None
+            elif beam_budget is None:
                 beam_time_limit = (improve_budget
                                    if improve_budget and improve_budget > 0
                                    else None)
@@ -1139,7 +1171,8 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
                 beam_width=beam_width, rotations=rotations,
                 min_gap=min_gap, time_budget_s=beam_time_limit,
                 greedy_fallback=_beam_greedy_fallback,
-                pattern_reuse=pattern_reuse, stats=stats)
+                pattern_reuse=pattern_reuse, stats=stats,
+                certified=certified)
             compact = sum(max((pl.poly.bounds[3] for pl in pls), default=0.0)
                           for pls in beam_pl)
             manufacture_score = _placement_manufacturability_score(
@@ -1154,9 +1187,13 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
                 progress(total_cfgs, total_cfgs,
                          best_key[0] if best_key else None)
 
-        if improve_budget > 0:
+        # 认证模式：LNS 必须运行且只受确定性预算（迭代数/耐心）控制，
+        # 墙钟护栏显式解除（budget_s=0 时 _lns_improve 不做时间检查）。
+        if improve_budget > 0 or certified:
             best_pl = _lns_improve(best_pl, sheet_width, sheet_height, cache,
-                                   budget_s=improve_budget, seed=trial_seed,
+                                   budget_s=(0 if certified
+                                             else improve_budget),
+                                   seed=trial_seed,
                                    rotations=rotations,
                                    first_part_left_edge=first_part_left_edge,
                                    min_gap=min_gap,
@@ -1216,4 +1253,23 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
 
     if best_result is None:
         raise RuntimeError("未找到有效排板方案")
+    if stats is not None:
+        hazards = [
+            flag for flag in (
+                "lns_budget_exhausted",
+                "multi_tail_timeout",
+                "beam_budget_exhausted",
+            )
+            if stats.get(flag)
+        ]
+        if certified and hazards:
+            # 认证模式设计上不可能触发墙钟截断；触发即说明引擎引入了
+            # 新的时间相关分支——fail closed，禁止交付不可复现的结果。
+            raise RuntimeError(
+                "认证确定性模式触发了墙钟截断标志 "
+                f"{hazards}：结果不可复现，引擎存在新的时间分支，请报告。"
+            )
+        stats["certified"] = bool(certified)
+        if hazards:
+            stats["determinism_hazards"] = hazards
     return best_result

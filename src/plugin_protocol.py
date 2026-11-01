@@ -69,8 +69,16 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "stonebot_configure_nesting",
         "description": (
-            "Configure the sheet, process and optimizer parameters before a "
-            "confirmed drawing is nested. This never starts nesting."
+            "Set the sheet, process and optimizer parameters for this job. "
+            "At the audited stage it only stores them (nesting starts at "
+            "stonebot_confirm_drawing). After nesting has been reported it "
+            "applies the new values and immediately re-nests the SAME "
+            "confirmed drawing: use this to change rotation limits, sheet "
+            "size, kerf, process, or whether the oversize allowance counts "
+            "as usable area. Every re-nest appends an immutable revision; "
+            "earlier revisions stay available for comparison and rollback. "
+            "To let the oversize allowance take part in planning, pass "
+            "usable_width_mm/usable_height_mm equal to the physical size."
         ),
         "inputSchema": _object_schema(
             {
@@ -137,6 +145,16 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "seed": {"type": "integer", "default": 0},
                 "budget": {"type": "number", "minimum": 0, "default": 0},
                 "quick": {"type": "boolean", "default": True},
+                "certified": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Certified deterministic mode: removes every "
+                        "wall-clock branch from the nesting engine so the "
+                        "same input in the same environment always produces "
+                        "the identical layout. Bridge process only; slower."
+                    ),
+                },
                 "pairing": {"type": "boolean", "default": False},
                 "beam": {"type": "boolean", "default": True},
                 "beam_width": {"type": "integer", "minimum": 1},
@@ -333,6 +351,34 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "readOnlyHint": False,
             "destructiveHint": False,
             "idempotentHint": False,
+            "openWorldHint": False,
+        },
+    },
+    {
+        "name": "stonebot_rollback_nesting",
+        "description": (
+            "Switch the active nesting result to a previous immutable "
+            "revision listed in nesting_revisions. History is never "
+            "overwritten; a validated revision can be delivered again "
+            "without re-validation."
+        ),
+        "inputSchema": _object_schema(
+            {
+                "job_id": _job_id(),
+                "revision_id": {
+                    "type": "string",
+                    "description": (
+                        "Target revision id (nr-...) from "
+                        "nesting_revisions in the job state."
+                    ),
+                },
+            },
+            ["job_id", "revision_id"],
+        ),
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
             "openWorldHint": False,
         },
     },
@@ -662,12 +708,16 @@ def next_actions(stage: str, *, nesting_configured: bool) -> list[str]:
         return actions
     if stage == "nested_reported":
         return [
+            "stonebot_configure_nesting",
+            "stonebot_rollback_nesting",
             "stonebot_confirm_nesting",
             "stonebot_advance_until_gate",
             "stonebot_cancel_job",
         ]
     if stage == "postprocess_confirmed":
         return [
+            "stonebot_configure_nesting",
+            "stonebot_rollback_nesting",
             "stonebot_choose_output_directory",
             "stonebot_finalize_job",
             "stonebot_advance_until_gate",

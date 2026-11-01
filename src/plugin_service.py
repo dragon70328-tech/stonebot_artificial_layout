@@ -184,14 +184,58 @@ class PluginJobService:
     def configure_nesting(self, args: dict[str, Any]) -> dict[str, Any]:
         job_id = self._require_job_id(args)
         runtime, manifest = self._runtime_and_manifest(job_id)
-        self._require_stage(runtime, {WorkflowStage.AUDITED})
+        self._require_stage(
+            runtime,
+            {
+                WorkflowStage.AUDITED,
+                WorkflowStage.NESTED_REPORTED,
+                WorkflowStage.POSTPROCESS_CONFIRMED,
+            },
+        )
+        previous_stage = runtime.session.stage
+        previous_config = dict(manifest.get("nesting") or {})
 
         config = self._normalize_nesting_config(args)
         self._apply_nesting_config(runtime, config)
         manifest["nesting"] = config
         manifest["nesting_configured"] = True
+
+        renested = previous_stage != WorkflowStage.AUDITED
+        if renested:
+            try:
+                runtime.renest()
+            except Exception as exc:  # noqa: BLE001 - service boundary
+                # 重排失败：把配置退回上一版，会话与旧排板结果原样可用。
+                if previous_config.get("width_mm") and previous_config.get(
+                    "height_mm"
+                ):
+                    self._apply_nesting_config(runtime, previous_config)
+                    manifest["nesting"] = previous_config
+                raise StonebotProtocolError(
+                    "RENEST_FAILED",
+                    f"按新条件重排失败：{exc}",
+                    details={
+                        "stage": runtime.session.current_stage,
+                        "nesting_revisions": len(
+                            runtime.context.nesting_revisions
+                        ),
+                    },
+                    allowed_actions=[
+                        "stonebot_configure_nesting",
+                        "stonebot_rollback_nesting",
+                        "stonebot_job_status",
+                    ],
+                ) from exc
         self._sync_manifest(job_id, runtime)
-        return self._public_state(runtime, manifest)
+        state = self._public_state(runtime, manifest)
+        if renested:
+            revisions = runtime.context.nesting_revisions
+            state["renested"] = True
+            state["previous_stage"] = previous_stage.value
+            state["new_revision"] = (
+                revisions[-1].revision_id if revisions else None
+            )
+        return state
 
     def list_drawing_issues(self, args: dict[str, Any]) -> dict[str, Any]:
         job_id = self._require_job_id(args)
@@ -396,6 +440,33 @@ class PluginJobService:
         self._sync_manifest(job_id, runtime)
         return self._public_state(runtime, manifest)
 
+    def rollback_nesting(self, args: dict[str, Any]) -> dict[str, Any]:
+        job_id = self._require_job_id(args)
+        runtime, manifest = self._runtime_and_manifest(job_id)
+        self._require_stage(
+            runtime,
+            {WorkflowStage.NESTED_REPORTED, WorkflowStage.POSTPROCESS_CONFIRMED},
+        )
+        revision_id = str(args.get("revision_id") or "").strip()
+        if not revision_id:
+            raise StonebotProtocolError(
+                "REVISION_ID_REQUIRED",
+                "revision_id 不能为空；可用版本见 nesting_revisions。",
+                allowed_actions=["stonebot_job_status"],
+            )
+        try:
+            output = runtime.rollback_nesting(revision_id)
+        except Exception as exc:  # noqa: BLE001 - service boundary
+            raise StonebotProtocolError(
+                "ROLLBACK_FAILED",
+                str(exc),
+                allowed_actions=["stonebot_job_status"],
+            ) from exc
+        self._sync_manifest(job_id, runtime)
+        state = self._public_state(runtime, manifest)
+        state["rollback"] = output
+        return state
+
     def choose_output_directory(
         self,
         args: dict[str, Any],
@@ -436,15 +507,21 @@ class PluginJobService:
         overwrite = bool(args.get("overwrite", False))
         try:
             target_dir = resolve_output_directory(output_directory)
-            delivery_sources = (
+            summary_name = f"{Path(runtime.dxf_path).stem}_材料统计.xlsx"
+            delivery_sources = [
                 runtime.context.numbered_dxf_path,
                 runtime.nested_path,
-            )
-            collisions = [
-                str(target_dir / Path(source).name)
+            ]
+            candidate_targets = [
+                target_dir / Path(source).name
                 for source in delivery_sources
                 if source
-                and (target_dir / Path(source).name).exists()
+            ]
+            candidate_targets.append(target_dir / summary_name)
+            collisions = [
+                str(path)
+                for path in candidate_targets
+                if path.exists()
                 and not overwrite
             ]
             if collisions:
@@ -499,6 +576,17 @@ class PluginJobService:
                     "stonebot_job_status",
                 ],
             ) from exc
+        try:
+            from src.material_summary import write_material_summary_xlsx
+
+            summary_path = write_material_summary_xlsx(
+                runtime.context.parts,
+                target_dir / summary_name,
+            )
+            delivered["artifacts"]["material_summary"] = str(summary_path)
+            delivered["file_names"].append(summary_path.name)
+        except Exception as exc:  # noqa: BLE001 - 统计表失败不阻断 DXF 交付
+            delivered["material_summary_error"] = str(exc)
         manifest["delivery"] = {
             **delivered,
             "delivered_at": _utc_now(),
@@ -842,6 +930,7 @@ class PluginJobService:
             seed=int((config or {}).get("seed", 0)),
             budget=float((config or {}).get("budget", 0)),
             quick=bool((config or {}).get("quick", True)),
+            certified=bool((config or {}).get("certified", False)),
             pairing=bool((config or {}).get("pairing", False)),
             skip_unnumbered=bool(initial.get("skip_unnumbered", True)),
             beam=bool((config or {}).get("beam", True)),
@@ -907,6 +996,7 @@ class PluginJobService:
         )
         config["process"] = str(config["process"]).casefold()
         config["kerf_mm"] = float(config.get("kerf_mm", 0))
+        config["certified"] = bool(config.get("certified", False))
         if config["width_mm"] <= 0 or config["height_mm"] <= 0:
             raise StonebotProtocolError(
                 "INVALID_SHEET_SIZE",
@@ -939,6 +1029,11 @@ class PluginJobService:
                 "INCOMPATIBLE_OPTIONS",
                 "低填充重排不能与 pairing 同时启用。",
             )
+        if config["certified"] and config["process"] != "bridge":
+            raise StonebotProtocolError(
+                "CERTIFIED_REQUIRES_BRIDGE",
+                "认证确定性模式当前只支持桥切（bridge）工艺。",
+            )
         return config
 
     def _apply_nesting_config(
@@ -960,6 +1055,7 @@ class PluginJobService:
         runtime.context.seed = int(config.get("seed", 0))
         runtime.context.budget = float(config.get("budget", 0))
         runtime.context.quick = bool(config.get("quick", True))
+        runtime.context.certified = bool(config.get("certified", False))
         runtime.context.pairing = bool(config.get("pairing", False))
         runtime.context.beam = bool(config.get("beam", True))
         runtime.context.beam_width = config.get("beam_width")
@@ -1240,6 +1336,7 @@ class PluginJobService:
                 else None
             ),
             "sheet": snapshot.get("sheet"),
+            "certified": bool(runtime.context.certified),
             "counts": {
                 "parts": len(parts),
                 "holes": hole_count,
@@ -1249,6 +1346,8 @@ class PluginJobService:
             },
             "nesting": snapshot.get("nesting"),
             "correction_revision": runtime.context.correction_revision,
+            "confirmed_drawing": snapshot.get("confirmed_drawing"),
+            "nesting_revisions": snapshot.get("nesting_revisions"),
         }
         tool_errors = []
         if runtime.last_result is not None:

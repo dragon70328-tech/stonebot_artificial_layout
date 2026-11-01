@@ -9,6 +9,7 @@ from shapely.geometry import Polygon
 import main as app
 from src.agent_runtime import AgentRuntime
 from src.constraints import PROFILE_QUICK
+from src.contracts import ConfirmedDrawing
 from src.drawing_profile import DrawingProfile
 from src.job_context import JobContext
 from src.models import NestingResult, Part, Sheet
@@ -195,6 +196,7 @@ def test_real_handlers_nest_postprocess_write_chain(tmp_path):
     )
     handlers = build_tool_handlers(context)
 
+    confirmed = handlers["confirm_numbering"]({"decision": "confirmed"})
     nested = handlers["nest_parts"](
         {"sheet_width": 1000, "sheet_height": 800, "budget": 0, "quick": True}
     )
@@ -205,6 +207,7 @@ def test_real_handlers_nest_postprocess_write_chain(tmp_path):
     reported = handlers["write_report"]({"path": str(report_path)})
 
     assert nested["total_parts"] == 2
+    assert confirmed["confirmed_drawing"]["panels"] == 2
     assert post["geometry_errors"] == 0
     assert written["sheets"] == 1
     assert reported["total_sheets"] == 1
@@ -265,6 +268,7 @@ def test_handlers_nest_uses_contract_usable_size(tmp_path):
         parts=parts,
         unit=UnitSystem.METRIC,
     ))
+    handlers["confirm_numbering"]({"decision": "confirmed"})
     without_spec = handlers["nest_parts"](
         {"sheet_width": 1000, "sheet_height": 800, "budget": 0, "quick": True}
     )
@@ -281,7 +285,9 @@ def test_handlers_nest_uses_contract_usable_size(tmp_path):
             thickness_mm=20,
         ),
     )
-    with_spec = build_tool_handlers(context)["nest_parts"](
+    handlers_with_spec = build_tool_handlers(context)
+    handlers_with_spec["confirm_numbering"]({"decision": "confirmed"})
+    with_spec = handlers_with_spec["nest_parts"](
         {"sheet_width": 1000, "sheet_height": 800, "budget": 0, "quick": True}
     )
 
@@ -428,3 +434,318 @@ def test_agent_runtime_job_reports_board_caliber(tmp_path):
     assert dimensions["physical_width"] == 1030  # 实物 = 标称 + 让尺
     assert dimensions["kerf_allowance_x_mm"] == 330  # 实物 − 可利用
     assert dimensions["usable_includes_oversize"] is False
+
+
+def test_confirm_numbering_materializes_immutable_snapshot(tmp_path):
+    """确认编号产出不可变 ConfirmedDrawing：内容寻址、可回读、进状态。"""
+    dxf_path = tmp_path / "parts.dxf"
+    _make_dxf(dxf_path)
+    context = JobContext(
+        dxf_path=str(dxf_path),
+        nesting_profile=app.PROFILES["quick"],
+        output_dir=tmp_path / "out",
+    )
+    context.drawing_profile = _profile()
+    handlers = build_tool_handlers(context)
+    handlers["analyze_drawing"]({"path": str(dxf_path)})
+    handlers["read_dxf"]({"path": str(dxf_path)})
+    handlers["assign_numbers"](
+        {"path": str(dxf_path), "skip_unnumbered": False}
+    )
+
+    confirmed = handlers["confirm_numbering"]({"decision": "confirmed"})
+
+    snapshot = confirmed["confirmed_drawing"]
+    assert snapshot["panels"] == 2
+    assert snapshot["revision_no"] == 1
+    path = Path(snapshot["path"])
+    assert path.exists()
+
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    assert stored["confirmed_digest"] == snapshot["digest"]
+    assert stored["confirmed_id"].startswith("cd-")
+    assert stored["source_digest"] is not None
+
+    restored = ConfirmedDrawing.model_validate(stored)
+    assert len(restored.panels) == 2
+    numbers = {panel.number for panel in restored.panels}
+    assert numbers == {"01B-1", "01B-2"}
+
+    state = context.snapshot()
+    assert state["confirmed_drawing"]["digest"] == snapshot["digest"]
+    json.dumps(state, ensure_ascii=False)
+
+
+def test_confirm_numbering_reject_leaves_no_snapshot():
+    """拒绝确认不产生快照，排板仍然被拒绝。"""
+    parts = [_rect_part(1, 400, 300)]
+    context = JobContext(
+        nesting_profile=PROFILE_QUICK,
+        parts=parts,
+        unit=UnitSystem.METRIC,
+    )
+    handlers = build_tool_handlers(context)
+
+    result = handlers["confirm_numbering"]({"decision": "reject"})
+
+    assert "confirmed_drawing" not in result
+    assert context.confirmed_drawing is None
+    with pytest.raises(ValueError, match="confirm_numbering"):
+        handlers["nest_parts"](
+            {"sheet_width": 1000, "sheet_height": 800, "budget": 0}
+        )
+
+
+def test_confirmed_drawing_signature_stable_and_versioned():
+    """同一批零件重复确认：内容签名不变，版本链递增并记录父摘要。"""
+    parts = [_rect_part(1, 400, 300), _rect_part(2, 400, 300)]
+    context = JobContext(
+        nesting_profile=PROFILE_QUICK,
+        parts=parts,
+        unit=UnitSystem.METRIC,
+    )
+    handlers = build_tool_handlers(context)
+
+    first = handlers["confirm_numbering"]({"decision": "confirmed"})
+    first = first["confirmed_drawing"]
+    first_signature = context.confirmed_parts_signature
+
+    second = handlers["confirm_numbering"]({"decision": "confirmed"})
+    second = second["confirmed_drawing"]
+
+    assert second["revision_no"] == 2
+    assert context.confirmed_parts_signature == first_signature
+    assert context.confirmed_drawing is not None
+    parent_note = f"parent_confirmed_digest:{first['digest']}"
+    assert parent_note in context.confirmed_drawing.notes
+
+
+def test_nest_parts_blocked_when_parts_drift_after_confirmation():
+    """确认后零件被改动 => 排板 fail closed；重新确认后放行。"""
+    parts = [_rect_part(1, 400, 300), _rect_part(2, 400, 300)]
+    context = JobContext(
+        nesting_profile=PROFILE_QUICK,
+        parts=parts,
+        unit=UnitSystem.METRIC,
+    )
+    handlers = build_tool_handlers(context)
+    handlers["confirm_numbering"]({"decision": "confirmed"})
+
+    context.parts = parts + [_rect_part(3, 400, 300)]
+    with pytest.raises(ValueError, match="re-run confirm_numbering"):
+        handlers["nest_parts"](
+            {"sheet_width": 1000, "sheet_height": 800, "budget": 0}
+        )
+
+    reconfirmed = handlers["confirm_numbering"]({"decision": "confirmed"})
+    assert reconfirmed["confirmed_drawing"]["revision_no"] == 2
+    assert reconfirmed["confirmed_drawing"]["panels"] == 3
+    nested = handlers["nest_parts"](
+        {"sheet_width": 1000, "sheet_height": 800, "budget": 0, "quick": True}
+    )
+    assert nested["total_parts"] == 3
+
+
+def _confirmed_context(parts, **kwargs):
+    context = JobContext(
+        nesting_profile=PROFILE_QUICK,
+        parts=parts,
+        unit=UnitSystem.METRIC,
+        **kwargs,
+    )
+    handlers = build_tool_handlers(context)
+    handlers["confirm_numbering"]({"decision": "confirmed"})
+    return context, handlers
+
+
+def test_nest_parts_records_immutable_revision(tmp_path):
+    """每次排板产出不可变版本：请求快照 + 布局 + 指标，内容寻址落盘。"""
+    parts = [_rect_part(1, 400, 300), _rect_part(2, 400, 300)]
+    context, handlers = _confirmed_context(
+        parts, output_dir=tmp_path / "out"
+    )
+
+    nested = handlers["nest_parts"](
+        {"sheet_width": 1000, "sheet_height": 800, "budget": 0, "quick": True}
+    )
+
+    revision_info = nested["revision"]
+    assert revision_info["revision_id"].startswith("nr-")
+    assert revision_info["request_id"].startswith("nreq-")
+    assert len(context.nesting_revisions) == 1
+    assert context.active_revision_id == revision_info["revision_id"]
+
+    revision = context.nesting_revisions[0]
+    assert revision.request.confirmed_drawing is context.confirmed_drawing
+    assert revision.metrics["total_sheets"] == 1.0
+    assert len(revision.layout["sheets"]) == 1
+    assert len(revision.layout["sheets"][0]["parts"]) == 2
+
+    path = Path(revision_info["path"])
+    assert path.exists()
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    assert stored["revision_id"] == revision_info["revision_id"]
+    assert stored["request"]["confirmed_drawing"]["confirmed_digest"]
+
+    state = context.snapshot()
+    assert state["nesting_revisions"]["count"] == 1
+    assert state["nesting_revisions"]["active"] == revision_info["revision_id"]
+    json.dumps(state, ensure_ascii=False)
+
+
+def test_rollback_nesting_restores_previous_layout_byte_identical(tmp_path):
+    """验收口径：重排后回滚到 r1，交付 DXF 与 r1 首次交付逐字节一致。"""
+    parts = [_rect_part(1, 400, 300), _rect_part(2, 400, 300)]
+    context, handlers = _confirmed_context(parts)
+
+    first = handlers["nest_parts"](
+        {"sheet_width": 1000, "sheet_height": 800, "budget": 0, "quick": True}
+    )
+    first_revision = first["revision"]["revision_id"]
+    assert first["total_sheets"] == 1
+    # 新版本未经后处理校验，出图被拒绝
+    with pytest.raises(ValueError, match="postprocess on the active"):
+        handlers["write_dxf"]({"path": str(tmp_path / "too_early.dxf")})
+    handlers["postprocess"]({"result": {}})
+    first_dxf = tmp_path / "first.dxf"
+    handlers["write_dxf"]({"path": str(first_dxf)})
+    first_bytes = first_dxf.read_bytes()
+
+    second = handlers["nest_parts"](
+        {"sheet_width": 450, "sheet_height": 350, "budget": 0, "quick": True}
+    )
+    assert second["total_sheets"] == 2
+    assert second["revision"]["revision_id"] != first_revision
+    assert len(context.nesting_revisions) == 2
+    handlers["postprocess"]({"result": {}})
+
+    rolled_back = handlers["rollback_nesting"](
+        {"revision_id": first_revision}
+    )
+    assert rolled_back["total_sheets"] == 1
+    # r1 已携带校验状态，回滚后可直接交付
+    assert rolled_back["requires_postprocess"] is False
+    assert context.active_revision_id == first_revision
+    assert len(context.nesting_revisions) == 2  # 历史不被覆盖
+    restored_dxf = tmp_path / "restored.dxf"
+    handlers["write_dxf"]({"path": str(restored_dxf)})
+    assert restored_dxf.read_bytes() == first_bytes
+
+
+def test_rollback_nesting_unknown_revision_raises():
+    parts = [_rect_part(1, 400, 300)]
+    _context, handlers = _confirmed_context(parts)
+    handlers["nest_parts"](
+        {"sheet_width": 1000, "sheet_height": 800, "budget": 0, "quick": True}
+    )
+    with pytest.raises(ValueError, match="unknown nesting revision"):
+        handlers["rollback_nesting"]({"revision_id": "nr-does-not-exist"})
+
+
+def test_rollback_rejects_revision_from_old_confirmed_drawing():
+    """图纸修正后不能再回滚到修正前的布局（否则交付与图纸不符）。"""
+    parts = [_rect_part(1, 400, 300), _rect_part(2, 400, 300)]
+    context, handlers = _confirmed_context(parts)
+    old = handlers["nest_parts"](
+        {"sheet_width": 1000, "sheet_height": 800, "budget": 0, "quick": True}
+    )
+    old_revision = old["revision"]["revision_id"]
+    old_digest = context.confirmed_drawing_digest
+
+    # 修正图纸：换掉零件后重新确认，生成新的确认快照
+    context.parts.append(_rect_part(3, 300, 200))
+    handlers["confirm_numbering"]({"decision": "confirmed"})
+    assert context.confirmed_drawing_digest != old_digest
+    handlers["nest_parts"](
+        {"sheet_width": 1000, "sheet_height": 800, "budget": 0, "quick": True}
+    )
+
+    with pytest.raises(ValueError, match="different confirmed drawing"):
+        handlers["rollback_nesting"]({"revision_id": old_revision})
+
+
+def test_full_validation_catches_dropped_part():
+    """统一验证器：排板结果少一件 => 完整性校验拦截。"""
+    parts = [_rect_part(1, 400, 300), _rect_part(2, 400, 300)]
+    context, handlers = _confirmed_context(parts)
+    handlers["nest_parts"](
+        {"sheet_width": 1000, "sheet_height": 800, "budget": 0, "quick": True}
+    )
+    # 模拟引擎丢件：直接从结果里拿掉一件
+    context.result.sheets[0].parts.pop()
+    context.result.total_parts -= 1
+
+    result = handlers["postprocess"]({"result": {}})
+
+    assert result["completeness_errors"] == 1
+    assert context.validation_errors
+
+
+def test_full_validation_catches_duplicate_numbers():
+    """统一验证器：同一编号出现在两张板 => 唯一性校验拦截。"""
+    parts = [_rect_part(1, 400, 300), _rect_part(2, 400, 300)]
+    context, handlers = _confirmed_context(parts)
+    handlers["nest_parts"](
+        {"sheet_width": 1000, "sheet_height": 800, "budget": 0, "quick": True}
+    )
+    # 板上两个零件改成同一编号
+    for part in context.result.sheets[0].parts:
+        part.number = "P-0001"
+
+    result = handlers["postprocess"]({"result": {}})
+
+    assert result["validation_categories"]["uniqueness"] == 1
+
+
+def test_write_dxf_readback_gate_blocks_tampered_file(tmp_path):
+    """回读门禁：读回校验失败时删除文件并拒绝交付。"""
+    parts = [_rect_part(1, 400, 300)]
+    context, handlers = _confirmed_context(parts)
+    handlers["nest_parts"](
+        {"sheet_width": 1000, "sheet_height": 800, "budget": 0, "quick": True}
+    )
+    handlers["postprocess"]({"result": {}})
+    dxf_path = tmp_path / "nested.dxf"
+    handlers["write_dxf"]({"path": str(dxf_path)})
+    assert dxf_path.exists()
+
+    # 正常写出的文件能通过回读；往 OUTER 层塞一个多余轮廓则必须失败
+    import ezdxf
+
+    doc = ezdxf.readfile(str(dxf_path))
+    doc.modelspace().add_lwpolyline(
+        [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)],
+        dxfattribs={"layer": "OUTER"},
+    )
+    doc.saveas(str(dxf_path))
+
+    from src.nesting_readback import sheets_payload_from_result
+    from src.nesting_readback import verify_nested_dxf
+
+    errors = verify_nested_dxf(
+        dxf_path, sheets_payload_from_result(context.result)
+    )
+    assert any("外轮廓不一致" in error for error in errors)
+
+
+def test_write_dxf_readback_failure_removes_file(tmp_path, monkeypatch):
+    """回读失败 => 文件被删除、任务不落 nested_dxf_path。"""
+    parts = [_rect_part(1, 400, 300)]
+    context, handlers = _confirmed_context(parts)
+    handlers["nest_parts"](
+        {"sheet_width": 1000, "sheet_height": 800, "budget": 0, "quick": True}
+    )
+    handlers["postprocess"]({"result": {}})
+
+    import src.tool_handlers as tool_handlers_module
+
+    monkeypatch.setattr(
+        tool_handlers_module,
+        "verify_nested_dxf",
+        lambda path, sheets: ["readback: 模拟校验失败"],
+    )
+    dxf_path = tmp_path / "nested.dxf"
+    with pytest.raises(ValueError, match="read-back verification failed"):
+        handlers["write_dxf"]({"path": str(dxf_path)})
+    assert not dxf_path.exists()
+    assert context.nested_dxf_path is None
