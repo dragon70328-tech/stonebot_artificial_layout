@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1600" viewBox="0 0 1600 1600">
+<rect width="100%" height="100%" fill="white"/>
+<text x="292.4" y="513.7" font-size="20" fill="#dc2626">UNIT TYPE: C.3b</text>
+<text x="666.1" y="512.2" font-size="20" fill="#dc2626">材料：ST-1</text>
+<polygon points="40.0,46.8 931.2,46.8 931.2,548.9 40.0,548.9 40.0,46.8" fill="#111827" fill-opacity="0.08" stroke="#111827" stroke-width="2"/>
+<text x="997.5" y="524.2" font-size="20" fill="#dc2626">UNIT TYPE: C.3b</text>
+<polygon points="931.2,548.9 1560.0,548.9 1560.0,46.8 931.2,46.8 931.2,548.9" fill="#111827" fill-opacity="0.08" stroke="#111827" stroke-width="2"/>
+<polygon points="120.5,73.8 413.6,73.8 413.6,216.8 263.5,216.8 263.5,518.6 120.5,518.6 120.5,73.8" fill="#111827" fill-opacity="0.08" stroke="#111827" stroke-width="2"/>
+<polyline points="120.5,533.7 120.5,534.3" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="263.5,533.7 263.5,534.3" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="120.5,534.0 263.5,534.0" fill="none" stroke="#6b7280" stroke-width="2"/>
+<text x="192.0" y="531.0" font-size="20" fill="#dc2626">25&quot;</text>
+<polyline points="99.7,518.6 99.1,518.6" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="99.5,518.6 99.5,73.8" fill="none" stroke="#6b7280" stroke-width="2"/>
+<text x="142.3" y="1015.8" font-size="20" fill="#dc2626">UNIT TYPE: C.3</text>
+<text x="441.1" y="1015.8" font-size="20" fill="#dc2626">材料：ST-1</text>
+<polygon points="40.0,548.9 931.2,548.9 931.2,1051.1 40.0,1051.1 40.0,548.9" fill="#111827" fill-opacity="0.08" stroke="#111827" stroke-width="2"/>
+<text x="1005.0" y="1000.7" font-size="20" fill="#dc2626">UNIT TYPE: C.3</text>
+<polygon points="931.2,1051.1 1560.0,1051.1 1560.0,548.9 931.2,548.9 931.2,1051.1" fill="#111827" fill-opacity="0.08" stroke="#111827" stroke-width="2"/>
+<polygon points="1012.7,717.0 1182.9,717.0 1182.9,842.8 1012.7,842.8 1012.7,717.0" fill="#111827" fill-opacity="0.08" stroke="#111827" stroke-width="2"/>
+<polyline points="1012.7,709.8 1012.7,709.3" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="1012.7,709.6 1182.9,709.6" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="1004.1,717.0 1003.5,717.0" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="1004.1,842.8 1003.5,842.8" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="1003.8,717.0 1003.8,842.8" fill="none" stroke="#6b7280" stroke-width="2"/>
+<text x="1000.9" y="779.9" font-size="20" fill="#dc2626">22&quot;</text>
+<polygon points="106.8,717.8 501.6,717.8 501.6,574.8 106.8,574.8 106.8,717.8" fill="#111827" fill-opacity="0.08" stroke="#111827" stroke-width="2"/>
+<polyline points="98.7,717.8 98.2,717.8" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="98.7,574.8 98.2,574.8" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="98.5,717.8 98.5,574.8" fill="none" stroke="#6b7280" stroke-width="2"/>
+<text x="95.6" y="646.3" font-size="20" fill="#dc2626">25&quot;</text>
+<polyline points="106.8,566.8 106.8,566.3" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="501.6,566.8 501.6,566.3" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="106.8,566.6 501.6,566.6" fill="none" stroke="#6b7280" stroke-width="2"/>
+<text x="304.2" y="563.7" font-size="20" fill="#dc2626">69&quot;</text>
+<polygon points="868.2,574.8 575.1,574.8 575.1,717.8 725.2,717.8 725.2,1019.6 868.2,1019.6 868.2,574.8" fill="#111827" fill-opacity="0.08" stroke="#111827" stroke-width="2"/>
+<polyline points="575.1,567.6 575.1,567.0" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="868.2,567.6 868.2,567.0" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="575.1,567.3 868.2,567.3" fill="none" stroke="#6b7280" stroke-width="2"/>
+<text x="721.7" y="560.8" font-size="20" fill="#dc2626">511/4&quot;</text>
+<polyline points="563.2,717.8 562.7,717.8" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="563.2,574.8 562.7,574.8" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="563.0,717.8 563.0,574.8" fill="none" stroke="#6b7280" stroke-width="2"/>
+<text x="560.1" y="646.3" font-size="20" fill="#dc2626">25&quot;</text>
+<polyline points="889.0,1019.6 889.6,1019.6" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="889.0,574.8 889.6,574.8" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="889.2,1019.6 889.2,574.8" fill="none" stroke="#6b7280" stroke-width="2"/>
+<text x="882.7" y="797.2" font-size="20" fill="#dc2626">773/4&quot;</text>
+<polygon points="40.0,1051.1 931.2,1051.1 931.2,1553.2 40.0,1553.2 40.0,1051.1" fill="#111827" fill-opacity="0.08" stroke="#111827" stroke-width="2"/>
+<polygon points="106.8,1220.0 501.6,1220.0 501.6,1077.0 106.8,1077.0 106.8,1220.0" fill="#111827" fill-opacity="0.08" stroke="#111827" stroke-width="2"/>
+<polyline points="98.7,1077.0 98.2,1077.0" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="98.5,1220.0 98.5,1077.0" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="106.8,1069.0 106.8,1068.4" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="501.6,1069.0 501.6,1068.4" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="106.8,1068.8 501.6,1068.8" fill="none" stroke="#6b7280" stroke-width="2"/>
+<text x="304.2" y="1065.8" font-size="20" fill="#dc2626">69&quot;</text>
+<polygon points="868.2,1077.0 575.1,1077.0 575.1,1220.0 725.2,1220.0 725.2,1521.8 868.2,1521.8 868.2,1077.0" fill="#111827" fill-opacity="0.08" stroke="#111827" stroke-width="2"/>
+<polyline points="575.1,1069.7 575.1,1069.2" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="868.2,1069.7 868.2,1069.2" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="575.1,1069.5 868.2,1069.5" fill="none" stroke="#6b7280" stroke-width="2"/>
+<text x="721.7" y="1063.0" font-size="20" fill="#dc2626">511/4&quot;</text>
+<polyline points="563.2,1077.0 562.7,1077.0" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="563.0,1220.0 563.0,1077.0" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="889.0,1077.0 889.6,1077.0" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polyline points="889.2,1521.8 889.2,1077.0" fill="none" stroke="#6b7280" stroke-width="2"/>
+<polygon points="931.2,1553.2 1560.0,1553.2 1560.0,1051.1 931.2,1051.1 931.2,1553.2" fill="#111827" fill-opacity="0.08" stroke="#111827" stroke-width="2"/>
+<text x="475.4" y="968.9" font-size="20" fill="#dc2626">C3-ST/1-001</text>
+<text x="522.2" y="466.7" font-size="20" fill="#dc2626">C3B-ST/1-001</text>
+</svg>
