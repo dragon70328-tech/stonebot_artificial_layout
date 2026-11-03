@@ -267,7 +267,10 @@ def angle_candidates(rotations: tuple, arbitrary_rotation: bool,
 
 def _rotation_forms(part: Part, angles: list, cache: dict) -> list:
     """缓存零件绕质心旋转后的外轮廓和包围盒。"""
-    key = id(part)
+    allowed = getattr(part, "allowed_rotations", None)
+    if allowed is not None:
+        angles = [float(value) for value in allowed]
+    key = (id(part), tuple(angles))
     forms = cache.get(key)
     if forms is None:
         outer = part.outer_polygon
@@ -1068,6 +1071,7 @@ def _materialize(sheets_pl: list, sheet_w: float, sheet_h: float,
                 outer_curve=part.outer_curve,
                 source_outer_polygon=part.outer_polygon,
                 placement_rot=float(pl.rot or 0.0),
+                allowed_rotations=part.allowed_rotations,
             )
             sheet.parts.append(placed_part)
         sheets.append(sheet)

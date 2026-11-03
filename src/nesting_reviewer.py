@@ -162,6 +162,9 @@ def _placements_for_part(
     limit: int | None = None,
 ) -> list[Part]:
     placements: list[Part] = []
+    allowed = getattr(part, "allowed_rotations", None)
+    if allowed is not None:
+        rotations = allowed
     # 预准备每个空闲区一次：buffer/covers 结果在多次候选点测试间复用，
     # 避免对每个候选点重复构建 buffer（这是回看搜索的主要热点）。
     prepared_polys = [

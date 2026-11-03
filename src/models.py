@@ -38,6 +38,9 @@ class Part:
     # 后处理只做平移，写入端据当前外包框反推平移量。
     source_outer_polygon: Polygon | None = None
     placement_rot: float = 0.0
+    # 零件级旋转白名单。None 沿用本次排板的全局 rotation；
+    # 非空时，该零件只能使用这里列出的角度。
+    allowed_rotations: tuple[float, ...] | None = None
 
     def __post_init__(self):
         if self.area == 0.0:

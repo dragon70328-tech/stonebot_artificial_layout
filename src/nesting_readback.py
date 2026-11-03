@@ -341,6 +341,53 @@ def verify_nested_dxf(
                 return index
         return None
 
+    def locate_entity_sheet(entity) -> int | None:
+        """Locate an entity by its sampled extent when an oversized part
+        crosses the nominal sheet border.
+
+        The first polyline vertex is not a reliable sheet locator: a part may
+        legally use the physical oversize margin and start just outside the
+        nominal border.  Board blocks are separated by a large gap, so the
+        nearest border centre remains unambiguous.
+        """
+        index = locate_sheet(*_entity_anchor(entity))
+        if index is not None:
+            return index
+        points = _entity_points(entity, 0.0, 0.0)
+        if not points:
+            return None
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        centre_x = (min(xs) + max(xs)) * 0.5
+        centre_y = (min(ys) + max(ys)) * 0.5
+        return min(
+            range(len(borders)),
+            key=lambda candidate: (
+                abs(
+                    centre_x
+                    - (borders[candidate][0] + borders[candidate][2]) * 0.5
+                )
+                + abs(
+                    centre_y
+                    - (borders[candidate][1] + borders[candidate][3]) * 0.5
+                )
+            ),
+        )
+
+    def locate_point_sheet(x: float, y: float) -> int | None:
+        index = locate_sheet(x, y)
+        if index is not None:
+            return index
+        return min(
+            range(len(borders)),
+            key=lambda candidate: (
+                abs(x - (borders[candidate][0] + borders[candidate][2]) * 0.5)
+                + abs(
+                    y - (borders[candidate][1] + borders[candidate][3]) * 0.5
+                )
+            ),
+        )
+
     # 外框位置：第 i 个外框必须落在第 i 张板的网格位置
     for index, (x0, y0, _x1, _y1) in enumerate(borders):
         sheet = sheets_payload[index]
@@ -381,10 +428,10 @@ def verify_nested_dxf(
         ox, oy = borders[index][0], borders[index][1]
         label = f"第 {index + 1} 张板"
 
-        sheet_outers = [e for e in outers if locate_sheet(*_entity_anchor(e)) == index]
-        sheet_holes = [e for e in holes if locate_sheet(*_entity_anchor(e)) == index]
+        sheet_outers = [e for e in outers if locate_entity_sheet(e) == index]
+        sheet_holes = [e for e in holes if locate_entity_sheet(e) == index]
         sheet_numbers = [
-            text for x, y, text in numbers if locate_sheet(x, y) == index
+            text for x, y, text in numbers if locate_point_sheet(x, y) == index
         ]
 
         expected_parts = [_ring_polygon(part["outer_polygon_wkt"])

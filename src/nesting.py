@@ -61,6 +61,9 @@ def _rotation_forms(part: Part, cache: dict, rotations: tuple = _DEFAULT_ROTATIO
     返回 [(rot, polygon, bounds, coords)]，coords 为外环坐标数组，
     供 _translate_coords 快速平移重建，避免 affinity.translate 的开销。
     """
+    allowed = getattr(part, "allowed_rotations", None)
+    if allowed is not None:
+        rotations = tuple(float(value) for value in allowed)
     key = (id(part), tuple(rotations))
     forms = cache.get(key)
     if forms is None:
@@ -909,6 +912,7 @@ def _materialize(sheets_pl: list, sheet_w: float, sheet_h: float,
                 outer_curve=part.outer_curve,
                 source_outer_polygon=part.outer_polygon,
                 placement_rot=float(pl.rot or 0.0),
+                allowed_rotations=part.allowed_rotations,
             )
             sheet.parts.append(placed)
         sheets.append(sheet)

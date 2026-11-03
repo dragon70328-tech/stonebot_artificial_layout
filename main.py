@@ -169,6 +169,21 @@ def parse_args():
                    help="排板后不自动回看跨板减板机会")
     p.add_argument("--use-template", action="store_true",
                    help="允许复用已验证模板布局（默认关闭，只用算法排板）")
+    p.add_argument(
+        "--bridge-template",
+        type=str,
+        default=None,
+        help=(
+            "从一份已完成的人工/参考排板 DXF 学习桥切友好板型；"
+            "仅用于单一材料组和桥切工艺"
+        ),
+    )
+    p.add_argument(
+        "--bridge-template-min-fill",
+        type=float,
+        default=0.0,
+        help="仅复用利用率不低于该比例的参考板型（0~1，默认0）",
+    )
     p.add_argument("--no-compress", action="store_true",
                    help="关闭多板联合重排压缩（默认开启：把 k 张最低填充板"
                         "联合重排进 k-1 张，是压缩板数的显式通道）")
@@ -770,6 +785,8 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         auto_review: bool = True,
         review_budget_s: float = 120.0,
         use_template: bool = False,
+        bridge_template: str | None = None,
+        bridge_template_min_fill: float = 0.0,
         cold_start: bool = False,
         beam: bool = True,
         beam_width: int | None = None,
@@ -797,6 +814,13 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         raise ValueError("low_fill_rework 只适用于水刀/激光加工")
     if candidate_mode != "bbox" and not profile.uses_deepnest:
         raise ValueError("非 bbox 候选模式只适用于水刀/激光加工")
+    if bridge_template:
+        if profile.uses_deepnest:
+            raise ValueError("--bridge-template 当前只支持桥切工艺")
+        if not 0.0 <= bridge_template_min_fill <= 1.0:
+            raise ValueError(
+                "--bridge-template-min-fill 必须在 [0, 1] 范围内"
+            )
 
     if cold_start:
         use_template = False
@@ -986,10 +1010,86 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     else:
         print(f"开始排板... ({trials} 轮 x {budget:.0f}s LNS)")
 
+    optimizer_stats: dict = {}
     template_result = False
     nesting = None
     layout_source = "algorithm"
+    if bridge_template:
+        if groups != [None]:
+            raise ValueError(
+                "--bridge-template 当前要求全部零件属于同一个材料组"
+            )
+        if special_w is not None:
+            raise ValueError("--bridge-template 暂不支持特殊板尺寸")
+        from src.bridge_template_learning import nest_with_bridge_templates
+
+        template_started = time.time()
+        candidate = nest_with_bridge_templates(
+            parts,
+            bridge_template,
+            nesting_width_mm,
+            nesting_height_mm,
+            effective_thickness,
+            unit=unit.value,
+            template_min_fill_ratio=bridge_template_min_fill,
+            fallback_rotations=tuple(profile.rotation),
+            stats=optimizer_stats,
+            nest_kwargs={
+                "trials": trials,
+                "seed": seed,
+                "improve_budget": budget,
+                "rotations": tuple(profile.rotation),
+                "min_gap": profile.min_gap,
+                "beam": beam,
+                "beam_width": beam_width or 1000,
+                "beam_budget": beam_budget,
+                "pattern_reuse": pattern_reuse,
+                "compress": compress,
+                "rect_fast": rect_fast,
+                "certified": certified,
+                "configs": QUICK_CONFIGS if quick else None,
+            },
+        )
+        template_errors = validate_mixed_nesting(
+            candidate,
+            min_gap=profile.min_gap,
+        )
+        if candidate.total_parts != len(parts):
+            template_errors.append(
+                f"模板热启动丢件：{len(parts)} -> {candidate.total_parts}"
+            )
+        if template_errors:
+            raise ValueError(
+                "参考板型热启动校验失败：" + "; ".join(template_errors)
+            )
+        template_min_sheets = math.ceil(
+            candidate.total_part_area
+            / (nesting_width_mm * nesting_height_mm)
+        )
+        nesting = GroupNestingOutcome(
+            result=candidate,
+            material_summary=[
+                {
+                    "material_group": "ALL",
+                    "part_count": len(parts),
+                    "sheets": candidate.total_sheets,
+                    "yield_rate": round(candidate.yield_rate, 2),
+                    "theoretical_min_sheets": template_min_sheets,
+                }
+            ],
+            total_min_sheets=template_min_sheets,
+            total_normal_parts=len(parts),
+            total_special_parts=0,
+            total_special_pair_min_sheets=None,
+            elapsed_seconds=time.time() - template_started,
+        )
+        template_result = True
+        layout_source = f"bridge-template:{Path(bridge_template).stem}"
+        print(f"人工板型热启动: {Path(bridge_template).name}")
+
     if (
+        nesting is None
+        and
         use_template
         and not cold_start
         and groups == [None]
@@ -1028,7 +1128,6 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
                 print(f"模板排板命中: {template_record.name}")
 
     # 优化器诊断：确定性预算消耗、是否被墙钟护栏截断（进报告 parameters.optimizer）
-    optimizer_stats: dict = {}
     if certified:
         if profile.uses_deepnest:
             raise SystemExit(
@@ -1631,6 +1730,8 @@ def main():
         auto_review=not args.no_auto_review,
         review_budget_s=args.review_budget,
         use_template=args.use_template,
+        bridge_template=args.bridge_template,
+        bridge_template_min_fill=args.bridge_template_min_fill,
         cold_start=args.cold_start,
         beam=not args.no_beam,
         beam_width=args.beam_width,

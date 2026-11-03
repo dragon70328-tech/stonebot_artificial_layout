@@ -109,6 +109,7 @@ stonebot_artificial_layout/
 | `docs/constraint-externalization.md` | 约束外置到 JSON/YAML |
 | `docs/agentization-improvement-plan.md` | Agent 化路线（本体 -> Harness -> Skill -> Loop -> 生产边界） |
 | `docs/irregular-nesting-improvement-plan.md` | 不规则图形排板质量改进（当前排板重点） |
+| `docs/bridge-template-learning.md` | 从参考排板DXF学习桥切友好板型并热启动剩余件 |
 | `docs/recognition-model-operations.md` | 识别模型训练/监控/回滚/保留 |
 | `docs/modularization-plan.md` | 大文件拆分计划与安全规则 |
 | `docs/drawing-profile-*.md` | 具体项目画像说明 |
@@ -299,7 +300,10 @@ DXF 交付。
 - `--cold-start` 进一步忽略 `drawing_profiles/validated_cases` 案例库与
   `output/.cache/audit` 审图缓存，只依赖原始 DXF + 画像配置。
 - 报告、CLI 输出与工作流会话都要标注 `layout_source`
-  （`algorithm` 或 `template:<名称>`），避免把历史复刻当成算法能力。
+  （`algorithm`、`template:<名称>` 或 `bridge-template:<名称>`），避免把历史复刻当成算法能力。
+- `--bridge-template <DXF>` 从参考排板提取零件组合与相对摆法，只在当前
+  零件级旋转白名单下能完整复现的板型才作为热启动；剩余件仍跑正常搜索。
+  它不强制组合零件共板，也不复制参考图中的编号或坐标。
 
 加工方式由 `--process` 或 `NestingProfile.processing_class` 决定：
 

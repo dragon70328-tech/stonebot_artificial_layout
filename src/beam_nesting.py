@@ -87,8 +87,18 @@ def _part_tier_key(part, cache: dict, rotations: tuple):
     coords = np.asarray(forms[0][3])
     normalized = coords - coords.min(axis=0)
     sig = hash(tuple(map(tuple, np.round(normalized, _TIER_DIGITS))))
-    return (round(min(w, h), _TIER_DIGITS), round(max(w, h), _TIER_DIGITS),
-            sig)
+    allowed = getattr(part, "allowed_rotations", None)
+    if allowed is None:
+        allowed = rotations
+    rotation_key = tuple(
+        sorted({round(float(value) % 360.0, 6) for value in allowed})
+    )
+    return (
+        round(min(w, h), _TIER_DIGITS),
+        round(max(w, h), _TIER_DIGITS),
+        sig,
+        rotation_key,
+    )
 
 
 def _build_tiers(parts: list, cache: dict, rotations: tuple) -> list:
