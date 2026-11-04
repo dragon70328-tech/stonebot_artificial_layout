@@ -129,6 +129,51 @@ def material_group_for_number(number: str, drawing_profile) -> str | None:
     return prefix
 
 
+def normalize_material_code(value: str | None) -> str | None:
+    """Normalize a material label for equivalence matching."""
+    text = str(value or "").strip()
+    return text.upper() or None
+
+
+def packing_group_for_material(material: str | None, drawing_profile) -> str | None:
+    """Resolve the material pool used by nesting without changing the source label."""
+    material_code = normalize_material_code(material)
+    if material_code is None:
+        return None
+    mappings = getattr(
+        drawing_profile,
+        "material_equivalence_groups",
+        None,
+    ) or {}
+    matches = []
+    for pool, members in mappings.items():
+        if isinstance(members, str):
+            members = [members]
+        aliases = {
+            normalize_material_code(pool),
+            *(
+                normalize_material_code(member)
+                for member in (members or [])
+            ),
+        }
+        aliases.discard(None)
+        if material_code in aliases:
+            matches.append(str(pool).strip())
+    if len(set(matches)) > 1:
+        raise ValueError(
+            f"材料 {material} 同时属于多个排板池 {sorted(set(matches))}，"
+            "请在 material_equivalence_groups 中消除歧义"
+        )
+    if matches:
+        return matches[0]
+    return str(material).strip()
+
+
+def nesting_group_key(part) -> str | None:
+    """Return the only material key that may share a sheet."""
+    return getattr(part, "packing_group", None) or part.material_group
+
+
 def apply_material_grouping(parts, drawing_profile):
     """Assign material groups and remove parts without an allowed material prefix.
 
@@ -149,6 +194,7 @@ def apply_material_grouping(parts, drawing_profile):
             skipped.append(part.number)
             continue
         part.material_group = prefix
+        part.packing_group = packing_group_for_material(prefix, drawing_profile)
         grouped.append(part)
     return grouped, skipped
 
@@ -173,7 +219,12 @@ def assign_group_ids(parts, drawing_profile, group_mode: str | None) -> list[Any
                 or match.groupdict().get("unit")
                 or match.group(0)
             )
-        part.group_id = group or (part.material_group or part.number or "UNGROUPED")
+        part.group_id = (
+            group
+            or nesting_group_key(part)
+            or part.number
+            or "UNGROUPED"
+        )
     return parts
 
 
@@ -295,7 +346,7 @@ def prepare_drawing(
         )
         if skipped_material_numbers:
             print(f"已跳过无材料前缀件 {len(skipped_material_numbers)} 个")
-        group_counts = Counter(p.material_group for p in parts)
+        group_counts = Counter(nesting_group_key(p) for p in parts)
         print("材料分组: " + ", ".join(
             f"{key}: {value} ?" for key, value in sorted(group_counts.items())
         ))
@@ -314,7 +365,7 @@ def prepare_drawing(
         drawing_profile is not None and drawing_profile.material_group_enabled
     )
     groups = (
-        sorted({part.material_group for part in parts})
+        sorted({nesting_group_key(part) for part in parts})
         if material_group_enabled
         else [None]
     )
@@ -417,8 +468,20 @@ def _place_part_copy(part, angle: float, x: float, y: float):
         holes=[transform(h) for h in part.holes],
         original_number=part.original_number,
         material_group=part.material_group,
+        packing_group=part.packing_group,
         area=part.area,
         label_position=(label.x, label.y),
+        outer_handle=part.outer_handle,
+        hole_handles=list(part.hole_handles or []),
+        source_outer_polygon=(
+            part.source_outer_polygon
+            or part.outer_polygon
+        ),
+        placement_rot=(
+            float(getattr(part, "placement_rot", 0.0) or 0.0)
+            + float(angle or 0.0)
+        ) % 360.0,
+        allowed_rotations=part.allowed_rotations,
     )
 
 
@@ -734,7 +797,7 @@ def nest_groups(parts, groups, width_mm, height_mm, special_w, special_h,
 
     for group in groups:
         group_parts = (
-            [part for part in parts if part.material_group == group]
+            [part for part in parts if nesting_group_key(part) == group]
             if group is not None else parts
         )
         group_label = group or "ALL"
@@ -837,7 +900,7 @@ def nest_groups_parallel(parts, groups, width_mm, height_mm,
     tasks: list = []
     plan: list[tuple[int, int]] = []
     for group in groups:
-        group_parts = ([part for part in parts if part.material_group == group]
+        group_parts = ([part for part in parts if nesting_group_key(part) == group]
                        if group is not None else parts)
         group_parts_list.append(group_parts)
         if not group_parts:

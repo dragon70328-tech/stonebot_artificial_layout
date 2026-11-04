@@ -378,7 +378,10 @@ def _nest_parts(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
         ctx.drawing_profile is not None
         and ctx.drawing_profile.material_group_enabled
     ):
-        groups = sorted({part.material_group for part in ctx.parts})
+        groups = sorted({
+            getattr(part, "packing_group", None) or part.material_group
+            for part in ctx.parts
+        })
     else:
         groups = [None]
 

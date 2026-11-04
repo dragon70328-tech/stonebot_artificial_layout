@@ -15,6 +15,8 @@ class Part:
     holes: list[Polygon] = field(default_factory=list)  # 挖孔列表
     original_number: Optional[str] = None  # DXF 中原有编号
     material_group: Optional[str] = None   # 材料分组，例如 01B/02B
+    # 排板池由画像的等价材料配置映射得到；原 material_group 始终保留。
+    packing_group: Optional[str] = None
     material_column: Optional[str] = None  # 列头归属（如楼层 L-10），来自列头材料
     group_id: Optional[str] = None         # 同套/同户型分组，用于 one_set_per_sheet
     area: float = 0.0                # 有效面积（外轮廓面积 - 挖孔面积）

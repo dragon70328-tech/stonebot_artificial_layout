@@ -78,7 +78,10 @@ def free_polygons_for_sheet(sheet: Sheet, clearance: float = 0.0) -> list[Polygo
 
 
 def _sheet_material_groups(sheet: Sheet) -> set[str | None]:
-    return {part.material_group for part in sheet.parts}
+    return {
+        getattr(part, "packing_group", None) or part.material_group
+        for part in sheet.parts
+    }
 
 
 def _common_material_group(sheet: Sheet) -> str | None:

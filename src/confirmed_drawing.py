@@ -56,6 +56,7 @@ def _panel_payload(part: "Part") -> dict[str, Any]:
             "area": float(part.area),
             "original_number": part.original_number,
             "material_column": part.material_column,
+            "packing_group": part.packing_group,
             "group_id": part.group_id,
             "closure_gap": float(part.closure_gap or 0.0),
             "label_position": [

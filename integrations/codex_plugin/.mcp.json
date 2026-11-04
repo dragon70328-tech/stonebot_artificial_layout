@@ -26,6 +26,9 @@
         "stonebot_finalize_job": {
           "approval_mode": "prompt"
         },
+        "stonebot_generate_textured_drawing": {
+          "approval_mode": "prompt"
+        },
         "stonebot_export_word_report": {
           "approval_mode": "prompt"
         },

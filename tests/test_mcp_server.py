@@ -35,6 +35,17 @@ class FakeService:
     def get_agent_contract(self, args):
         return {"ok": True, **agent_contract(args.get("profile", "full"))}
 
+    def generate_textured_drawing(self, args):
+        return {
+            "ok": True,
+            "job_id": args["job_id"],
+            "stage": "completed",
+            "texture_package": {
+                "output_directory": args["output_directory"],
+                "texture_count": 1,
+            },
+        }
+
     def __getattr__(self, name):
         def unexpected(_args):
             raise AssertionError(f"unexpected tool: {name}")
@@ -109,6 +120,33 @@ def test_mcp_tool_call_returns_text_and_structured_content():
     assert result["structuredContent"]["stage"] == "audited"
     assert json.loads(result["content"][0]["text"]) == (
         result["structuredContent"]
+    )
+
+
+def test_mcp_dispatches_artificial_stone_texture_tool():
+    server = MCPServer(FakeService())
+
+    response = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 31,
+            "method": "tools/call",
+            "params": {
+                "name": "stonebot_generate_textured_drawing",
+                "arguments": {
+                    "job_id": "job-1",
+                    "pattern_manifest_path": "patterns.json",
+                    "output_directory": "D:/textures",
+                },
+            },
+        }
+    )
+
+    result = response["result"]
+    assert result["isError"] is False
+    assert (
+        result["structuredContent"]["texture_package"]["texture_count"]
+        == 1
     )
 
 

@@ -107,6 +107,18 @@ the user explicitly requests it, using a second user-selected directory and
 `stonebot_export_word_report`. The DOCX writer is implemented with Python's
 standard library so the plugin does not add an Office runtime dependency.
 
+## Artificial-stone texture effect
+
+After a job is completed, `stonebot_generate_textured_drawing` can project a
+reusable artificial-stone pattern image onto the active nesting and write a
+textured in-place DXF plus per-part PNG files and previews. The pattern image
+covers the usable sheet area exactly and does not include the oversize
+allowance. One pattern may be reused for every sheet of the mapped material.
+
+This milestone does not support natural-stone per-sheet images, per-sheet
+edge recognition or defect avoidance. Those belong to a separate future
+workflow and must not be passed to the artificial-stone texture tool.
+
 ## Isolation
 
 Development uses a separate workspace copy so the stable working repository

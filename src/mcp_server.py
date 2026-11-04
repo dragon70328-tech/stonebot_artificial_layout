@@ -180,6 +180,9 @@ class MCPServer:
                 self.service.choose_output_directory
             ),
             "stonebot_finalize_job": self.service.finalize_job,
+            "stonebot_generate_textured_drawing": (
+                self.service.generate_textured_drawing
+            ),
             "stonebot_export_word_report": (
                 self.service.export_word_report
             ),

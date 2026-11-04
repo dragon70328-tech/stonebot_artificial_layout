@@ -4,8 +4,13 @@ import ezdxf
 from shapely.geometry import Polygon
 
 from src.bridge_template_learning import (
+    TemplateBoard,
+    TemplatePart,
+    detect_template_structures,
+    infer_optional_fillers,
     learn_template_boards,
     reuse_template_boards,
+    shape_family,
 )
 from src.deepnest_engine import _rotation_forms as deepnest_rotation_forms
 from src.models import Part
@@ -118,3 +123,100 @@ def test_template_reuse_rejects_disallowed_orientation(tmp_path: Path) -> None:
     assert reused.sheets == []
     assert reused.stats["template_sheets_rejected"] == 1
     assert len(reused.remaining_parts) == 2
+
+
+def test_structure_induction_detects_relative_pair_band_and_optional_filler():
+    left = Polygon([
+        (0, 0),
+        (300, 0),
+        (300, 100),
+        (100, 100),
+        (100, 200),
+        (0, 200),
+    ])
+    right = Polygon([
+        (100, 100),
+        (300, 100),
+        (300, 200),
+        (100, 200),
+    ])
+    filler = Polygon([(350, 0), (400, 0), (400, 40), (350, 40)])
+    band = [
+        Polygon([(x, 210), (x + 80, 210), (x + 80, 230), (x, 230)])
+        for x in (0.0, 90.0, 180.0)
+    ]
+    parts = tuple(
+        TemplatePart(
+            shape_family=shape_family(polygon),
+            polygon=polygon,
+            area=polygon.area,
+        )
+        for polygon in (left, right, filler, *band)
+    )
+
+    structures = detect_template_structures(parts)
+    kinds = {structure.kind for structure in structures}
+    optional = infer_optional_fillers(parts, structures)
+
+    assert "complementary_pair" in kinds
+    assert "horizontal_band" in kinds
+    assert 2 in optional
+
+
+def test_template_reuse_keeps_core_pair_when_optional_filler_is_missing():
+    left = Polygon([
+        (0, 0),
+        (300, 0),
+        (300, 100),
+        (100, 100),
+        (100, 200),
+        (0, 200),
+    ])
+    right = Polygon([
+        (100, 100),
+        (300, 100),
+        (300, 200),
+        (100, 200),
+    ])
+    filler = Polygon([(350, 0), (400, 0), (400, 40), (350, 40)])
+    template_parts = tuple(
+        TemplatePart(
+            shape_family=shape_family(polygon),
+            polygon=polygon,
+            area=polygon.area,
+        )
+        for polygon in (left, right, filler)
+    )
+    structures = detect_template_structures(template_parts)
+    board = TemplateBoard(
+        index=1,
+        width=500.0,
+        height=250.0,
+        parts=template_parts,
+        fill_ratio=sum(part.area for part in template_parts) / 125000.0,
+        source_handle="synthetic",
+        structures=structures,
+        optional_part_indices=infer_optional_fillers(
+            template_parts,
+            structures,
+        ),
+    )
+    candidates = [
+        _part(1, "LEFT", left, (0.0,)),
+        _part(2, "RIGHT", right, (0.0,)),
+    ]
+
+    reused = reuse_template_boards(
+        candidates,
+        [board],
+        fallback_rotations=(0.0,),
+    )
+
+    assert len(reused.sheets) == 1
+    assert {item.part.number for item in reused.sheets[0]} == {
+        "LEFT",
+        "RIGHT",
+    }
+    assert reused.remaining_parts == []
+    assert reused.stats["template_optional_variants_used"] == 1
+    assert reused.stats["template_optional_slots_skipped"] == 1

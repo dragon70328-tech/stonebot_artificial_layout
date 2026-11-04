@@ -1,6 +1,6 @@
 {
   "name": "stonebot-artificial-stone-layout",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "Conversational DXF review and nesting through the deterministic Stonebot workflow, with explicit human confirmation gates.",
   "author": {
     "name": "Stonebot"
@@ -18,7 +18,7 @@
   "interface": {
     "displayName": "StoneBot-Artificial-Stone-Layout",
     "shortDescription": "Audit DXF drawings and iterate nesting by conversation",
-    "longDescription": "Stonebot reads local DXF drawings, audits recognized panels and holes, applies structured corrections, nests confirmed parts on manufacturing sheets and validates the result. Final delivery contains only an in-place DXF and a nested DXF in a folder selected by the user. Word reports are generated only on explicit request.",
+    "longDescription": "Stonebot reads local DXF drawings, audits recognized panels and holes, applies structured corrections, nests confirmed parts on manufacturing sheets and validates the result. Final delivery contains the in-place DXF and nested DXF in a folder selected by the user. After completion, reusable artificial-stone pattern images can be projected onto the actual nesting positions. Word reports are generated only on explicit request.",
     "developerName": "Stonebot",
     "category": "Productivity",
     "capabilities": [

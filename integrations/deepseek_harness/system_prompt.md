@@ -46,6 +46,11 @@ validation, internal staging and user-controlled artifact delivery.
    for one. For a requested Word report, call
    `stonebot_choose_output_directory` with purpose `word_report`, then call
    `stonebot_export_word_report`.
+12. After completion, an explicit artificial-stone pattern-effect request may
+   call `stonebot_generate_textured_drawing` with a standard pattern manifest
+   and an empty folder selected with purpose `texture`. Pattern images cover
+   the usable sheet area only and exclude oversize allowance. Do not apply
+   this to natural-stone per-sheet images or defect avoidance.
 
 ## Hard rules
 

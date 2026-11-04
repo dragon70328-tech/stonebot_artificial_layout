@@ -386,15 +386,16 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "stonebot_choose_output_directory",
         "description": (
             "Open a local folder picker so the user can choose where "
-            "deliverables are saved. Call this before final DXF delivery "
-            "and before an explicitly requested Word report. Never infer "
+            "deliverables are saved. Call this before final DXF delivery, "
+            "an explicitly requested Word report, or an artificial-stone "
+            "texture package. The texture target must be empty. Never infer "
             "or silently reuse a save directory."
         ),
         "inputSchema": _object_schema(
             {
                 "purpose": {
                     "type": "string",
-                    "enum": ["delivery", "word_report"],
+                    "enum": ["delivery", "word_report", "texture"],
                     "default": "delivery",
                 }
             }
@@ -426,6 +427,38 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "overwrite": {"type": "boolean", "default": False},
             },
             ["job_id", "decision", "output_directory"],
+        ),
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        },
+    },
+    {
+        "name": "stonebot_generate_textured_drawing",
+        "description": (
+            "After a job is completed, project reusable artificial-stone "
+            "pattern images onto the active nesting and write a texture "
+            "in-place DXF. Each pattern image represents the complete usable "
+            "sheet area and excludes oversize allowance. The output package "
+            "contains the textured DXF, per-part PNG files, previews and a "
+            "manifest. Natural-stone per-sheet imaging and defect avoidance "
+            "are not supported by this tool."
+        ),
+        "inputSchema": _object_schema(
+            {
+                "job_id": _job_id(),
+                "pattern_manifest_path": {
+                    "type": "string",
+                    "minLength": 1,
+                },
+                "output_directory": {
+                    "type": "string",
+                    "minLength": 1,
+                },
+            },
+            ["job_id", "pattern_manifest_path", "output_directory"],
         ),
         "annotations": {
             "readOnlyHint": False,
@@ -723,7 +756,12 @@ def next_actions(stage: str, *, nesting_configured: bool) -> list[str]:
             "stonebot_advance_until_gate",
             "stonebot_cancel_job",
         ]
-    if stage in {"completed", "cancelled"}:
+    if stage == "completed":
+        return [
+            "stonebot_generate_textured_drawing",
+            "stonebot_job_status",
+        ]
+    if stage == "cancelled":
         return []
     if stage == "blocked":
         return ["stonebot_job_status", "stonebot_cancel_job"]

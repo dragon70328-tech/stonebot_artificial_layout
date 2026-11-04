@@ -113,7 +113,13 @@ def _material_purity_errors(ctx: "JobContext") -> list[str]:
     errors = []
     for sheet in ctx.result.sheets:
         groups = sorted(
-            {str(part.material_group) for part in sheet.parts}
+            {
+                str(
+                    getattr(part, "packing_group", None)
+                    or part.material_group
+                )
+                for part in sheet.parts
+            }
         )
         if len(groups) > 1:
             errors.append(

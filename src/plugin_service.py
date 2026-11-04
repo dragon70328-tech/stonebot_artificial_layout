@@ -47,6 +47,7 @@ from src.profile_learning import (
     rollback_profile_override,
 )
 from src.session_store import WorkflowSessionStore
+from src.slab_texture import generate_textured_package
 from src.units import UnitSystem
 from src.workflow_session import WorkflowStage
 
@@ -475,6 +476,7 @@ class PluginJobService:
         titles = {
             "delivery": "选择原位 DXF 和排板 DXF 的保存文件夹",
             "word_report": "选择 Word 排板报告的保存文件夹",
+            "texture": "选择人造石纹理交付包的空文件夹",
         }
         title = titles.get(purpose, titles["delivery"])
         try:
@@ -593,6 +595,73 @@ class PluginJobService:
         }
         self._save_manifest(manifest)
         return self._public_state(runtime, manifest)
+
+    def generate_textured_drawing(
+        self,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
+        job_id = self._require_job_id(args)
+        runtime, manifest = self._runtime_and_manifest(job_id)
+        self._require_stage(runtime, {WorkflowStage.COMPLETED})
+        manifest_path = Path(str(
+            args.get("pattern_manifest_path") or ""
+        )).expanduser().resolve()
+        if not manifest_path.is_file():
+            raise StonebotProtocolError(
+                "TEXTURE_MANIFEST_NOT_FOUND",
+                f"人造石图案清单不存在: {manifest_path}",
+                allowed_actions=["stonebot_generate_textured_drawing"],
+            )
+        output_directory = str(args.get("output_directory") or "").strip()
+        if not output_directory:
+            raise StonebotProtocolError(
+                "OUTPUT_DIRECTORY_REQUIRED",
+                "生成纹理包前必须选择一个空文件夹。",
+                allowed_actions=["stonebot_choose_output_directory"],
+            )
+        if (
+            runtime.context.result is None
+            or runtime.context.numbered_dxf_path is None
+        ):
+            raise StonebotProtocolError(
+                "TEXTURE_CONTEXT_MISSING",
+                "当前任务缺少排板结果或原位编号 DXF。",
+            )
+        try:
+            target_dir = resolve_output_directory(output_directory)
+            package = generate_textured_package(
+                runtime.context.result,
+                runtime.context.numbered_dxf_path,
+                manifest_path,
+                target_dir,
+            )
+        except Exception as exc:  # noqa: BLE001 - deterministic texture boundary
+            raise StonebotProtocolError(
+                "TEXTURE_GENERATION_FAILED",
+                str(exc),
+                details={
+                    "job_id": job_id,
+                    "pattern_manifest_path": str(manifest_path),
+                },
+                allowed_actions=[
+                    "stonebot_choose_output_directory",
+                    "stonebot_job_status",
+                ],
+            ) from exc
+        manifest["texture_package"] = {
+            "output_directory": str(package.output_dir),
+            "textured_dxf": str(package.textured_dxf),
+            "manifest": str(package.manifest_path),
+            "texture_count": package.texture_count,
+            "preview_paths": [
+                str(path) for path in package.preview_paths
+            ],
+            "created_at": _utc_now(),
+        }
+        self._save_manifest(manifest)
+        state = self._public_state(runtime, manifest)
+        state["texture_package"] = manifest["texture_package"]
+        return state
 
     def export_word_report(
         self,
@@ -1368,6 +1437,21 @@ class PluginJobService:
                 and Path(str(word_report["path"])).is_file()
             ):
                 public_artifacts["word_report"] = word_report["path"]
+            texture_package = manifest.get("texture_package") or {}
+            if (
+                texture_package.get("textured_dxf")
+                and Path(str(texture_package["textured_dxf"])).is_file()
+            ):
+                public_artifacts["textured_dxf"] = (
+                    texture_package["textured_dxf"]
+                )
+            if (
+                texture_package.get("manifest")
+                and Path(str(texture_package["manifest"])).is_file()
+            ):
+                public_artifacts["texture_manifest"] = (
+                    texture_package["manifest"]
+                )
         return {
             "ok": (
                 runtime.last_error is None

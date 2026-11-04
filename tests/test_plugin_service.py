@@ -5,6 +5,8 @@ import json
 from xml.etree import ElementTree
 from zipfile import ZipFile
 
+from PIL import Image
+
 from src.drawing_profile import analyze_drawing
 from src.plugin_service import PluginJobService, StonebotProtocolError
 
@@ -159,6 +161,84 @@ def test_plugin_service_runs_drawing_to_final_artifacts(tmp_path):
     assert listed["total"] == 1
     assert listed["jobs"][0]["job_id"] == job_id
     assert listed["jobs"][0]["stage"] == "completed"
+
+
+def test_plugin_service_generates_reusable_artificial_stone_textures(tmp_path):
+    service = PluginJobService(tmp_path)
+    analyzed = service.analyze_drawing(
+        {
+            "dxf_path": str(FIXTURE),
+            "project_id": "texture-smoke",
+        }
+    )
+    job_id = analyzed["job_id"]
+    service.configure_nesting(
+        {
+            "job_id": job_id,
+            "width_mm": 3200,
+            "height_mm": 1600,
+            "thickness_mm": 20,
+            "process": "bridge",
+            "kerf_mm": 5,
+            "profile": "min_sheets",
+            "quick": True,
+        }
+    )
+    service.confirm_drawing({"job_id": job_id, "decision": "confirm"})
+    service.confirm_nesting({"job_id": job_id, "decision": "confirm"})
+    delivery_dir = tmp_path / "delivery-texture"
+    delivery_dir.mkdir()
+    service.finalize_job(
+        {
+            "job_id": job_id,
+            "decision": "confirm",
+            "output_directory": str(delivery_dir),
+        }
+    )
+
+    pattern_image = tmp_path / "pattern.png"
+    Image.new("RGB", (320, 160), (170, 150, 130)).save(pattern_image)
+    pattern_manifest = tmp_path / "patterns.json"
+    pattern_manifest.write_text(
+        json.dumps(
+            {
+                "patterns": [
+                    {
+                        "pattern_id": "plain",
+                        "materials": ["*"],
+                        "image_path": "pattern.png",
+                        "usable_width_mm": 3200,
+                        "usable_height_mm": 1600,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    texture_dir = tmp_path / "texture-output"
+    texture_dir.mkdir()
+
+    textured = service.generate_textured_drawing(
+        {
+            "job_id": job_id,
+            "pattern_manifest_path": str(pattern_manifest),
+            "output_directory": str(texture_dir),
+        }
+    )
+
+    assert textured["stage"] == "completed"
+    assert (
+        "stonebot_generate_textured_drawing"
+        in textured["next_actions"]
+    )
+    package = textured["texture_package"]
+    assert package["texture_count"] == 6
+    assert Path(package["textured_dxf"]).is_file()
+    assert Path(package["manifest"]).is_file()
+    assert len(list((texture_dir / "textures").glob("*.png"))) == 6
+    status = service.job_status({"job_id": job_id})
+    assert Path(status["artifacts"]["textured_dxf"]).is_file()
+    assert Path(status["artifacts"]["texture_manifest"]).is_file()
 
 
 def test_choose_output_directory_returns_native_picker_result(tmp_path):

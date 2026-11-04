@@ -503,6 +503,7 @@ def propose_profile(
         "small_area_threshold": small_area,
         "text_height": text_height,
         "material_group_enabled": False,
+        "material_equivalence_groups": {},
         "first_part_left_edge": False,
         "notes": (
             "propose 自动提议草稿：expected_counts 为候选参数实读结果，"

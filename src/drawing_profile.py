@@ -58,6 +58,9 @@ class DrawingProfile:
     material_group_enabled: bool = False
     material_prefix_pattern: str = r"^(?P<prefix>\d{2}B)"
     allowed_material_prefixes: list[str] = field(default_factory=list)
+    # 键是排板池名称，值是可共板的原材料号列表。只影响能否共板，
+    # Part.material_group 仍保留原值用于标注、统计和追溯。
+    material_equivalence_groups: dict[str, list[str]] = field(default_factory=dict)
     group_id_pattern: str | None = None
     first_part_left_edge: bool = False
     assignment_mode: str = "point_then_bbox"

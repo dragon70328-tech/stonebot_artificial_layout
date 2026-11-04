@@ -135,9 +135,14 @@ def _build_pair_unit(a: Part, b: Part) -> PairingUnit | None:
         holes=[local_transform(h) for h in b.holes],
         original_number=b.original_number,
         material_group=b.material_group,
+        packing_group=b.packing_group,
+        material_column=b.material_column,
         group_id=b.group_id,
         area=b.area,
         label_position=(label_b.x, label_b.y),
+        source_outer_polygon=b.outer_polygon,
+        placement_rot=180.0,
+        allowed_rotations=b.allowed_rotations,
     )
 
     return PairingUnit(
@@ -285,9 +290,21 @@ def _materialize_pairing(
                     holes=[transform(h) for h in local.holes],
                     original_number=local.original_number,
                     material_group=local.material_group,
+                    packing_group=local.packing_group,
+                    material_column=local.material_column,
                     group_id=local.group_id,
                     area=local.area,
                     label_position=(label.x, label.y),
+                    source_outer_polygon=(
+                        local.source_outer_polygon
+                        or local.outer_polygon
+                    ),
+                    placement_rot=(
+                        float(local.placement_rot or 0.0)
+                        + float(pl.rot or 0.0)
+                    )
+                    % 360.0,
+                    allowed_rotations=local.allowed_rotations,
                 )
                 sheet.parts.append(placed)
         sheets.append(sheet)

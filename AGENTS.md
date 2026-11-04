@@ -36,6 +36,7 @@ stonebot_artificial_layout/
     dxf_reader.py       # DXF 读取：封闭图形候选、层级（孔洞）、编号文本
     dxf_writer.py       # DXF 写入：排板结果、编号检查、GROUP、清单排板图
     spec_list.py        # 规格板尺寸清单（材料 x 区域 分组 + 图纸要求提取）
+    slab_texture.py     # 人造石标准图案复用、实测抠图与原位纹理 DXF
     drawing_preview.py  # 原位 DXF 在线预览（可点击实体 + target_id）
     visual_evidence.py  # 审图问题视觉证据（SVG 高亮）
     visual_renderer.py  # 整图 SVG 渲染
@@ -109,7 +110,8 @@ stonebot_artificial_layout/
 | `docs/constraint-externalization.md` | 约束外置到 JSON/YAML |
 | `docs/agentization-improvement-plan.md` | Agent 化路线（本体 -> Harness -> Skill -> Loop -> 生产边界） |
 | `docs/irregular-nesting-improvement-plan.md` | 不规则图形排板质量改进（当前排板重点） |
-| `docs/bridge-template-learning.md` | 从参考排板DXF学习桥切友好板型并热启动剩余件 |
+| `docs/bridge-template-learning.md` | 归纳参考排板的横带/配对/填充结构并热启动剩余件 |
+| `docs/artificial-stone-texture.md` | 人造石标准大板图复用、纹理扣取与原位纹理 DXF |
 | `docs/recognition-model-operations.md` | 识别模型训练/监控/回滚/保留 |
 | `docs/modularization-plan.md` | 大文件拆分计划与安全规则 |
 | `docs/drawing-profile-*.md` | 具体项目画像说明 |
@@ -286,6 +288,9 @@ DXF 交付。
 - `allowed_material_prefixes` 限定允许排板的材料前缀集合
 - 无允许材料前缀的零件不排板，直接跳过
 - 每种材料单独进入排板引擎，不同材料绝不共板
+- 画像可用 `material_equivalence_groups` 显式声明等价排板池，例如
+  `{"ST-1+ST-2": ["ST/1", "ST/2"]}`。`Part.material_group` 保留原材料号，
+  `Part.packing_group` 只用于排板隔离和共板校验；未声明的材料仍绝不共板。
 - 报告中按 `material_group` 输出每组的件数、板数、出材率
 
 ### Step 5: 排板
@@ -304,6 +309,9 @@ DXF 交付。
 - `--bridge-template <DXF>` 从参考排板提取零件组合与相对摆法，只在当前
   零件级旋转白名单下能完整复现的板型才作为热启动；剩余件仍跑正常搜索。
   它不强制组合零件共板，也不复制参考图中的编号或坐标。
+  模板学习同时归纳互补配对、重复横带和可选填充槽；完整板型库存不足时
+  最多移除两个可选填充件，核心相对姿态仍必须成立。人工参考 DXF 只作为
+  当次运行时输入，不进入测试夹具或插件发布包。
 
 加工方式由 `--process` 或 `NestingProfile.processing_class` 决定：
 

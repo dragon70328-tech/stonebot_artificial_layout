@@ -257,11 +257,21 @@ def _transform_part(part: Part, rotation: int, dx: float, dy: float) -> Part:
         holes=holes,
         original_number=part.original_number,
         material_group=part.material_group,
+        packing_group=part.packing_group,
         group_id=part.group_id,
         area=polygon.area,
         label_position=(label_point.x, label_point.y),
         outer_handle=part.outer_handle,
         hole_handles=part.hole_handles,
+        source_outer_polygon=(
+            part.source_outer_polygon
+            or part.outer_polygon
+        ),
+        placement_rot=(
+            float(getattr(part, "placement_rot", 0.0) or 0.0)
+            + float(rotation)
+        ) % 360.0,
+        allowed_rotations=part.allowed_rotations,
     )
 
 

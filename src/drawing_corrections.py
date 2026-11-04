@@ -345,6 +345,7 @@ def _apply_operation(
             holes=[],
             original_number=value,
             material_group=source.material_group,
+            packing_group=source.packing_group,
             area=float(hole.area),
             label_position=tuple(hole.centroid.coords[0]),
             outer_handle=handle,
@@ -463,7 +464,21 @@ def _apply_operation(
         new_holes = [hole for hole, _handle in other_holes]
         new_handles = [handle for _hole, handle in other_holes]
         new_polygon = _combined_polygon(new_outer, new_holes)
-        new_part = Part(id=new_id, number=new_number, polygon=new_polygon, outer_polygon=new_outer, holes=new_holes, original_number=new_number, material_group=part.material_group, area=float(new_polygon.area), label_position=tuple(new_outer.representative_point().coords[0]), hole_handles=new_handles)
+        new_part = Part(
+            id=new_id,
+            number=new_number,
+            polygon=new_polygon,
+            outer_polygon=new_outer,
+            holes=new_holes,
+            original_number=new_number,
+            material_group=part.material_group,
+            packing_group=part.packing_group,
+            area=float(new_polygon.area),
+            label_position=tuple(
+                new_outer.representative_point().coords[0]
+            ),
+            hole_handles=new_handles,
+        )
         parts.append(new_part)
         parts_data.append({"index": new_id, "polygon": new_polygon, "outer_polygon": new_outer, "holes": new_holes, "hole_handles": new_handles, "original_number": new_number, "material_group": part.material_group, "area": float(new_polygon.area), "centroid": tuple(new_outer.centroid.coords[0]), "outer_handle": None, "layer": source_data.get("layer"), "number_layer": source_data.get("number_layer"), "confidence": 0.9, "source": "user_split_panel"})
         return

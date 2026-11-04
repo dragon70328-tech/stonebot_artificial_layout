@@ -4,7 +4,10 @@ import numpy as np
 from shapely.geometry import box
 
 from src.drawing_profile import DrawingProfile
+from src.constraints import PROFILE_MIN_SHEETS
 from src.models import NestingResult, Part, Sheet
+from src.nesting_validation import _material_purity_errors
+from src.units import UnitSystem
 from src.nesting import (
     _make_sort_key,
     _nest_single,
@@ -74,6 +77,128 @@ def test_material_grouping_skips_non_allowed_prefix():
     assert len(kept) == 1
     assert kept[0].material_group == "01B"
     assert skipped == ["P-1"]
+
+
+def test_material_equivalence_preserves_source_labels_and_builds_packing_pool():
+    profile = DrawingProfile(
+        name="equivalent-materials",
+        version="1.0.0",
+        material_group_enabled=True,
+        allowed_material_prefixes=["MA", "MB", "MC"],
+        material_prefix_pattern=r"^(?P<prefix>M[ABC])",
+        material_equivalence_groups={
+            "MAT-AB": ["MA", "MB"],
+        },
+    )
+    parts = [
+        _part("MA-001", 100.0, 50.0),
+        _part("MB-001", 80.0, 40.0),
+        _part("MC-001", 60.0, 30.0),
+    ]
+
+    kept, skipped = app.apply_material_grouping(parts, profile)
+
+    assert skipped == []
+    assert [part.material_group for part in kept] == [
+        "MA",
+        "MB",
+        "MC",
+    ]
+    assert [app.nesting_group_key(part) for part in kept] == [
+        "MAT-AB",
+        "MAT-AB",
+        "MC",
+    ]
+
+
+def test_material_equivalence_rejects_ambiguous_pool_mapping():
+    profile = DrawingProfile(
+        name="ambiguous",
+        version="1.0.0",
+        material_group_enabled=True,
+        material_equivalence_groups={
+            "POOL-A": ["MA", "MB"],
+            "POOL-B": ["MB", "MC"],
+        },
+    )
+
+    import pytest
+
+    with pytest.raises(ValueError, match="多个排板池"):
+        app.packing_group_for_material("MB", profile)
+
+
+def test_material_purity_uses_packing_group_not_source_label():
+    profile = DrawingProfile(
+        name="equivalent-materials",
+        version="1.0.0",
+        material_group_enabled=True,
+    )
+    first = _part("MA-001", 100.0, 50.0)
+    second = _part("MB-001", 80.0, 40.0)
+    first.material_group = "MA"
+    second.material_group = "MB"
+    first.packing_group = "MAT-AB"
+    second.packing_group = "MAT-AB"
+    sheet = Sheet(
+        index=1,
+        width=300.0,
+        height=200.0,
+        thickness=20.0,
+        parts=[first, second],
+    )
+    result = NestingResult(
+        sheets=[sheet],
+        unit="metric",
+        total_parts=2,
+        total_sheets=1,
+        total_part_area=first.area + second.area,
+        total_sheet_area=sheet.total_area,
+    )
+    context = type(
+        "Context",
+        (),
+        {"drawing_profile": profile, "result": result},
+    )()
+
+    assert _material_purity_errors(context) == []
+
+    second.packing_group = "MC"
+    assert _material_purity_errors(context)
+
+
+def test_nesting_group_pool_combines_equivalent_source_materials():
+    first = _part("MA-001", 100.0, 50.0)
+    second = _part("MB-001", 100.0, 50.0)
+    first.material_group = "MA"
+    second.material_group = "MB"
+    first.packing_group = "MAT-AB"
+    second.packing_group = "MAT-AB"
+
+    outcome = app.nest_groups(
+        [first, second],
+        ["MAT-AB"],
+        300.0,
+        200.0,
+        None,
+        None,
+        20.0,
+        UnitSystem.METRIC,
+        PROFILE_MIN_SHEETS,
+        None,
+        1,
+        0,
+        0.0,
+        True,
+        beam=False,
+        compress=False,
+        rect_fast=False,
+    )
+
+    assert outcome.material_summary[0]["material_group"] == "MAT-AB"
+    assert outcome.material_summary[0]["part_count"] == 2
+    assert outcome.result.total_parts == 2
+    assert outcome.result.total_sheets == 1
 
 
 def test_first_part_left_edge_applies_to_every_sheet():

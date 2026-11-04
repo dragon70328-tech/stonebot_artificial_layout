@@ -55,6 +55,12 @@ or claim a successful result without checking the tool's structured response.
     DXF. Do not generate a Word report unless the user explicitly requests
     one. For that request, choose a folder with purpose `word_report`, then
     call `stonebot_export_word_report`.
+15. After completion, an explicit artificial-stone pattern-effect request may
+    call `stonebot_generate_textured_drawing`. Ask for a standard pattern
+    manifest whose images exactly cover the usable sheet area and exclude the
+    oversize allowance. Choose an empty folder with purpose `texture`, then
+    pass that exact folder. Do not use this tool for natural-stone per-sheet
+    imaging or defect avoidance.
 
 ## Safety and state rules
 

@@ -51,6 +51,8 @@ from src.workflow import (
     build_report,
     combine_nesting_results,
     material_group_for_number,
+    nesting_group_key,
+    packing_group_for_material,
     nest_groups,
     nest_groups_parallel,
     nest_special_parts,
@@ -68,6 +70,7 @@ from src.spec_list import (
     write_spec_list_files,
 )
 from src.template_nesting import match_template, nest_from_template
+from src.slab_texture import generate_textured_package
 from src.artifact_store import ArtifactStore
 from src.workflow_session import WorkflowSession, WorkflowStage
 from src.agent_cli import run_agent_mode
@@ -205,6 +208,14 @@ def parse_args():
                    help="仅完成排板并报告大板使用量，不执行后处理和输出文件")
     p.add_argument("--check-only", action="store_true",
                    help="排板与后处理完成后先输出检查报告，不生成最终 DXF")
+    p.add_argument("--texture-patterns", type=str, default=None,
+                   help="人造石标准大板图案清单 JSON；同一图案可复用于"
+                        "所有同材料大板。图片范围必须等于可利用尺寸，不含让尺")
+    p.add_argument("--texture-output", type=str, default=None,
+                   help="纹理交付目录；默认在本次输出目录下生成唯一的"
+                        "{文件名}_texture_原位 目录")
+    p.add_argument("--output-root", type=str, default=None,
+                   help="本次运行的基础输出目录；默认 output/")
     p.add_argument("--special-size", type=str, default=None,
                    help="特殊面板排板尺寸，如 3225x1625")
     p.add_argument("--sizes", type=str, default=None,
@@ -799,7 +810,9 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         low_fill_rework: bool = False,
         low_fill_threshold: float = 0.6,
         candidate_mode: str = "bbox",
-        material_filter: list[str] | None = None) -> None:
+        material_filter: list[str] | None = None,
+        texture_patterns: str | None = None,
+        texture_output: str | None = None) -> None:
     """核心排板流程
 
     ``use_template`` 默认 False：模板布局复用是显式选择，默认只跑算法，
@@ -814,6 +827,11 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         raise ValueError("low_fill_rework 只适用于水刀/激光加工")
     if candidate_mode != "bbox" and not profile.uses_deepnest:
         raise ValueError("非 bbox 候选模式只适用于水刀/激光加工")
+    if texture_patterns and (report_only or check_only):
+        raise ValueError(
+            "--texture-patterns 需要完整的排板、后处理和原位 DXF 输出，"
+            "不能与 --report-only / --check-only 同时使用"
+        )
     if bridge_template:
         if profile.uses_deepnest:
             raise ValueError("--bridge-template 当前只支持桥切工艺")
@@ -1367,6 +1385,21 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     write_nested_dxf(result, out_dxf, unit_system=unit.value,
                      board_size=(nesting_width_mm, nesting_height_mm))
 
+    texture_package = None
+    if texture_patterns:
+        texture_dir = (
+            Path(texture_output).expanduser().resolve()
+            if texture_output
+            else out_dir / f"{stem}_texture_原位"
+        )
+        print(f"生成人造石纹理效果: {texture_dir}")
+        texture_package = generate_textured_package(
+            result,
+            numbered_original,
+            texture_patterns,
+            texture_dir,
+        )
+
     report = build_report(
         result, profile, width_mm, height_mm, special_w, special_h,
         effective_thickness, unit_label, total_min_sheets,
@@ -1390,16 +1423,44 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
             for number in candidate.moved_parts
         ],
     }
+    if texture_package is not None:
+        report["texture_effect"] = {
+            "scope": "reusable_artificial_stone",
+            "output_dir": str(texture_package.output_dir),
+            "textured_dxf": str(texture_package.textured_dxf),
+            "manifest": str(texture_package.manifest_path),
+            "texture_count": texture_package.texture_count,
+            "preview_count": len(texture_package.preview_paths),
+        }
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
     print(f"DXF: {out_dxf}")
     print(f"报告: {out_json}")
+    if texture_package is not None:
+        print(f"纹理原位 DXF: {texture_package.textured_dxf}")
+        print(f"纹理清单: {texture_package.manifest_path}")
+        _track_artifact(
+            WorkflowStage.COMPLETED,
+            texture_package.textured_dxf,
+        )
+        _track_artifact(
+            WorkflowStage.COMPLETED,
+            texture_package.manifest_path,
+        )
     _track_artifact(WorkflowStage.COMPLETED, out_dxf)
     _track_artifact(WorkflowStage.COMPLETED, out_json)
     session.transition(
         WorkflowStage.COMPLETED,
-        summary={"out_dxf": out_dxf, "out_json": out_json},
+        summary={
+            "out_dxf": out_dxf,
+            "out_json": out_json,
+            "textured_dxf": (
+                str(texture_package.textured_dxf)
+                if texture_package is not None
+                else None
+            ),
+        },
     )
     _write_session_file()
     return {
@@ -1407,6 +1468,16 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         "postprocess_warnings": postprocess_warnings,
         "check_path": str(check_path),
         "layout_source": layout_source,
+        "texture_package": (
+            {
+                "output_dir": str(texture_package.output_dir),
+                "textured_dxf": str(texture_package.textured_dxf),
+                "manifest": str(texture_package.manifest_path),
+                "texture_count": texture_package.texture_count,
+            }
+            if texture_package is not None
+            else None
+        ),
     }
 
 
@@ -1745,6 +1816,13 @@ def main():
         low_fill_threshold=args.low_fill_threshold,
         candidate_mode=args.candidate_mode,
         material_filter=parse_material_filter(args.material),
+        texture_patterns=args.texture_patterns,
+        texture_output=args.texture_output,
+        output_root=(
+            Path(args.output_root).expanduser().resolve()
+            if args.output_root
+            else None
+        ),
     )
     if args.check_only:
         sys.exit(check_only_exit_code(outcome))
