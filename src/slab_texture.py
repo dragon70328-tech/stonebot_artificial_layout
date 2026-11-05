@@ -12,7 +12,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
+import zipfile
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -64,6 +66,8 @@ class TexturePackage:
     output_dir: Path
     textured_dxf: Path
     manifest_path: Path
+    portable_dxf: Path | None
+    archive_path: Path | None
     texture_count: int
     preview_paths: tuple[Path, ...]
     total_pattern_area_mm2: float
@@ -601,10 +605,26 @@ def load_texture_nesting_result(
     return result
 
 
+def _image_definition_path(
+    texture_path: Path,
+    output_dxf: Path,
+    image_reference_mode: str,
+) -> str:
+    if image_reference_mode == "absolute":
+        return str(texture_path.resolve())
+    if image_reference_mode == "relative":
+        return texture_path.relative_to(output_dxf.parent).as_posix()
+    raise ValueError(
+        "image_reference_mode must be 'absolute' or 'relative'"
+    )
+
+
 def _write_textured_dxf(
     base_dxf: Path,
     output_dxf: Path,
     records: list[TextureRecord],
+    *,
+    image_reference_mode: str = "absolute",
 ) -> None:
     doc, number_counts, missing_layer = _load_numbered_document(base_dxf)
     if missing_layer:
@@ -622,9 +642,13 @@ def _write_textured_dxf(
                 f"{base_dxf.name}, found {number_counts.get(record.number, 0)}"
             )
         image_def = doc.add_image_def(
-            # AutoCAD 2023 does not resolve the forward-slash relative paths
-            # emitted by ezdxf for IMAGEDEF.  Absolute paths render reliably.
-            str(record.texture_path.resolve()),
+            # AutoCAD 2023 reliably renders absolute paths.  A relative copy
+            # can still be generated for portable archives.
+            _image_definition_path(
+                record.texture_path,
+                output_dxf,
+                image_reference_mode,
+            ),
             record.image_size_px,
             name=f"TEXTURE_{index:05d}_"
                  f"{_safe_filename(record.pattern_id, 'PATTERN')}_"
@@ -640,6 +664,67 @@ def _write_textured_dxf(
         image.set_boundary_path(record.clip_points_px)
     doc.saveas(output_dxf)
     _verify_textured_dxf(output_dxf, records)
+
+
+def relocate_texture_references(
+    dxf_path: str | Path,
+    texture_directory: str | Path | None = None,
+) -> int:
+    """Rewrite every texture IMAGEDEF to an absolute path in this package."""
+    path = Path(dxf_path).resolve()
+    texture_dir = (
+        Path(texture_directory).resolve()
+        if texture_directory is not None
+        else path.parent / TEXTURE_DIR
+    )
+    if not texture_dir.is_dir():
+        raise FileNotFoundError(f"texture directory not found: {texture_dir}")
+    doc = ezdxf.readfile(str(path))
+    image_defs = list(doc.objects.query("IMAGEDEF"))
+    if not image_defs:
+        raise ValueError(f"{path} contains no IMAGEDEF entities")
+    updated = 0
+    missing = []
+    for image_def in image_defs:
+        old_name = str(image_def.dxf.filename)
+        candidate = texture_dir / Path(old_name).name
+        if not candidate.is_file():
+            missing.append(candidate)
+            continue
+        absolute = str(candidate.resolve())
+        if image_def.dxf.filename != absolute:
+            image_def.dxf.filename = absolute
+            updated += 1
+    if missing:
+        raise FileNotFoundError(
+            "texture images missing from package: "
+            + ", ".join(str(item) for item in missing[:10])
+        )
+    temporary = path.with_name(f".{path.name}.relocate.tmp")
+    try:
+        doc.saveas(temporary)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    _verify_textured_dxf(
+        path,
+        [
+            TextureRecord(
+                sheet_index=0,
+                number="",
+                pattern_id="",
+                texture_path=texture_dir / Path(item.dxf.filename).name,
+                texture_sha256="",
+                source_bounds=(0, 0, 0, 0),
+                nested_bounds=(0, 0, 0, 0),
+                placement_rot=0.0,
+                image_size_px=tuple(item.dxf.image_size.vec2),
+                clip_points_px=(),
+            )
+            for item in image_defs
+        ],
+    )
+    return updated
 
 
 def _verify_textured_dxf(path: Path, records: list[TextureRecord]) -> None:
@@ -747,6 +832,8 @@ def generate_textured_package(
     output_directory: str | Path,
     *,
     preview_max_pixels: int = 1800,
+    image_reference_mode: str = "absolute",
+    create_archive: bool = False,
 ) -> TexturePackage:
     """Generate reusable artificial-stone textures and an in-place texture DXF."""
     if result.total_parts <= 0 or not result.sheets:
@@ -821,7 +908,29 @@ def generate_textured_package(
         )
 
     textured_dxf = output_dir / f"{Path(numbered_dxf_path).stem}_纹理原位.dxf"
-    _write_textured_dxf(Path(numbered_dxf_path), textured_dxf, records)
+    _write_textured_dxf(
+        Path(numbered_dxf_path),
+        textured_dxf,
+        records,
+        image_reference_mode=image_reference_mode,
+    )
+    portable_dxf = None
+    if create_archive:
+        portable_dxf = output_dir / (
+            f"{Path(numbered_dxf_path).stem}_纹理原位_可移动.dxf"
+        )
+        _write_textured_dxf(
+            Path(numbered_dxf_path),
+            portable_dxf,
+            records,
+            image_reference_mode="relative",
+        )
+        (output_dir / "README_纹理DXF.txt").write_text(
+            "本机可见版使用绝对图片路径。\n"
+            "移动到其他电脑后，请运行 StoneBot 的 "
+            "scripts/relocate_texture_dxf.py 重定位可移动 DXF 的图片路径。\n",
+            encoding="utf-8",
+        )
     manifest = {
         "schema_version": "1.0.0",
         "scope": "reusable_artificial_stone",
@@ -829,6 +938,7 @@ def generate_textured_package(
             "image_maps_to": "usable_area",
             "oversize_included": False,
         },
+        "image_reference_mode": image_reference_mode,
         "patterns": [
             {
                 **asdict(pattern),
@@ -849,6 +959,9 @@ def generate_textured_package(
             "sheet_count": len({record.sheet_index for record in records}),
             "total_pattern_area_mm2": round(pattern_area, 3),
             "textured_dxf": textured_dxf.name,
+            "portable_dxf": (
+                portable_dxf.name if portable_dxf is not None else None
+            ),
         },
     }
     manifest_path = output_dir / "texture_manifest.json"
@@ -856,10 +969,32 @@ def generate_textured_package(
         json.dumps(manifest, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    archive_path = None
+    if create_archive:
+        archive_path = output_dir.parent / f"{output_dir.name}.zip"
+        if archive_path.exists():
+            raise FileExistsError(f"texture archive already exists: {archive_path}")
+        with zipfile.ZipFile(
+            archive_path,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+            compresslevel=6,
+        ) as archive:
+            for file_path in sorted(output_dir.rglob("*")):
+                if file_path.is_file():
+                    archive.write(
+                        file_path,
+                        arcname=(
+                            Path(output_dir.name)
+                            / file_path.relative_to(output_dir)
+                        ).as_posix(),
+                    )
     return TexturePackage(
         output_dir=output_dir,
         textured_dxf=textured_dxf,
         manifest_path=manifest_path,
+        portable_dxf=portable_dxf,
+        archive_path=archive_path,
         texture_count=len(records),
         preview_paths=tuple(preview_paths),
         total_pattern_area_mm2=pattern_area,

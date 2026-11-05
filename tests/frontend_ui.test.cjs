@@ -223,6 +223,8 @@ test("artifactLabel exposes numbered DXF and diff revisions", () => {
   assert.equal(ui.artifactLabel("correction_diff_r3"), "纠正差异 v3");
   assert.equal(ui.artifactLabel("numbered_dxf_r2"), "原位DXF v2");
   assert.equal(ui.artifactLabel("numbered_dxf"), "编号原位DXF");
+  assert.equal(ui.artifactLabel("textured_dxf"), "纹理原位DXF");
+  assert.equal(ui.artifactLabel("texture_archive"), "纹理成果ZIP");
 });
 
 test("parseApiError prefers FastAPI detail and handles text payloads", () => {

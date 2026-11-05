@@ -223,6 +223,7 @@ def test_plugin_service_generates_reusable_artificial_stone_textures(tmp_path):
             "job_id": job_id,
             "pattern_manifest_path": str(pattern_manifest),
             "output_directory": str(texture_dir),
+            "archive": True,
         }
     )
 
@@ -235,10 +236,12 @@ def test_plugin_service_generates_reusable_artificial_stone_textures(tmp_path):
     assert package["texture_count"] == 6
     assert Path(package["textured_dxf"]).is_file()
     assert Path(package["manifest"]).is_file()
+    assert Path(package["archive"]).is_file()
     assert len(list((texture_dir / "textures").glob("*.png"))) == 6
     status = service.job_status({"job_id": job_id})
     assert Path(status["artifacts"]["textured_dxf"]).is_file()
     assert Path(status["artifacts"]["texture_manifest"]).is_file()
+    assert Path(status["artifacts"]["texture_archive"]).is_file()
 
 
 def test_choose_output_directory_returns_native_picker_result(tmp_path):

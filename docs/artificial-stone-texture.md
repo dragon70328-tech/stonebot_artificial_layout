@@ -47,7 +47,8 @@
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 main.py input.dxf 3200 1800 20 `
   --profile min_sheets --kerf 5 --sheet-oversize 30,30 --no-confirm `
-  --texture-patterns patterns.json
+  --texture-patterns patterns.json --texture-image-reference-mode absolute `
+  --texture-archive
 ```
 
 默认纹理交付目录：
@@ -61,6 +62,44 @@ output/<时间戳>_<文件名>/<文件名>_texture_原位/
 ```powershell
 --texture-output "D:\交付\项目纹理"
 ```
+
+已有排板 DXF 可补做纹理，默认输出到排板 DXF 同一级的
+`*_纹理原位/`：
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 scripts\generate_slab_texture.py `
+  --nested-dxf "排板.dxf" `
+  --source-dxf "原位_编号.dxf" `
+  --patterns patterns.json --archive
+```
+
+移动成果目录后，重定位可移动 DXF 的图片引用：
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 scripts\relocate_texture_dxf.py `
+  "新目录\*_纹理原位_可移动.dxf"
+```
+
+## HTTP / 门户
+
+完成后的任务可通过以下接口生成纹理包：
+
+```text
+POST /texture-assets/{filename}?tenant_id=...&project_id=...
+POST /jobs/{job_id}/textures
+```
+
+先上传所有标准图片和图案清单，再把返回的 `patterns.json` 服务器路径传给
+第二个接口。纹理生成进入后台队列，完成后通过：
+
+```text
+GET /jobs/{job_id}
+GET /jobs/{job_id}/artifacts/texture_archive
+GET /jobs/{job_id}/artifacts/textured_dxf
+GET /jobs/{job_id}/artifacts/texture_manifest
+```
+
+门户的“人造石纹理效果”面板已经接入这套接口。
 
 ## 生成过程
 
@@ -78,6 +117,7 @@ output/<时间戳>_<文件名>/<文件名>_texture_原位/
 ```text
 texture_原位/
   <编号>_纹理原位.dxf
+  <编号>_纹理原位_可移动.dxf
   texture_manifest.json
   textures/
     artificial-a__<编号>.png
@@ -98,4 +138,6 @@ texture_原位/
 纹理位于 `TEXTURE_IMAGE` 图层，不参与切割。DXF 的 `IMAGE` 是外部
 栅格引用。AutoCAD 2023 对相对正斜杠引用兼容性不好，因此当前输出使用
 绝对图片路径，保证本机直接打开可见。必须同时交付 `textures/` 目录；
-将整个纹理包移动到其他电脑后，需要同步更新图片引用路径或重新生成包。
+移动纹理包后，使用 `scripts/relocate_texture_dxf.py` 将可移动 DXF 的
+图片引用改写到新目录。`--texture-archive` / `archive=true` 会同时生成
+绝对路径版、可移动版和 ZIP。

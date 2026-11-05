@@ -13,6 +13,7 @@ from src.models import NestingResult, Part, Sheet
 from src.slab_texture import (
     generate_textured_package,
     load_texture_nesting_result,
+    relocate_texture_references,
 )
 from src.units import UnitSystem
 
@@ -295,6 +296,62 @@ def test_max_pixels_per_mm_limits_texture_resolution(tmp_path: Path):
     with Image.open(texture_path) as texture:
         # The original part is 10 x 10 mm, so 0.5 px/mm gives 5 x 5.
         assert texture.size == (5, 5)
+
+
+def test_relative_texture_dxf_can_be_relocated_after_move(tmp_path: Path):
+    manifest = _write_pattern_manifest(tmp_path)
+    numbered = _write_numbered_dxf(tmp_path)
+    output_dir = tmp_path / "portable"
+    package = generate_textured_package(
+        _texture_result(),
+        numbered,
+        manifest,
+        output_dir,
+        image_reference_mode="relative",
+    )
+    doc = ezdxf.readfile(str(package.textured_dxf))
+    image_def = next(iter(doc.objects.query("IMAGEDEF")))
+    assert not Path(image_def.dxf.filename).is_absolute()
+
+    moved_dir = tmp_path / "moved"
+    output_dir.rename(moved_dir)
+    moved_dxf = moved_dir / package.textured_dxf.name
+    updated = relocate_texture_references(moved_dxf)
+
+    assert updated == 1
+    relocated_doc = ezdxf.readfile(str(moved_dxf))
+    relocated_def = next(iter(relocated_doc.objects.query("IMAGEDEF")))
+    relocated_path = Path(relocated_def.dxf.filename)
+    assert relocated_path.is_absolute()
+    assert relocated_path.parent == moved_dir / "textures"
+    assert relocated_path.is_file()
+
+
+def test_archive_contains_absolute_and_portable_dxf(tmp_path: Path):
+    manifest = _write_pattern_manifest(tmp_path)
+    numbered = _write_numbered_dxf(tmp_path)
+    output_dir = tmp_path / "archived"
+
+    package = generate_textured_package(
+        _texture_result(),
+        numbered,
+        manifest,
+        output_dir,
+        create_archive=True,
+    )
+
+    assert package.portable_dxf is not None
+    assert package.portable_dxf.is_file()
+    assert package.archive_path is not None
+    assert package.archive_path.is_file()
+    import zipfile
+
+    with zipfile.ZipFile(package.archive_path) as archive:
+        names = set(archive.namelist())
+        assert f"{output_dir.name}/{package.textured_dxf.name}" in names
+        assert f"{output_dir.name}/{package.portable_dxf.name}" in names
+        assert any(name.endswith("/texture_manifest.json") for name in names)
+        assert any("/textures/" in name for name in names)
 
 
 def test_existing_nested_dxf_can_be_rehydrated_with_source_geometry(

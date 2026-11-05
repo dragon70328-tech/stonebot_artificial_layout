@@ -33,6 +33,10 @@
     nested_dxf: "排板DXF",
     report: "排板报告",
     check: "编号检查",
+    textured_dxf: "纹理原位DXF",
+    portable_texture_dxf: "可移动纹理DXF",
+    texture_manifest: "纹理清单",
+    texture_archive: "纹理成果ZIP",
     reviewed_dxf: "回看排板DXF",
     review_report: "回看报告",
   };

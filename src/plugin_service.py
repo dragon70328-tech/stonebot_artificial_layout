@@ -634,6 +634,10 @@ class PluginJobService:
                 runtime.context.numbered_dxf_path,
                 manifest_path,
                 target_dir,
+                image_reference_mode=str(
+                    args.get("image_reference_mode") or "absolute"
+                ),
+                create_archive=bool(args.get("archive", False)),
             )
         except Exception as exc:  # noqa: BLE001 - deterministic texture boundary
             raise StonebotProtocolError(
@@ -652,6 +656,16 @@ class PluginJobService:
             "output_directory": str(package.output_dir),
             "textured_dxf": str(package.textured_dxf),
             "manifest": str(package.manifest_path),
+            "portable_dxf": (
+                str(package.portable_dxf)
+                if package.portable_dxf is not None
+                else None
+            ),
+            "archive": (
+                str(package.archive_path)
+                if package.archive_path is not None
+                else None
+            ),
             "texture_count": package.texture_count,
             "preview_paths": [
                 str(path) for path in package.preview_paths
@@ -1451,6 +1465,13 @@ class PluginJobService:
             ):
                 public_artifacts["texture_manifest"] = (
                     texture_package["manifest"]
+                )
+            if (
+                texture_package.get("archive")
+                and Path(str(texture_package["archive"])).is_file()
+            ):
+                public_artifacts["texture_archive"] = (
+                    texture_package["archive"]
                 )
         return {
             "ok": (

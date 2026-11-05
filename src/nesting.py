@@ -588,7 +588,7 @@ _LNS_DEFAULT_PATIENCE = 12
 # 桥切排板算法版本：任何影响布局结果的逻辑改动都要 bump，
 # 认证确定性模式把它写进 NestingRequest 快照（digest 血缘），
 # 同一版本 + 同一输入 + 同一依赖环境 ⇒ 结果逐位一致。
-ALGORITHM_VERSION = "bridge-2026-10-31"
+ALGORITHM_VERSION = "bridge-2026-11-05.2"
 
 
 def _sheet_outer_area(pls: list) -> float:
@@ -1094,22 +1094,209 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
         stats["certified_mode"] = True
 
     if rect_fast and not first_part_left_edge and min_gap <= 0:
-        from src.rect_nesting import rect_fast_layout
+        from src.rect_nesting import (
+            rect_fast_layout,
+            rectangles_are_guillotine,
+        )
+        from src.beam_nesting import beam_layout
+        from src.rect_pattern_optimizer import optimize_pattern_counts
 
         rect_pl = rect_fast_layout(
             parts, sheet_width, sheet_height,
             rotations=rotations, min_gap=min_gap,
         )
         if rect_pl is not None:
+            fixed_orientation = not any(
+                abs(float(angle) % 360.0 - 90.0) <= 1e-9
+                or abs(float(angle) % 360.0 - 270.0) <= 1e-9
+                for angle in rotations
+            )
             if stats is not None:
                 stats["rect_fast_path"] = True
                 stats["rect_fast_sheets"] = len(rect_pl)
+                rect_fast_non_guillotine_sheets = 0
+                for sheet in rect_pl:
+                    rectangles = [
+                        (
+                            placement.poly.bounds[0],
+                            placement.poly.bounds[1],
+                            placement.poly.bounds[2]
+                            - placement.poly.bounds[0],
+                            placement.poly.bounds[3]
+                            - placement.poly.bounds[1],
+                        )
+                        for placement in sheet
+                    ]
+                    if not rectangles_are_guillotine(rectangles):
+                        rect_fast_non_guillotine_sheets += 1
+                stats["rect_fast_guillotine_cuttable"] = (
+                    rect_fast_non_guillotine_sheets == 0
+                )
+                stats["rect_fast_non_guillotine_sheets"] = (
+                    rect_fast_non_guillotine_sheets
+                )
+                stats["rect_fast_fixed_orientation"] = fixed_orientation
                 # rect_fast 通道无任何墙钟/随机分支，天然确定。
                 stats["certified"] = bool(certified)
             if progress:
-                progress(1, 1, len(rect_pl))
-            return _materialize(rect_pl, sheet_width, sheet_height,
-                                sheet_thickness, unit, len(parts))
+                progress(1, 2 if beam else 1, len(rect_pl))
+
+            candidates = [("rect_fast", rect_pl)]
+            if beam:
+                if certified:
+                    beam_time_limit = None
+                elif beam_budget is None:
+                    beam_time_limit = (
+                        improve_budget
+                        if improve_budget and improve_budget > 0
+                        else None
+                    )
+                else:
+                    beam_time_limit = (
+                        beam_budget if beam_budget > 0 else None
+                    )
+
+                def _rect_beam_greedy_fallback(remaining):
+                    return _nest_single(
+                        remaining,
+                        sheet_width,
+                        sheet_height,
+                        _make_sort_key("area", 0),
+                        "skyline",
+                        cache,
+                        rotations=rotations,
+                        first_part_left_edge=first_part_left_edge,
+                        min_gap=min_gap,
+                    )
+
+                beam_pl = beam_layout(
+                    parts,
+                    sheet_width,
+                    sheet_height,
+                    cache,
+                    beam_width=beam_width,
+                    rotations=rotations,
+                    min_gap=min_gap,
+                    time_budget_s=beam_time_limit,
+                    greedy_fallback=_rect_beam_greedy_fallback,
+                    pattern_reuse=pattern_reuse,
+                    reuse_min_fill=0.65 if fixed_orientation else 0.80,
+                    stats=stats,
+                    certified=certified,
+                )
+                candidates.append(("beam", beam_pl))
+                if stats is not None:
+                    stats["beam_competed_with_rect_fast"] = True
+                    stats["beam_sheets"] = len(beam_pl)
+
+            if fixed_orientation and len(parts) >= 64:
+                pattern_optimization = optimize_pattern_counts(
+                    parts,
+                    [layout for _name, layout in candidates],
+                    time_limit_s=None if certified else 5.0,
+                )
+                if pattern_optimization is not None:
+                    candidates.append(
+                        ("pattern_integer", pattern_optimization.placements)
+                    )
+                    if stats is not None:
+                        stats["pattern_integer_available"] = True
+                        stats["pattern_integer_sheets"] = (
+                            pattern_optimization.objective_sheets
+                        )
+                        stats["pattern_integer_candidates"] = (
+                            pattern_optimization.candidate_patterns
+                        )
+                        stats["pattern_integer_selected_patterns"] = (
+                            pattern_optimization.selected_patterns
+                        )
+
+            selected_name, selected_pl = min(
+                candidates,
+                key=lambda item: _layout_key(
+                    item[1],
+                    manufacture_score=_placement_manufacturability_score(
+                        item[1],
+                        sheet_width,
+                        sheet_height,
+                    ),
+                    compact=sum(
+                        max(
+                            (placement.poly.bounds[3] for placement in sheet),
+                            default=0.0,
+                        )
+                        for sheet in item[1]
+                    ),
+                ),
+            )
+            if stats is not None:
+                stats["selected_layout_path"] = selected_name
+                stats["rect_fast_selected"] = selected_name == "rect_fast"
+                stats["pattern_integer_selected"] = (
+                    selected_name == "pattern_integer"
+                )
+                selected_non_guillotine = 0
+                for sheet in selected_pl:
+                    rectangles = [
+                        (
+                            placement.poly.bounds[0],
+                            placement.poly.bounds[1],
+                            placement.poly.bounds[2]
+                            - placement.poly.bounds[0],
+                            placement.poly.bounds[3]
+                            - placement.poly.bounds[1],
+                        )
+                        for placement in sheet
+                    ]
+                    if not rectangles_are_guillotine(rectangles):
+                        selected_non_guillotine += 1
+                stats["guillotine_cuttable"] = (
+                    selected_non_guillotine == 0
+                )
+                stats["non_guillotine_sheets"] = (
+                    selected_non_guillotine
+                )
+            placed_count = sum(len(sheet) for sheet in selected_pl)
+            if placed_count != len(parts):
+                raise RuntimeError(
+                    f"排板结果零件不完整：输入 {len(parts)} 件，"
+                    f"输出只有 {placed_count} 件——引擎缺陷，请报告。"
+                )
+            if certified and stats is not None:
+                hazards = [
+                    flag for flag in (
+                        "beam_budget_exhausted",
+                        "multi_tail_timeout",
+                    )
+                    if stats.get(flag)
+                ]
+                if hazards:
+                    raise RuntimeError(
+                        "认证确定性模式触发了墙钟截断标志 "
+                        f"{hazards}：结果不可复现，请报告。"
+                    )
+            if progress:
+                progress(2 if beam else 1, 2 if beam else 1,
+                         len(selected_pl))
+            result = _materialize(
+                selected_pl,
+                sheet_width,
+                sheet_height,
+                sheet_thickness,
+                unit,
+                len(parts),
+            )
+            errors = validate_nesting(
+                result,
+                sheet_width,
+                sheet_height,
+                min_gap=min_gap,
+            )
+            if errors:
+                raise RuntimeError(
+                    "排板结果校验失败：" + "; ".join(errors)
+                )
+            return result
 
     if configs is None and beam and len(parts) > _LARGE_ORDER_GREEDY_MAX_PARTS:
         # 大单：贪心只留一套兜底，主力交给束搜索

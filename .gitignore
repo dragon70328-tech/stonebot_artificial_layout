@@ -59,6 +59,13 @@ _analysis/fremont_*.json
 _analysis/fremont_*.xlsx
 _analysis/manual_forbidden_l_marked*.dxf
 _analysis/manual_forbidden_l_marked*.json
+_analysis/st8_candidates/
+_analysis/st8_production_*/
+_analysis/st8_opt_*/
+_analysis/st8_extra14_annotation/
+
+# customer artificial-stone pattern images stay local
+slab_patterns/images/
 
 # REA 分析工作区：厂商二进制、反编译源码与本地工具不入库
 # （targets/ 可从安装目录用 dump_evidence.ps1 重新复制，原始 SHA-256 记录在

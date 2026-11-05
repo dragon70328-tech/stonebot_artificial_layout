@@ -6,17 +6,19 @@
 
 流程：
 
-1. 按外包络分尺寸档（长边/短边，允许 0/90 旋转）；
-2. 生成每张板的候选模式：**行模式**（若干横带）与 **列模式**（若干竖列）；
+1. 按外包络分尺寸档；允许 90° 时生成行/列板型，禁止 90° 时使用固定朝向
+   MaxRects 多策略候选；
+2. 每张板形成可桥切的行列板型，或省料优先的固定朝向二维候选；
 3. 在"各档剩余数量"上做束搜索，每步选一张板，按（板数, 剩余面积）择优；
 4. 模式落成坐标（``RectPlacement``，字段与 ``nesting._Placement`` 相同）。
 
-不适用（非矩形件、要求非零间距、缺 90° 旋转）时返回 ``None``。
+非矩形件或要求非零间距时返回 ``None``。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable
 
 from shapely import affinity
 from shapely.geometry import Polygon
@@ -51,6 +53,231 @@ def _dims(part) -> tuple[float, float, bool]:
     width, height = max_x - min_x, max_y - min_y
     long_side, short_side = max(width, height), min(width, height)
     return long_side, short_side, width >= height
+
+
+def rectangles_are_guillotine(
+    rectangles: Iterable[tuple[float, float, float, float]],
+) -> bool:
+    """Return whether straight full cuts can separate every rectangle."""
+    normalized = tuple(
+        sorted(
+            (
+                round(float(x), 6),
+                round(float(y), 6),
+                round(float(width), 6),
+                round(float(height), 6),
+            )
+            for x, y, width, height in rectangles
+            if width > 0 and height > 0
+        )
+    )
+
+    def slices(items: tuple[tuple[float, float, float, float], ...]) -> bool:
+        if len(items) <= 1:
+            return True
+        min_x = min(item[0] for item in items)
+        min_y = min(item[1] for item in items)
+        max_x = max(item[0] + item[2] for item in items)
+        max_y = max(item[1] + item[3] for item in items)
+        for cut in sorted({item[0] for item in items} | {
+            item[0] + item[2] for item in items
+        }):
+            if cut <= min_x + 1e-9 or cut >= max_x - 1e-9:
+                continue
+            if any(item[0] < cut < item[0] + item[2] for item in items):
+                continue
+            left = tuple(
+                item for item in items
+                if item[0] + item[2] <= cut + 1e-9
+            )
+            right = tuple(
+                item for item in items
+                if item[0] >= cut - 1e-9
+            )
+            if left and right and slices(left) and slices(right):
+                return True
+        for cut in sorted({item[1] for item in items} | {
+            item[1] + item[3] for item in items
+        }):
+            if cut <= min_y + 1e-9 or cut >= max_y - 1e-9:
+                continue
+            if any(item[1] < cut < item[1] + item[3] for item in items):
+                continue
+            bottom = tuple(
+                item for item in items
+                if item[1] + item[3] <= cut + 1e-9
+            )
+            top = tuple(
+                item for item in items
+                if item[1] >= cut - 1e-9
+            )
+            if bottom and top and slices(bottom) and slices(top):
+                return True
+        return False
+
+    return slices(normalized)
+
+
+def _fixed_orientation_candidate(
+    parts: list,
+    sheet_w: float,
+    sheet_h: float,
+    *,
+    strategy: str,
+    heuristic: str,
+) -> list[list[RectPlacement]] | None:
+    dimensions = []
+    for index, part in enumerate(parts):
+        min_x, min_y, max_x, max_y = part.outer_polygon.bounds
+        width = max_x - min_x
+        height = max_y - min_y
+        if width > sheet_w + 1e-9 or height > sheet_h + 1e-9:
+            return None
+        dimensions.append((index, width, height))
+
+    if strategy == "area":
+        ordered = sorted(
+            dimensions,
+            key=lambda item: (-item[1] * item[2], -max(item[1], item[2])),
+        )
+    elif strategy == "width":
+        ordered = sorted(
+            dimensions,
+            key=lambda item: (-item[1], -item[2]),
+        )
+    elif strategy == "height":
+        ordered = sorted(
+            dimensions,
+            key=lambda item: (-item[2], -item[1]),
+        )
+    else:
+        ordered = sorted(
+            dimensions,
+            key=lambda item: (-max(item[1], item[2]), -item[1] * item[2]),
+        )
+
+    sheet_free: list[list[tuple[float, float, float, float]]] = []
+    sheet_parts: list[list[RectPlacement]] = []
+    for part_index, width, height in ordered:
+        best = None
+        for sheet_index, free_rectangles in enumerate(sheet_free):
+            for rect_index, (x, y, free_w, free_h) in enumerate(free_rectangles):
+                if width > free_w + 1e-9 or height > free_h + 1e-9:
+                    continue
+                leftover_w = free_w - width
+                leftover_h = free_h - height
+                if heuristic == "short":
+                    position_score = (
+                        min(leftover_w, leftover_h),
+                        max(leftover_w, leftover_h),
+                    )
+                elif heuristic == "area":
+                    position_score = (
+                        leftover_w * leftover_h,
+                        min(leftover_w, leftover_h),
+                    )
+                else:
+                    position_score = (
+                        y + height,
+                        x,
+                        leftover_w * leftover_h,
+                    )
+                key = (*position_score, sheet_index, rect_index)
+                if best is None or key < best[0]:
+                    best = (key, sheet_index, x, y, free_rectangles)
+        if best is None:
+            sheet_free.append([(0.0, 0.0, sheet_w, sheet_h)])
+            sheet_parts.append([])
+            sheet_index = len(sheet_free) - 1
+            x, y = 0.0, 0.0
+            free_rectangles = sheet_free[sheet_index]
+        else:
+            _, sheet_index, x, y, free_rectangles = best
+
+        part = parts[part_index]
+        sheet_parts[sheet_index].append(
+            RectPlacement(
+                part=part,
+                rot=0.0,
+                x=x,
+                y=y,
+                poly=_placed_polygon(part, 0.0, x, y),
+            )
+        )
+        placed_right = x + width
+        placed_top = y + height
+        updated = []
+        for fx, fy, free_w, free_h in free_rectangles:
+            if (
+                placed_right <= fx + 1e-9
+                or x >= fx + free_w - 1e-9
+                or placed_top <= fy + 1e-9
+                or y >= fy + free_h - 1e-9
+            ):
+                updated.append((fx, fy, free_w, free_h))
+                continue
+            if x > fx + 1e-9:
+                updated.append((fx, fy, x - fx, free_h))
+            if placed_right < fx + free_w - 1e-9:
+                updated.append(
+                    (placed_right, fy, fx + free_w - placed_right, free_h)
+                )
+            if y > fy + 1e-9:
+                updated.append((fx, fy, free_w, y - fy))
+            if placed_top < fy + free_h - 1e-9:
+                updated.append(
+                    (fx, placed_top, free_w, fy + free_h - placed_top)
+                )
+        kept = []
+        for index, candidate in enumerate(updated):
+            if any(
+                other != index
+                and candidate[0] >= updated[other][0] - 1e-9
+                and candidate[1] >= updated[other][1] - 1e-9
+                and candidate[0] + candidate[2]
+                <= updated[other][0] + updated[other][2] + 1e-9
+                and candidate[1] + candidate[3]
+                <= updated[other][1] + updated[other][3] + 1e-9
+                for other in range(len(updated))
+            ):
+                continue
+            kept.append(candidate)
+        sheet_free[sheet_index] = kept
+    return sheet_parts
+
+
+def rect_fast_layout_fixed_orientation(
+    parts: list,
+    sheet_w: float,
+    sheet_h: float,
+) -> list[list[RectPlacement]] | None:
+    """Optimize material usage while preserving every source orientation."""
+    candidates = []
+    for strategy in ("area", "width", "height", "maxside"):
+        for heuristic in ("short", "area", "bottom"):
+            candidate = _fixed_orientation_candidate(
+                parts,
+                sheet_w,
+                sheet_h,
+                strategy=strategy,
+                heuristic=heuristic,
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda layout: (
+            len(layout),
+            -sum(
+                placement.poly.area
+                for sheet in layout
+                for placement in sheet
+            ),
+            sum(len(sheet) for sheet in layout),
+        ),
+    )
 
 
 def _line_fills(lengths: list[float], limit: float) -> list[tuple[int, ...]]:
@@ -154,6 +381,17 @@ def rect_fast_layout(parts: list, sheet_w: float, sheet_h: float, *,
         return None
     if not all(is_rect_like(part) for part in parts):
         return None
+    can_rotate = any(
+        abs(float(angle) % 360.0 - 90.0) <= 1e-9
+        or abs(float(angle) % 360.0 - 270.0) <= 1e-9
+        for angle in rotations
+    )
+    if not can_rotate:
+        return rect_fast_layout_fixed_orientation(
+            parts,
+            sheet_w,
+            sheet_h,
+        )
 
     groups: dict[tuple[float, float], list] = {}
     for part in parts:

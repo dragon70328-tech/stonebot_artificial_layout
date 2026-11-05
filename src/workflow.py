@@ -986,6 +986,25 @@ def postprocess_result(result, profile) -> dict:
             metrics = pp.measure([sheet])
             manufacturing_metrics["edge_contact_mm"] += metrics["edge_contact_mm"]
             manufacturing_metrics["through_cut_mm"] += metrics["through_cut_mm"]
+    from src.rect_nesting import rectangles_are_guillotine
+
+    non_guillotine_sheets = 0
+    for sheet in result.sheets:
+        rectangles = [
+            (
+                part.outer_polygon.bounds[0],
+                part.outer_polygon.bounds[1],
+                part.outer_polygon.bounds[2] - part.outer_polygon.bounds[0],
+                part.outer_polygon.bounds[3] - part.outer_polygon.bounds[1],
+            )
+            for part in sheet.parts
+        ]
+        if not rectangles_are_guillotine(rectangles):
+            non_guillotine_sheets += 1
+    manufacturing_metrics["non_guillotine_sheets"] = non_guillotine_sheets
+    manufacturing_metrics["guillotine_cuttable"] = (
+        non_guillotine_sheets == 0
+    )
     return manufacturing_metrics
 
 
@@ -1057,6 +1076,14 @@ def build_check_payload(result, profile, drawing_profile, width_mm, height_mm,
         "manufacturability": {
             "edge_contact_mm": round(manufacturing_metrics["edge_contact_mm"], 1),
             "through_cut_mm": round(manufacturing_metrics["through_cut_mm"], 1),
+            "guillotine_cuttable": manufacturing_metrics.get(
+                "guillotine_cuttable",
+                True,
+            ),
+            "non_guillotine_sheets": manufacturing_metrics.get(
+                "non_guillotine_sheets",
+                0,
+            ),
             "waterjet": waterjet_metrics,
         },
         "postprocess_warning_count": len(postprocess_warnings),
@@ -1111,6 +1138,14 @@ def build_report(result, profile, width_mm, height_mm, special_w, special_h,
         "manufacturability": {
             "edge_contact_mm": round(manufacturing_metrics["edge_contact_mm"], 1),
             "through_cut_mm": round(manufacturing_metrics["through_cut_mm"], 1),
+            "guillotine_cuttable": manufacturing_metrics.get(
+                "guillotine_cuttable",
+                True,
+            ),
+            "non_guillotine_sheets": manufacturing_metrics.get(
+                "non_guillotine_sheets",
+                0,
+            ),
         },
         "kerf_material": kerf_metrics,
         "profile": {

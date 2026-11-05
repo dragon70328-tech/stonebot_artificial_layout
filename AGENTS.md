@@ -37,6 +37,7 @@ stonebot_artificial_layout/
     dxf_writer.py       # DXF 写入：排板结果、编号检查、GROUP、清单排板图
     spec_list.py        # 规格板尺寸清单（材料 x 区域 分组 + 图纸要求提取）
     slab_texture.py     # 人造石标准图案复用、实测抠图与原位纹理 DXF
+    slab_pattern_library.py # 项目级人造石图案资产登记、列示与校验
     drawing_preview.py  # 原位 DXF 在线预览（可点击实体 + target_id）
     visual_evidence.py  # 审图问题视觉证据（SVG 高亮）
     visual_renderer.py  # 整图 SVG 渲染
@@ -54,6 +55,7 @@ stonebot_artificial_layout/
     # ── 应用/排板 application ──
     nesting.py          # 桥切引擎：多轮贪心 BFD + LNS
     beam_nesting.py     # 桥切第二布局路径：逐板最佳填充束搜索（尺寸档/缺口回收/多板尾解）
+    rect_pattern_optimizer.py # 固定朝向候选板型的整数配比优化（HiGHS）
     deepnest_engine.py  # 水刀/激光引擎：BLF + 滑动压实
     pairing.py          # 相同形状 180° 共边配对
     list_parsing.py     # 清单解析适配层（.xlsx/.pdf -> ListItem）
@@ -316,6 +318,11 @@ DXF 交付。
 加工方式由 `--process` 或 `NestingProfile.processing_class` 决定：
 
 - `bridge`：走 `src/nesting.py`，多轮贪心 BFD + 大邻域搜索（LNS）
+- 桥切目标以**省料优先**：件数完整、边界/重叠/刀缝等硬约束通过后，先比较
+  板数和出材率；guillotine 可切序只作为制造性信息，不单独否决更省料的布局。
+  禁止旋转的纯矩形订单先走固定朝向 MaxRects 多策略候选（`rect_fast_layout`）；
+  默认还会让逐板束搜索生成独立候选，两者按统一布局键竞争，快通道不再提前截断
+  质量更优的束搜索方案。
 - `waterjet` / `laser`：走 `src/deepnest_engine.py`，Bottom-Left Fill + 滑动压实
 - `--pairing`：水刀 DeepNest 分支先做相同形状 180° 共边配对预排
 - `--no-rotation`：强制 `rotation=[0]`、`arbitrary_rotation=False`
@@ -678,7 +685,13 @@ ZIGZAG 线型的大样图标记必须排除，否则会被误识别为规格板�
 **判据**：`nest_parts(rect_fast=True)`（默认）且全部零件 `is_rect_like`
 （外轮廓/外包络 ≥ 0.98，带小倒角的矩形也满足）、`min_gap ≤ 0`、允许 90° 旋转、
 未启用 `first_part_left_edge`。命中时直接走 `src/rect_nesting.py`，**跳过**
-贪心配置、束搜索、LNS 与压缩，报告 `parameters.optimizer.rect_fast_path=true`。
+普通贪心配置、LNS 与压缩，报告 `parameters.optimizer.rect_fast_path=true`。
+默认开启束搜索时，矩形快通道只产生一个候选，不直接返回；束搜索候选完成后按
+「板数 → 最弱尾板 → 制造评分 → 紧凑度」统一择优。固定朝向还会把两套候选的
+有效板型转成整数变量，在每种规格数量精确相等的前提下求最少板型配比。optimizer
+stats 记录 `rect_fast_sheets`、`beam_sheets`、`pattern_integer_sheets` 和
+`selected_layout_path`。ST-8 2018 件实测：快通道 585 张，逐板束搜索 580 张，
+板型整数配比 578 张，最终选择 578 张。
 CLI/Agent 工具可用 `--no-rect-fast`（`rect_fast=false`）强制关闭该通道，
 便于和通用引擎做同口径 A/B。
 

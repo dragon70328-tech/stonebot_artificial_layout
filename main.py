@@ -214,6 +214,14 @@ def parse_args():
     p.add_argument("--texture-output", type=str, default=None,
                    help="纹理交付目录；默认在本次输出目录下生成唯一的"
                         "{文件名}_texture_原位 目录")
+    p.add_argument(
+        "--texture-image-reference-mode",
+        choices=["absolute", "relative"],
+        default="absolute",
+        help="纹理 DXF 图片来源：absolute 兼容 AutoCAD；relative 便于迁移",
+    )
+    p.add_argument("--texture-archive", action="store_true",
+                   help="额外生成可移动纹理 DXF 并压缩为 ZIP")
     p.add_argument("--output-root", type=str, default=None,
                    help="本次运行的基础输出目录；默认 output/")
     p.add_argument("--special-size", type=str, default=None,
@@ -812,7 +820,9 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         candidate_mode: str = "bbox",
         material_filter: list[str] | None = None,
         texture_patterns: str | None = None,
-        texture_output: str | None = None) -> None:
+        texture_output: str | None = None,
+        texture_image_reference_mode: str = "absolute",
+        texture_archive: bool = False) -> None:
     """核心排板流程
 
     ``use_template`` 默认 False：模板布局复用是显式选择，默认只跑算法，
@@ -1257,7 +1267,15 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
 
     # ── 回看排板结果：基于压实后的图形，能合并的少量板就合并 ──
     review_candidates: list = []
-    if (auto_review and optimizer_stats.get("rect_fast_path")
+    selected_layout_path = optimizer_stats.get("selected_layout_path")
+    fast_path_selected = (
+        selected_layout_path == "rect_fast"
+        or (
+            selected_layout_path is None
+            and optimizer_stats.get("rect_fast_path")
+        )
+    )
+    if (auto_review and fast_path_selected
             and not template_result and special_w is None):
         # 矩形快通道是横带/竖列版式，块内已排满；两板面积之和远超一板，
         # 回看注定合不了，却要枚举大量 donor 组合（实测 3 分钟+无输出）。
@@ -1398,6 +1416,8 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
             numbered_original,
             texture_patterns,
             texture_dir,
+            image_reference_mode=texture_image_reference_mode,
+            create_archive=texture_archive,
         )
 
     report = build_report(
@@ -1429,6 +1449,16 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
             "output_dir": str(texture_package.output_dir),
             "textured_dxf": str(texture_package.textured_dxf),
             "manifest": str(texture_package.manifest_path),
+            "portable_dxf": (
+                str(texture_package.portable_dxf)
+                if texture_package.portable_dxf is not None
+                else None
+            ),
+            "archive": (
+                str(texture_package.archive_path)
+                if texture_package.archive_path is not None
+                else None
+            ),
             "texture_count": texture_package.texture_count,
             "preview_count": len(texture_package.preview_paths),
         }
@@ -1440,6 +1470,8 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
     if texture_package is not None:
         print(f"纹理原位 DXF: {texture_package.textured_dxf}")
         print(f"纹理清单: {texture_package.manifest_path}")
+        if texture_package.archive_path is not None:
+            print(f"纹理 ZIP: {texture_package.archive_path}")
         _track_artifact(
             WorkflowStage.COMPLETED,
             texture_package.textured_dxf,
@@ -1818,6 +1850,8 @@ def main():
         material_filter=parse_material_filter(args.material),
         texture_patterns=args.texture_patterns,
         texture_output=args.texture_output,
+        texture_image_reference_mode=args.texture_image_reference_mode,
+        texture_archive=args.texture_archive,
         output_root=(
             Path(args.output_root).expanduser().resolve()
             if args.output_root

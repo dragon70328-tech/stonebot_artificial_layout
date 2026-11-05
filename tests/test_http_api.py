@@ -1,5 +1,6 @@
 import asyncio
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -333,6 +334,13 @@ def test_nesting_frontend_has_action_contract(tmp_path, monkeypatch):
         "drawing-preview-svg",
         "drawing-preview-fit",
         "drawing-preview-download",
+        "texture-panel",
+        "texture-images",
+        "texture-manifest",
+        "texture-reference-mode",
+        "texture-archive",
+        "texture-generate",
+        "texture-status",
         "parameter-panel",
         "param-process",
         "param-width",
@@ -555,6 +563,67 @@ def test_download_artifact_prefers_object_store(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert response.content == b'{"sheets": 3}'
     assert "missing.json" in response.headers["content-disposition"]
+
+
+def test_texture_asset_upload_and_generation_endpoint(tmp_path, monkeypatch):
+    class TextureManager:
+        def __init__(self):
+            self.enqueued = None
+
+        def tenant_for_job(self, job_id):
+            return "default"
+
+        def get(self, job_id):
+            return SimpleNamespace(
+                session=SimpleNamespace(stage=WorkflowStage.COMPLETED)
+            )
+
+        def store_texture_asset(
+            self,
+            tenant_id,
+            project_id,
+            safe_name,
+            data,
+        ):
+            path = tmp_path / safe_name
+            path.write_bytes(data)
+            return path, {"key": f"key/{safe_name}"}
+
+        def _enqueue_action(self, task_type, payload):
+            self.enqueued = (task_type, payload)
+
+    texture_manager = TextureManager()
+    monkeypatch.setattr("src.http_api.manager", texture_manager)
+    client = TestClient(app)
+
+    uploaded = client.post(
+        "/texture-assets/pattern.png",
+        content=b"fake-png",
+    )
+    assert uploaded.status_code == 201
+    assert Path(uploaded.json()["path"]).is_file()
+
+    manifest = tmp_path / "patterns.json"
+    manifest.write_text('{"patterns": []}', encoding="utf-8")
+    queued = client.post(
+        "/jobs/job-texture/textures",
+        json={
+            "pattern_manifest_path": str(manifest),
+            "image_reference_mode": "absolute",
+            "archive": True,
+        },
+    )
+
+    assert queued.status_code == 202
+    assert texture_manager.enqueued == (
+        "generate_texture_job",
+        {
+            "job_id": "job-texture",
+            "pattern_manifest_path": str(manifest.resolve()),
+            "image_reference_mode": "absolute",
+            "archive": True,
+        },
+    )
 
 
 def test_run_endpoint_resumes_non_gate_job(tmp_path, monkeypatch):

@@ -59,6 +59,10 @@ from src.session_store import (
     WorkflowSessionStore,
     build_session_store,
 )
+from src.slab_texture import (
+    generate_textured_package,
+    load_texture_nesting_result,
+)
 from src.state_db import StateDatabase
 from src.task_queue import SqliteTaskQueue, Task, build_task_queue
 from src.task_events import TaskEventBroker, format_sse
@@ -186,6 +190,12 @@ class CorrectionRequest(BaseModel):
     feedback_scope: FeedbackScope = FeedbackScope.PROJECT
 
 
+class TextureGenerationRequest(BaseModel):
+    pattern_manifest_path: str = Field(min_length=1)
+    image_reference_mode: Literal["absolute", "relative"] = "absolute"
+    archive: bool = True
+
+
 class AdminOperationRequest(BaseModel):
     tenant_id: str | None = None
     dry_run: bool = True
@@ -273,6 +283,19 @@ def _safe_upload_name(filename: str) -> str:
     stem = raw_name[: -len(".dxf")]
     safe_stem = _SAFE_ID.sub("_", stem).strip("_") or "upload"
     return f"{safe_stem}.dxf"
+
+
+def _safe_texture_asset_name(filename: str) -> str:
+    raw_name = Path(filename).name
+    suffix = Path(raw_name).suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".json"}:
+        raise HTTPException(
+            status_code=400,
+            detail="texture assets accept png/jpg/jpeg/webp/json only",
+        )
+    stem = raw_name[: -len(suffix)] or "asset"
+    safe_stem = _SAFE_ID.sub("_", stem).strip("_") or "asset"
+    return f"{safe_stem}{suffix}"
 
 
 def _safe_download_name(filename: str) -> str:
@@ -580,6 +603,160 @@ class JobManager:
         path.write_bytes(self.object_store.get_bytes(str(object_ref["key"])))
         return path, object_ref
 
+    def store_texture_asset(
+        self,
+        tenant_id: str,
+        project_id: str,
+        safe_name: str,
+        data: bytes,
+    ) -> tuple[Path, dict[str, object]]:
+        """Store an uploaded pattern image or manifest in tenant project storage."""
+        self.tenant_store.create_project(tenant_id, project_id)
+        digest = content_digest(data)
+        asset_dir = (
+            self.tenant_store.project_dir(tenant_id, project_id)
+            / "texture_assets"
+        )
+        asset_dir.mkdir(parents=True, exist_ok=True)
+        path = asset_dir / safe_name
+        if path.exists() and content_digest(path.read_bytes()) != digest:
+            raise JobStateError(
+                f"texture asset already exists with different content: {safe_name}"
+            )
+        if not path.exists():
+            path.write_bytes(data)
+        object_key = (
+            f"tenants/{tenant_id}/projects/{project_id}/"
+            f"texture_assets/{digest[:16]}/{safe_name}"
+        )
+        object_ref = self.object_store.put_bytes(object_key, data)
+        return path, object_ref
+
+    def _track_runtime_artifact(
+        self,
+        runtime: AgentRuntime,
+        key: str,
+        path: Path,
+    ) -> dict[str, Any]:
+        project_id = runtime.context.project_id or runtime.dxf_path.stem
+        ref = runtime.artifact_store.track(
+            project_id,
+            runtime.session.current_stage,
+            path,
+        )
+        artifact = ref.to_dict()
+        if runtime.object_store is not None:
+            object_key = (
+                f"{runtime.artifact_object_prefix}/{key}/{path.name}"
+            )
+            object_ref = runtime.object_store.put_bytes(
+                object_key,
+                path.read_bytes(),
+            )
+            artifact["object_key"] = object_ref["key"]
+        runtime.session.artifacts[key] = artifact
+        return artifact
+
+    def generate_texture(
+        self,
+        job_id: str,
+        *,
+        pattern_manifest_path: str | Path,
+        image_reference_mode: str = "absolute",
+        archive: bool = True,
+    ) -> dict[str, Any]:
+        """Generate a texture package for a completed job."""
+        runtime = self.get(job_id)
+        if runtime.session.stage != WorkflowStage.COMPLETED:
+            raise JobStateError("texture generation requires a completed job")
+        manifest_path = Path(pattern_manifest_path).expanduser().resolve()
+        if not manifest_path.is_file():
+            raise JobStateError(
+                f"texture pattern manifest not found: {manifest_path}"
+            )
+        numbered_path = runtime.context.numbered_dxf_path
+        if numbered_path is None:
+            artifact = runtime.session.artifacts.get("numbered_dxf") or {}
+            numbered_path = (
+                Path(str(artifact["path"]))
+                if artifact.get("path")
+                else None
+            )
+        if numbered_path is None or not Path(numbered_path).is_file():
+            raise JobStateError("numbered in-place DXF is missing")
+
+        result = runtime.context.result
+        if result is None:
+            nested_path = runtime.context.nested_dxf_path or runtime.nested_path
+            if nested_path is None or not Path(nested_path).is_file():
+                raise JobStateError("nested DXF is missing")
+            result = load_texture_nesting_result(
+                nested_path,
+                numbered_path,
+                thickness=runtime.context.thickness_mm,
+            )
+
+        output_dir = (
+            runtime.output_dir
+            / f"texture_{uuid.uuid4().hex[:10]}"
+        )
+        package = generate_textured_package(
+            result,
+            numbered_path,
+            manifest_path,
+            output_dir,
+            image_reference_mode=image_reference_mode,
+            create_archive=archive,
+        )
+        artifacts = {
+            "textured_dxf": self._track_runtime_artifact(
+                runtime,
+                "textured_dxf",
+                package.textured_dxf,
+            ),
+            "texture_manifest": self._track_runtime_artifact(
+                runtime,
+                "texture_manifest",
+                package.manifest_path,
+            ),
+        }
+        if package.portable_dxf is not None:
+            artifacts["portable_texture_dxf"] = (
+                self._track_runtime_artifact(
+                    runtime,
+                    "portable_texture_dxf",
+                    package.portable_dxf,
+                )
+            )
+        if package.archive_path is not None:
+            artifacts["texture_archive"] = self._track_runtime_artifact(
+                runtime,
+                "texture_archive",
+                package.archive_path,
+            )
+        runtime.store.save(runtime.session)
+        return {
+            "ok": True,
+            "job_id": job_id,
+            "stage": runtime.session.current_stage,
+            "output_directory": str(package.output_dir),
+            "textured_dxf": str(package.textured_dxf),
+            "portable_dxf": (
+                str(package.portable_dxf)
+                if package.portable_dxf is not None
+                else None
+            ),
+            "archive": (
+                str(package.archive_path)
+                if package.archive_path is not None
+                else None
+            ),
+            "manifest": str(package.manifest_path),
+            "texture_count": package.texture_count,
+            "preview_count": len(package.preview_paths),
+            "artifacts": artifacts,
+        }
+
     def get_artifact_bytes(
         self,
         job_id: str,
@@ -623,9 +800,22 @@ class JobManager:
                 payload["job_id"],
                 int(payload.get("max_reductions", 1)),
             ),
+            "generate_texture_job": lambda payload: self.generate_texture(
+                payload["job_id"],
+                pattern_manifest_path=payload["pattern_manifest_path"],
+                image_reference_mode=payload.get(
+                    "image_reference_mode",
+                    "absolute",
+                ),
+                archive=bool(payload.get("archive", True)),
+            ),
         }
 
-    def _enqueue_action(self, task_type: str, payload: dict[str, Any]) -> None:
+    def _enqueue_action(
+        self,
+        task_type: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
         task = self.task_queue.enqueue(
             Task(
                 task_type=task_type,
@@ -641,6 +831,7 @@ class JobManager:
             }
         )
         self._ensure_worker()
+        return task.to_dict()
 
     def _publish_task_event(self, event: str, task: Task) -> None:
         self.task_events.publish(
@@ -1389,6 +1580,43 @@ async def upload_input(
     )
 
 
+@app.post("/texture-assets/{filename}", status_code=201)
+async def upload_texture_asset(
+    filename: str,
+    request: Request,
+    tenant_id: str = "default",
+    project_id: str = "uploads",
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
+) -> JSONResponse:
+    _require_role(tenant, "operator")
+    _ensure_tenant_match(tenant, tenant_id)
+    safe_name = _safe_texture_asset_name(filename)
+    data = await request.body()
+    if len(data) > 256 * 1024 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail="texture asset exceeds 256 MiB",
+        )
+    try:
+        path, object_ref = manager.store_texture_asset(
+            tenant_id,
+            project_id,
+            safe_name,
+            data,
+        )
+    except (TenantError, JobStateError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return JSONResponse(
+        status_code=201,
+        content={
+            "path": str(path),
+            "object_key": object_ref["key"],
+            "bytes": len(data),
+            "digest": content_digest(data),
+        },
+    )
+
+
 @app.post("/jobs", status_code=202)
 def create_job(
     request: JobCreateRequest,
@@ -1622,6 +1850,48 @@ def review_job(
         content={
             "job_id": job_id,
             "status": "review_queued",
+        },
+    )
+
+
+@app.post("/jobs/{job_id}/textures", status_code=202)
+def generate_job_textures(
+    job_id: str,
+    request: TextureGenerationRequest,
+    tenant: TenantAuth = Depends(get_authenticated_tenant),
+) -> JSONResponse:
+    _require_role(tenant, "operator")
+    _require_job_tenant(job_id, tenant)
+    try:
+        runtime = manager.get(job_id)
+    except JobStateError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if runtime.session.stage != WorkflowStage.COMPLETED:
+        raise HTTPException(
+            status_code=409,
+            detail="texture generation requires a completed job",
+        )
+    pattern_path = Path(request.pattern_manifest_path).expanduser()
+    if not pattern_path.is_file():
+        raise HTTPException(
+            status_code=400,
+            detail=f"texture pattern manifest not found: {pattern_path}",
+        )
+    task = manager._enqueue_action(
+        "generate_texture_job",
+        {
+            "job_id": job_id,
+            "pattern_manifest_path": str(pattern_path.resolve()),
+            "image_reference_mode": request.image_reference_mode,
+            "archive": request.archive,
+        },
+    )
+    return JSONResponse(
+        status_code=202,
+        content={
+            "job_id": job_id,
+            "status": "texture_generation_queued",
+            "task": task,
         },
     )
 

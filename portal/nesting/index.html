@@ -607,6 +607,31 @@
         </div>
         <div class="preview-hint">单击图形可直接选中或取消；滚轮缩放，点击“适应”恢复全图。</div>
       </div>
+      <details id="texture-panel" class="parameter-panel" hidden>
+        <summary>人造石纹理效果</summary>
+        <div class="fields">
+          <label class="field">标准大板图片
+            <input id="texture-images" type="file" accept=".png,.jpg,.jpeg,.webp" multiple>
+          </label>
+          <label class="field">图案清单 JSON
+            <input id="texture-manifest" type="file" accept=".json">
+          </label>
+          <label class="field">图片引用模式
+            <select id="texture-reference-mode">
+              <option value="absolute">本机绝对路径（AutoCAD 可见）</option>
+              <option value="relative">相对路径（可移动）</option>
+            </select>
+          </label>
+          <label class="checkbox-field">
+            <input id="texture-archive" type="checkbox" checked>
+            同时生成可移动 DXF 和 ZIP
+          </label>
+        </div>
+        <div class="composer-actions">
+          <button id="texture-generate" class="primary" type="button">生成纹理包</button>
+        </div>
+        <div id="texture-status" class="status-line" aria-live="polite"></div>
+      </details>
       <div id="next-action" class="next-action"></div>
       <div id="job-error" class="error-box" hidden></div>
     </section>
@@ -758,6 +783,13 @@
     const drawingPreviewSvgEl = document.getElementById("drawing-preview-svg");
     const drawingPreviewEmptyEl = document.getElementById("drawing-preview-empty");
     const drawingPreviewDownloadEl = document.getElementById("drawing-preview-download");
+    const texturePanelEl = document.getElementById("texture-panel");
+    const textureImagesEl = document.getElementById("texture-images");
+    const textureManifestEl = document.getElementById("texture-manifest");
+    const textureReferenceModeEl = document.getElementById("texture-reference-mode");
+    const textureArchiveEl = document.getElementById("texture-archive");
+    const textureGenerateEl = document.getElementById("texture-generate");
+    const textureStatusEl = document.getElementById("texture-status");
     const parameterEls = {
       process: document.getElementById("param-process"),
       width: document.getElementById("param-width"),
@@ -1311,6 +1343,7 @@
       renderLearningMemory(status);
       renderActiveLearning(status);
       loadDrawingPreview(status);
+      texturePanelEl.hidden = status.stage !== "completed";
 
       const next = ui.nextAction(status);
       nextActionEl.innerHTML = `
@@ -1377,6 +1410,93 @@
         throw new Error(ui.parseApiError(payload, response.status));
       }
       return payload;
+    }
+
+    async function uploadTextureAsset(file, jobId) {
+      const query = new URLSearchParams({
+        tenant_id: "default",
+        project_id: jobId,
+      });
+      const response = await fetch(
+        `${API_BASE}/texture-assets/${encodeURIComponent(file.name)}?${query}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/octet-stream" },
+          body: file,
+        },
+      );
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(ui.parseApiError(payload, response.status));
+      }
+      return payload;
+    }
+
+    function pollTextureTask(jobId, taskId) {
+      const deadline = Date.now() + 10 * 60 * 1000;
+      const timer = setInterval(async () => {
+        if (Date.now() > deadline) {
+          clearInterval(timer);
+          textureStatusEl.textContent = "纹理生成仍在后台进行，请稍后刷新任务状态";
+          return;
+        }
+        try {
+          const payload = await api(`/jobs/${encodeURIComponent(jobId)}/tasks`);
+          const task = (payload.tasks || []).find((item) => item.task_id === taskId);
+          if (!task) return;
+          if (task.status === "succeeded") {
+            clearInterval(timer);
+            const status = await api(`/jobs/${encodeURIComponent(jobId)}`);
+            updateLatestStatus(status);
+            renderJobPanel(status);
+            textureStatusEl.textContent = "纹理包已生成，可在下载区获取纹理 DXF、清单和 ZIP";
+          } else if (["failed", "timed_out", "dead_letter"].includes(task.status)) {
+            clearInterval(timer);
+            textureStatusEl.textContent = task.error || "纹理生成失败";
+          }
+        } catch (error) {
+          clearInterval(timer);
+          textureStatusEl.textContent = error.message;
+        }
+      }, 2000);
+      state.pollTimers.push(timer);
+    }
+
+    async function generateTexturePackage() {
+      const jobId = currentJobId();
+      const manifestFile = textureManifestEl.files[0];
+      if (!jobId) throw new Error("还没有已完成任务");
+      if (!manifestFile) throw new Error("请选择图案清单 JSON");
+      const status = currentStatus();
+      if (!status || status.stage !== "completed") {
+        throw new Error("排板任务完成后才能生成纹理");
+      }
+      setBusy(true);
+      textureGenerateEl.disabled = true;
+      textureStatusEl.textContent = "正在上传图案资产...";
+      try {
+        for (const file of textureImagesEl.files) {
+          await uploadTextureAsset(file, jobId);
+        }
+        const uploadedManifest = await uploadTextureAsset(manifestFile, jobId);
+        textureStatusEl.textContent = "纹理生成已排队...";
+        const result = await api(`/jobs/${encodeURIComponent(jobId)}/textures`, {
+          method: "POST",
+          body: JSON.stringify({
+            pattern_manifest_path: uploadedManifest.path,
+            image_reference_mode: textureReferenceModeEl.value,
+            archive: textureArchiveEl.checked,
+          }),
+        });
+        if (result.task && result.task.task_id) {
+          pollTextureTask(jobId, result.task.task_id);
+        }
+      } catch (error) {
+        textureStatusEl.textContent = error.message;
+      } finally {
+        setBusy(false);
+        textureGenerateEl.disabled = false;
+      }
     }
 
     function renderFileChip(name) {
@@ -1722,6 +1842,7 @@
     document.querySelectorAll("button[data-action]").forEach((button) => {
       button.addEventListener("click", () => runDirectAction(button.dataset.action));
     });
+    textureGenerateEl.addEventListener("click", generateTexturePackage);
     document.querySelectorAll("button[data-fill]").forEach((button) => {
       button.addEventListener("click", () => {
         inputEl.value = button.dataset.fill;

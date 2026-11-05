@@ -457,6 +457,12 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "type": "string",
                     "minLength": 1,
                 },
+                "image_reference_mode": {
+                    "type": "string",
+                    "enum": ["absolute", "relative"],
+                    "default": "absolute",
+                },
+                "archive": {"type": "boolean", "default": False},
             },
             ["job_id", "pattern_manifest_path", "output_directory"],
         ),
