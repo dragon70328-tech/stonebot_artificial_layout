@@ -38,6 +38,7 @@ stonebot_artificial_layout/
     spec_list.py        # 规格板尺寸清单（材料 x 区域 分组 + 图纸要求提取）
     slab_texture.py     # 人造石标准图案复用、实测抠图与原位纹理 DXF
     slab_pattern_library.py # 项目级人造石图案资产登记、列示与校验
+    layout_adjustment.py # 人工调整排板DXF后，将样板板布局传播到同类大板
     drawing_preview.py  # 原位 DXF 在线预览（可点击实体 + target_id）
     visual_evidence.py  # 审图问题视觉证据（SVG 高亮）
     visual_renderer.py  # 整图 SVG 渲染
@@ -45,6 +46,7 @@ stonebot_artificial_layout/
     models.py           # Part / Sheet / NestingResult
     constraints.py      # NestingProfile、预置模板、标准板规格
     nesting_contracts.py # SheetSpec / ProcessPolicy / NestingRequest / NestingRevision
+    saw_process.py      # 圆盘锯让刀公式、内部凹切点局部可达性诊断
     contracts.py        # 读图数据契约（Pydantic，审图/复检状态），SCHEMA_VERSION
     correction_contracts.py / recognized_contract.py / recognition_contracts.py
     project_config.py   # ProjectConfig（sheet/profile/optimizer/reader）
@@ -114,6 +116,7 @@ stonebot_artificial_layout/
 | `docs/irregular-nesting-improvement-plan.md` | 不规则图形排板质量改进（当前排板重点） |
 | `docs/bridge-template-learning.md` | 归纳参考排板的横带/配对/填充结构并热启动剩余件 |
 | `docs/artificial-stone-texture.md` | 人造石标准大板图复用、纹理扣取与原位纹理 DXF |
+| `docs/layout-adjustment-propagation.md` | 人工调整一张排板后，将布局传播到同类大板 |
 | `docs/recognition-model-operations.md` | 识别模型训练/监控/回滚/保留 |
 | `docs/modularization-plan.md` | 大文件拆分计划与安全规则 |
 | `docs/drawing-profile-*.md` | 具体项目画像说明 |
@@ -328,6 +331,23 @@ DXF 交付。
 - `--no-rotation`：强制 `rotation=[0]`、`arbitrary_rotation=False`
 - `--kerf`：桥切刀路材料损耗（圆盘锯常 3~5mm），不计为零件间隙；零件净尺寸，
   排板仍按零间隙共边。水刀/激光按口径"刀缝可不计"，不做刀缝材料校验。
+- `--circular-saw-diameter`（兼容别名 `--saw-diameter`）：圆盘锯直径 mm，
+  当前只用于桥切。内部切点让刀宽度按实际几何计算：
+
+  ```text
+  下切深度 H = 板厚 + --saw-plunge-extra（默认 2mm）
+  让刀宽度 = sqrt(直径 × H - H²) + --saw-safety-margin
+  ```
+
+  例如 350mm 锯片、20mm 板厚时，H=22mm，让刀宽度约 **84.95mm**。
+  这不是锯片半径 175mm，也不是全局最小间距；板边入刀/出刀不套用内部让刀。
+  诊断检查外轮廓凹顶点到同件非相邻边、同板其他零件的局部通道，矩形件不产生
+  虚假内部切点；默认只认转角 ≥60° 的明显凹角，过滤圆弧展平产生的微小折角。
+  当前只是保守的局部可达性诊断，不模拟完整刀路和夹具。
+- **圆盘锯让刀优先级**：零件完整、边界、重叠、刀缝材料等硬约束通过后，先以
+  最少用板数为最高目标；只有板数相同时，才优先选择让刀点更少不足、让刀通道
+  更大的布局。让刀不足不得静默通过，但不得自动增加大板数；用户可另行要求比较
+  N+1 张方案。刀缝、让尺和让刀空间是三个独立概念。
 - `--sheet-oversize`：大板让尺，如 `30` 或 `30,30`，**每维度总量 +30（不是每边
   +30）**。让尺是标称之外的实物余量，只为消化刀缝：默认既不进零件可利用尺寸，
   也不进 DXF 外框，只把刀缝材料校验的允许尺寸放宽到实物尺寸（可利用 + 让尺）。
@@ -341,7 +361,8 @@ DXF 交付。
 桥切机原算法：
 
 1. 创建 Part 对象：outer_polygon 用于碰撞，holes 跟随变换
-2. 两条布局路径同台竞争（取板数最少，其次制造评分/紧凑度）：
+2. 两条布局路径同台竞争（取板数最少；启用圆盘锯参数时，同板数再比让刀可达性，
+   之后才是尾板、制造评分/紧凑度）：
    - 多轮贪心配置：sort（short/area/long/jitter）× mode（skyline/column/contact）× seed
    - 逐板束搜索（`beam_nesting.py`，默认开启）：每开一张新板用束搜索找
      "当前库存能摆出的最满布局"，强项是跨尺寸档的分组配方；
@@ -409,6 +430,25 @@ beam_budget_exhausted）直接抛错 fail closed。探索性运行（默认）�
 - NUMBERS：板件编号（居中）
 
 每个面板 + 孔洞 + 编号组成 GROUP（`doc.groups.new(name).extend(entities)`），选中即全选。
+
+### Step 6.1: 人工调整布局传播（2026-11-06 起）
+
+用户可以另存一份排板 DXF，在 CAD 中整组移动规格板，并把调整后的文件重新交给
+StoneBot。系统只传播平移，不改变规格板几何、编号、孔洞或旋转方向：
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 scripts\apply_layout_adjustment.py `
+  "用户调整后.dxf" --reference-sheet 149
+```
+
+- 样板入口是 DXF 中的 `Sheet_n` 编号；源调整文件不得被覆盖。
+- 板型匹配使用“大板尺寸 + 规格板规范形状多重集”，不依赖不同大板中的编号相同。
+- 只有规格板库存完全相同的板才作为同类板；找不到或不一致的目标板明确跳过。
+- 先计算整套目标布局，再做大板边界、组间重叠、编号文字、孔洞归属校验；整张板
+  通过后才实际移动 GROUP 内实体。
+- GROUP 内外轮廓、孔洞和编号一起移动，ARC/CIRCLE/bulge 等实体类型不变。
+- 输出新 DXF 和 JSON 清单；旧排板 DXF 保留，不自动增减大板数。
+- 当前先支持完全相同板型；部分相同板型的受控套用后续再开放。
 
 ## 约束系统（src/constraints.py）
 
@@ -687,7 +727,8 @@ ZIGZAG 线型的大样图标记必须排除，否则会被误识别为规格板�
 未启用 `first_part_left_edge`。命中时直接走 `src/rect_nesting.py`，**跳过**
 普通贪心配置、LNS 与压缩，报告 `parameters.optimizer.rect_fast_path=true`。
 默认开启束搜索时，矩形快通道只产生一个候选，不直接返回；束搜索候选完成后按
-「板数 → 最弱尾板 → 制造评分 → 紧凑度」统一择优。固定朝向还会把两套候选的
+「板数 → 圆盘锯让刀（启用时）→ 最弱尾板 → 制造评分 → 紧凑度」统一择优。
+固定朝向还会把两套候选的
 有效板型转成整数变量，在每种规格数量精确相等的前提下求最少板型配比。optimizer
 stats 记录 `rect_fast_sheets`、`beam_sheets`、`pattern_integer_sheets` 和
 `selected_layout_path`。ST-8 2018 件实测：快通道 585 张，逐板束搜索 580 张，
@@ -852,7 +893,8 @@ CGR45 @ 3200x1800 冷启动：贪心 52 → **束搜索 51 → 回看 50 / 72.95
 最少大板数是**离散目标、有平台期**：板数相同的布局总浪费完全一样，真正的分界在
 "最弱的那张板能不能被并掉"。因此：
 
-- `nesting._layout_key` = **（板数 → 最弱板已用面积升序 → 制造评分 → 紧凑度）**，
+- `nesting._layout_key` = **（板数 → 圆盘锯让刀（启用时）→ 最弱板已用面积
+  升序 → 制造评分 → 紧凑度）**，
   贪心配置之间、束搜索与贪心之间、以及多次 trial 之间都用同一个键择优；
   此前尾板完全不参与择优，50 张是"撞"出来的。
 - `nesting._lns_improve` 的预算改为 **迭代数 + 连续无改进轮数**（默认 40 / 12）

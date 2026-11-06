@@ -36,6 +36,7 @@ from src.numbering import assign_numbers
 from src.pairing import nest_parts_deepnest_paired
 from src.postprocess import PostProcessor, diagnose_postprocess, diagnose_waterjet, estimate_kerf_material
 from src.recognized_contract import parts_data_to_recognized_drawing
+from src.saw_process import diagnose_saw_access
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -627,6 +628,7 @@ def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
                     beam_budget=None, pattern_reuse=4,
                     rect_fast=True, low_fill_rework=False,
                     low_fill_threshold=0.6, candidate_mode="bbox",
+                    saw_clearance_mm=None,
                     certified=False):
     """Nest one material group and return result plus group stats."""
     normal_parts = []
@@ -740,6 +742,7 @@ def _nest_one_group(parts, width_mm, height_mm, special_w, special_h,
                 pattern_reuse=pattern_reuse,
                 rect_fast=rect_fast,
                 configs=QUICK_CONFIGS if quick else None,
+                saw_clearance_mm=saw_clearance_mm,
                 certified=certified))
     if special_parts:
         results.append(nest_special_parts(
@@ -785,6 +788,7 @@ def nest_groups(parts, groups, width_mm, height_mm, special_w, special_h,
                 compress=True, beam_budget=None, pattern_reuse=4,
                 rect_fast=True, low_fill_rework=False,
                 low_fill_threshold=0.6, candidate_mode="bbox",
+                saw_clearance_mm=None,
                 certified=False) -> GroupNestingOutcome:
     """Nest every material group and combine into a single NestingResult."""
     t0 = time.time()
@@ -812,6 +816,7 @@ def nest_groups(parts, groups, width_mm, height_mm, special_w, special_h,
                 low_fill_rework=low_fill_rework,
                 low_fill_threshold=low_fill_threshold,
                 candidate_mode=candidate_mode,
+                saw_clearance_mm=saw_clearance_mm,
                 certified=certified,
             )
         )
@@ -854,6 +859,7 @@ def nest_groups_parallel(parts, groups, width_mm, height_mm,
                          compress=True, beam_budget=None, pattern_reuse=4,
                          rect_fast=True, low_fill_rework=False,
                          low_fill_threshold=0.6, candidate_mode="bbox",
+                         saw_clearance_mm=None,
                          workers=4, batch_threshold=500):
     """并行排板：按材料分组并行；同材料超过阈值再分层切批 + 尾部合并。"""
     t0 = time.time()
@@ -892,6 +898,7 @@ def nest_groups_parallel(parts, groups, width_mm, height_mm,
         beam_budget=beam_budget,
         pattern_reuse=pattern_reuse,
         rect_fast=rect_fast,
+        saw_clearance_mm=saw_clearance_mm,
     )
     if quick:
         base_kwargs["configs"] = QUICK_CONFIGS
@@ -971,7 +978,7 @@ def nest_groups_parallel(parts, groups, width_mm, height_mm,
     )
 
 
-def postprocess_result(result, profile) -> dict:
+def postprocess_result(result, profile, saw_clearance_mm=None) -> dict:
     """Run slide/align/gap post-processing in place and return metrics."""
     manufacturing_metrics = {"edge_contact_mm": 0.0, "through_cut_mm": 0.0}
     if profile.slide_to_edge or profile.align_edges or profile.min_gap > 0:
@@ -1005,6 +1012,12 @@ def postprocess_result(result, profile) -> dict:
     manufacturing_metrics["guillotine_cuttable"] = (
         non_guillotine_sheets == 0
     )
+    if saw_clearance_mm is not None:
+        saw_access = diagnose_saw_access(
+            result.sheets,
+            saw_clearance_mm,
+        )
+        manufacturing_metrics["saw_access"] = saw_access.as_dict()
     return manufacturing_metrics
 
 
@@ -1014,6 +1027,7 @@ def build_check_payload(result, profile, drawing_profile, width_mm, height_mm,
                         sheet_oversize: tuple[float, float] | None = None,
                         usable_size: tuple[float, float] | None = None,
                         usable_includes_oversize: bool = False,
+                        saw_clearance=None,
                         ) -> tuple[dict, list, dict]:
     """Build the pre-DXF check payload; returns (payload, warnings, waterjet_metrics).
 
@@ -1085,7 +1099,17 @@ def build_check_payload(result, profile, drawing_profile, width_mm, height_mm,
                 0,
             ),
             "waterjet": waterjet_metrics,
+            **(
+                {"circular_saw": saw_clearance.as_dict()}
+                if saw_clearance is not None
+                else {}
+            ),
         },
+        "circular_saw_access": (
+            manufacturing_metrics.get("saw_access")
+            if saw_clearance is not None
+            else None
+        ),
         "postprocess_warning_count": len(postprocess_warnings),
         "postprocess_warnings": postprocess_warnings,
     }
@@ -1100,6 +1124,7 @@ def build_report(result, profile, width_mm, height_mm, special_w, special_h,
                  sheet_oversize: tuple[float, float] | None = None,
                  usable_size: tuple[float, float] | None = None,
                  usable_includes_oversize: bool = False,
+                 saw_clearance=None,
                  optimizer_stats: dict | None = None) -> dict:
     """Build the final nesting report payload.
 
@@ -1146,7 +1171,17 @@ def build_report(result, profile, width_mm, height_mm, special_w, special_h,
                 "non_guillotine_sheets",
                 0,
             ),
+            **(
+                {"circular_saw": saw_clearance.as_dict()}
+                if saw_clearance is not None
+                else {}
+            ),
         },
+        "circular_saw_access": (
+            manufacturing_metrics.get("saw_access")
+            if saw_clearance is not None
+            else None
+        ),
         "kerf_material": kerf_metrics,
         "profile": {
             "processing_class": profile.processing_class,

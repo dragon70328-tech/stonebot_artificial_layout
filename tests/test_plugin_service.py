@@ -48,6 +48,36 @@ def test_plugin_service_preserves_label_ownership_from_drawing(tmp_path):
     }
 
 
+def test_plugin_service_persists_circular_saw_policy(tmp_path):
+    service = PluginJobService(tmp_path)
+    analyzed = service.analyze_drawing(
+        {
+            "dxf_path": str(FIXTURE),
+            "project_id": "saw-policy",
+        }
+    )
+    service.configure_nesting(
+        {
+            "job_id": analyzed["job_id"],
+            "width_mm": 3200,
+            "height_mm": 1600,
+            "thickness_mm": 20,
+            "process": "bridge",
+            "kerf_mm": 5,
+            "circular_saw_diameter_mm": 350,
+            "saw_plunge_extra_mm": 2,
+            "profile": "min_sheets",
+        }
+    )
+
+    runtime, _manifest = service._runtime_and_manifest(analyzed["job_id"])
+    saw = runtime.context.process_policy.circular_saw
+    clearance = saw.clearance_for_thickness(20)
+
+    assert clearance.plunge_depth_mm == 22
+    assert round(clearance.clearance_mm, 3) == 84.947
+
+
 def test_plugin_service_runs_drawing_to_final_artifacts(tmp_path):
     service = PluginJobService(tmp_path)
 

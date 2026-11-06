@@ -3,6 +3,7 @@ from pydantic import ValidationError
 
 from src.contracts import ConfirmedDrawing, RecognizedPanel
 from src.nesting_contracts import (
+    CircularSawPolicy,
     NestingRequest,
     OversizeMode,
     ProcessPolicy,
@@ -105,6 +106,39 @@ def test_waterjet_policy_allows_arbitrary_contour_sharing():
     assert policy.arbitrary_rotation is True
     assert policy.shared_edge_mode == SharedEdgeMode.ANY_CONTOUR
     assert policy.is_ready is True
+
+
+def test_bridge_policy_calculates_saw_clearance_from_sheet_thickness():
+    policy = ProcessPolicy.bridge(
+        kerf_mm=5,
+        circular_saw=CircularSawPolicy(diameter_mm=350),
+    )
+
+    clearance = policy.circular_saw.clearance_for_thickness(20)
+
+    assert clearance.plunge_depth_mm == 22
+    assert clearance.clearance_mm == pytest.approx(84.947042, rel=1e-6)
+
+
+def test_circular_saw_policy_is_bridge_only():
+    with pytest.raises(ValidationError):
+        ProcessPolicy(
+            process="waterjet",
+            circular_saw=CircularSawPolicy(diameter_mm=350),
+        )
+
+
+def test_request_rejects_saw_diameter_smaller_than_plunge_depth():
+    with pytest.raises(ValidationError):
+        NestingRequest(
+            request_id="request-saw-invalid",
+            confirmed_drawing=_confirmed(),
+            sheet=SheetSpec.from_legacy(3200, 1800, 20),
+            process=ProcessPolicy.bridge(
+                kerf_mm=5,
+                circular_saw=CircularSawPolicy(diameter_mm=20),
+            ),
+        )
 
 
 def test_nesting_request_digest_changes_with_process_parameters():

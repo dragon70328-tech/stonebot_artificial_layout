@@ -21,6 +21,7 @@ from shapely import affinity
 from shapely.geometry import Point, Polygon
 
 from src.models import Part, Sheet, NestingResult
+from src.saw_process import saw_ranking_key
 
 _DEFAULT_ROTATIONS = (0, 90, 180, 270)
 EPS = 1e-6
@@ -571,12 +572,24 @@ def _weakest_sheet_area(sheets_pl: list) -> float:
 
 
 def _layout_key(sheets_pl: list, *, manufacture_score: float,
-                compact: float) -> tuple:
-    """布局择优键：板数 → 最弱板可并性 → 制造评分 → 紧凑度。
+                compact: float,
+                saw_key: tuple[float, float, float, float] | None = None) -> tuple:
+    """布局择优键：板数 → 圆盘锯可达性 → 最弱板可并性 → 制造评分 → 紧凑度。
 
     板数是离散目标且有平台期，真正决定能否少一张板的是"最弱的那张板能不能被
     并掉"，因此把它显式放进择优键（此前尾板完全不参与择优）。
+
+    ``saw_key`` 只在用户提供圆盘锯直径时参与。它位于总板数之后、其他所有
+    偏好之前，因此只会在同板数方案间择优，绝不自动增加大板。
     """
+    if saw_key is not None:
+        return (
+            len(sheets_pl),
+            *saw_key,
+            _weakest_sheet_area(sheets_pl),
+            -manufacture_score,
+            compact,
+        )
     return (len(sheets_pl), _weakest_sheet_area(sheets_pl),
             -manufacture_score, compact)
 
@@ -588,7 +601,7 @@ _LNS_DEFAULT_PATIENCE = 12
 # 桥切排板算法版本：任何影响布局结果的逻辑改动都要 bump，
 # 认证确定性模式把它写进 NestingRequest 快照（digest 血缘），
 # 同一版本 + 同一输入 + 同一依赖环境 ⇒ 结果逐位一致。
-ALGORITHM_VERSION = "bridge-2026-11-05.2"
+ALGORITHM_VERSION = "bridge-2026-11-06.1"
 
 
 def _sheet_outer_area(pls: list) -> float:
@@ -750,6 +763,7 @@ def _lns_improve(sheets_pl: list, sheet_w: float, sheet_h: float,
                  sub_beam_width: int | None = 150,
                  max_iterations: int | None = _LNS_DEFAULT_ITERATIONS,
                  patience: int | None = _LNS_DEFAULT_PATIENCE,
+                 saw_clearance_mm: float | None = None,
                  stats: dict | None = None) -> list:
     """大邻域搜索：反复拆除利用率偏低的若干张板并重排，
     同数重排提升填充集中度（中性移动），偶尔直接压缩板数。
@@ -768,8 +782,17 @@ def _lns_improve(sheets_pl: list, sheet_w: float, sheet_h: float,
     rng = random.Random(seed)
     sheet_area = sheet_w * sheet_h
 
+    def candidate_key(layout: list) -> tuple:
+        if saw_clearance_mm is None:
+            return (len(layout), -_concentration(layout))
+        return (
+            len(layout),
+            saw_ranking_key(layout, saw_clearance_mm),
+            -_concentration(layout),
+        )
+
     cur = warm_start if warm_start is not None else sheets_pl
-    cur_key = (len(cur), -_concentration(cur))
+    cur_key = candidate_key(cur)
     best, best_key = cur, cur_key
     t0 = time.time()
     it = 0
@@ -836,7 +859,7 @@ def _lns_improve(sheets_pl: list, sheet_w: float, sheet_h: float,
             continue
 
         new = [s for i, s in enumerate(cur) if i not in sel_set] + res
-        new_key = (len(new), -_concentration(new))
+        new_key = candidate_key(new)
         improved = False
         if new_key < cur_key:
             cur, cur_key = new, new_key
@@ -1056,6 +1079,7 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
                beam_budget: float | None = None,
                pattern_reuse: int = 4,
                stats: dict | None = None,
+               saw_clearance_mm: float | None = None,
                certified: bool = False) -> NestingResult:
     """排板主入口：多轮贪心 + 多次试验取最优。
 
@@ -1227,6 +1251,11 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
                         )
                         for sheet in item[1]
                     ),
+                    saw_key=(
+                        saw_ranking_key(item[1], saw_clearance_mm)
+                        if saw_clearance_mm is not None
+                        else None
+                    ),
                 ),
             )
             if stats is not None:
@@ -1321,8 +1350,16 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
             manufacture_score = _placement_manufacturability_score(
                 sheets_pl, sheet_width, sheet_height
             )
-            key = _layout_key(sheets_pl, manufacture_score=manufacture_score,
-                              compact=compact)
+            key = _layout_key(
+                sheets_pl,
+                manufacture_score=manufacture_score,
+                compact=compact,
+                saw_key=(
+                    saw_ranking_key(sheets_pl, saw_clearance_mm)
+                    if saw_clearance_mm is not None
+                    else None
+                ),
+            )
             if trial_best_key is None or key < trial_best_key:
                 trial_best_key = key
                 best_pl = sheets_pl
@@ -1370,8 +1407,16 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
             manufacture_score = _placement_manufacturability_score(
                 beam_pl, sheet_width, sheet_height
             )
-            key = _layout_key(beam_pl, manufacture_score=manufacture_score,
-                              compact=compact)
+            key = _layout_key(
+                beam_pl,
+                manufacture_score=manufacture_score,
+                compact=compact,
+                saw_key=(
+                    saw_ranking_key(beam_pl, saw_clearance_mm)
+                    if saw_clearance_mm is not None
+                    else None
+                ),
+            )
             if trial_best_key is None or key < trial_best_key:
                 trial_best_key = key
                 best_pl = beam_pl
@@ -1398,6 +1443,7 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
                                        _LNS_DEFAULT_PATIENCE
                                        if improve_patience is None
                                        else improve_patience),
+                                   saw_clearance_mm=saw_clearance_mm,
                                    stats=stats)
 
         if compress:
@@ -1430,6 +1476,11 @@ def nest_parts(parts: list, sheet_width: float, sheet_height: float,
         )
         trial_key = (
             result.total_sheets,
+            *(
+                saw_ranking_key(best_pl, saw_clearance_mm)
+                if saw_clearance_mm is not None
+                else ()
+            ),
             min((sum(p.area for p in s.parts) for s in result.sheets),
                 default=0.0),
             -trial_manufacture_score,

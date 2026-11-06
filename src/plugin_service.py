@@ -22,7 +22,12 @@ from src.agent_runtime import AgentRuntime
 from src.constraints import PROFILE_MIN_SHEETS, PROFILES
 from src.correction_contracts import CorrectionPlan
 from src.drawing_corrections import build_correction_context
-from src.nesting_contracts import OversizeMode, ProcessPolicy, SheetSpec
+from src.nesting_contracts import (
+    CircularSawPolicy,
+    OversizeMode,
+    ProcessPolicy,
+    SheetSpec,
+)
 from src.plugin_context import (
     save_context_snapshot,
     restore_context_snapshot,
@@ -34,6 +39,7 @@ from src.plugin_delivery import (
     resolve_output_directory,
 )
 from src.plugin_protocol import SCHEMA_VERSION, next_actions
+from src.layout_adjustment import propagate_adjusted_layout
 from src.profile_learning import (
     accept_profile_patch,
     list_profile_overrides,
@@ -677,6 +683,80 @@ class PluginJobService:
         state["texture_package"] = manifest["texture_package"]
         return state
 
+    def propagate_layout_adjustment(
+        self,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Propagate one user-adjusted sheet to identical board inventories."""
+        job_id = self._require_job_id(args)
+        runtime, manifest = self._runtime_and_manifest(job_id)
+        self._require_stage(runtime, {WorkflowStage.COMPLETED})
+        adjusted_path = Path(
+            str(args.get("adjusted_dxf_path") or "")
+        ).expanduser().resolve()
+        if not adjusted_path.is_file():
+            raise StonebotProtocolError(
+                "ADJUSTED_DXF_NOT_FOUND",
+                f"调整后的排板 DXF 不存在: {adjusted_path}",
+                allowed_actions=["stonebot_propagate_layout_adjustment"],
+            )
+        output_directory = str(
+            args.get("output_directory") or ""
+        ).strip()
+        if not output_directory:
+            raise StonebotProtocolError(
+                "OUTPUT_DIRECTORY_REQUIRED",
+                "传播布局前必须选择一个保存文件夹。",
+                allowed_actions=["stonebot_choose_output_directory"],
+            )
+        try:
+            output_dir = resolve_output_directory(output_directory)
+            output_dxf = (
+                output_dir
+                / f"{adjusted_path.stem}_布局调整传播.dxf"
+            )
+            output_manifest = output_dxf.with_suffix(".json")
+            overwrite = bool(args.get("overwrite", False))
+            if output_dxf.exists() and not overwrite:
+                raise FileExistsError(f"目标文件已存在: {output_dxf}")
+            if output_manifest.exists() and not overwrite:
+                raise FileExistsError(
+                    f"目标清单已存在: {output_manifest}"
+                )
+            propagated = propagate_adjusted_layout(
+                adjusted_path,
+                int(args["reference_sheet"]),
+                output_dxf,
+            )
+            payload = propagated.as_dict()
+            output_manifest.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:  # noqa: BLE001 - service boundary
+            raise StonebotProtocolError(
+                "LAYOUT_ADJUSTMENT_FAILED",
+                f"布局调整传播失败：{exc}",
+                details={
+                    "adjusted_dxf_path": str(adjusted_path),
+                    "reference_sheet": args.get("reference_sheet"),
+                },
+                allowed_actions=[
+                    "stonebot_propagate_layout_adjustment",
+                    "stonebot_job_status",
+                ],
+            ) from exc
+
+        manifest["layout_adjustment"] = {
+            **payload,
+            "adjustment_manifest": str(output_manifest),
+            "created_at": _utc_now(),
+        }
+        self._save_manifest(manifest)
+        state = self._public_state(runtime, manifest)
+        state["layout_adjustment"] = manifest["layout_adjustment"]
+        return state
+
     def export_word_report(
         self,
         args: dict[str, Any],
@@ -1079,6 +1159,16 @@ class PluginJobService:
         )
         config["process"] = str(config["process"]).casefold()
         config["kerf_mm"] = float(config.get("kerf_mm", 0))
+        if config.get("circular_saw_diameter_mm") is not None:
+            config["circular_saw_diameter_mm"] = float(
+                config["circular_saw_diameter_mm"]
+            )
+            config["saw_plunge_extra_mm"] = float(
+                config.get("saw_plunge_extra_mm", 2)
+            )
+            config["saw_safety_margin_mm"] = float(
+                config.get("saw_safety_margin_mm", 0)
+            )
         config["certified"] = bool(config.get("certified", False))
         if config["width_mm"] <= 0 or config["height_mm"] <= 0:
             raise StonebotProtocolError(
@@ -1095,6 +1185,35 @@ class PluginJobService:
                 "BRIDGE_KERF_REQUIRED",
                 "桥切排板必须提供大于 0 的 kerf_mm。",
             )
+        if (
+            config["process"] != "bridge"
+            and config.get("circular_saw_diameter_mm") is not None
+        ):
+            raise StonebotProtocolError(
+                "SAW_REQUIRES_BRIDGE",
+                "圆盘锯让刀参数只适用于桥切（bridge）工艺。",
+            )
+        if (
+            config["process"] == "bridge"
+            and config.get("circular_saw_diameter_mm") is not None
+        ):
+            try:
+                CircularSawPolicy(
+                    diameter_mm=float(
+                        config["circular_saw_diameter_mm"]
+                    ),
+                    plunge_extra_mm=float(
+                        config.get("saw_plunge_extra_mm", 2)
+                    ),
+                    safety_margin_mm=float(
+                        config.get("saw_safety_margin_mm", 0)
+                    ),
+                ).clearance_for_thickness(config["thickness_mm"])
+            except ValueError as exc:
+                raise StonebotProtocolError(
+                    "INVALID_SAW_GEOMETRY",
+                    f"圆盘锯参数无法形成有效让刀宽度：{exc}",
+                ) from exc
         if config.get("low_fill_rework") and config["process"] == "bridge":
             raise StonebotProtocolError(
                 "LOW_FILL_REQUIRES_DEEPNEST",
@@ -1253,11 +1372,25 @@ class PluginJobService:
             config.get("allow_shared_edge", True)
         )
         if process == "bridge":
+            saw_diameter = config.get("circular_saw_diameter_mm")
             return ProcessPolicy.bridge(
                 kerf_mm=kerf_mm,
                 min_gap_mm=profile.min_gap,
                 rotation_degrees=rotation_degrees,
                 allow_shared_edge=allow_shared_edge,
+                circular_saw=(
+                    CircularSawPolicy(
+                        diameter_mm=float(saw_diameter),
+                        plunge_extra_mm=float(
+                            config.get("saw_plunge_extra_mm", 2)
+                        ),
+                        safety_margin_mm=float(
+                            config.get("saw_safety_margin_mm", 0)
+                        ),
+                    )
+                    if saw_diameter is not None
+                    else None
+                ),
             )
         if process == "waterjet":
             return ProcessPolicy.waterjet(

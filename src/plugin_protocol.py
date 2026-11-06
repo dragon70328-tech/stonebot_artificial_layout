@@ -77,6 +77,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "size, kerf, process, or whether the oversize allowance counts "
             "as usable area. Every re-nest appends an immutable revision; "
             "earlier revisions stay available for comparison and rollback. "
+            "For bridge jobs, circular_saw_diameter_mm adds a same-sheet-count "
+            "internal saw-clearance preference; it never increases sheet "
+            "count automatically. "
             "To let the oversize allowance take part in planning, pass "
             "usable_width_mm/usable_height_mm equal to the physical size."
         ),
@@ -95,6 +98,20 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "enum": ["bridge", "waterjet", "laser"],
                 },
                 "kerf_mm": {"type": "number", "minimum": 0, "default": 0},
+                "circular_saw_diameter_mm": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                },
+                "saw_plunge_extra_mm": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 2,
+                },
+                "saw_safety_margin_mm": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0,
+                },
                 "profile": {
                     "type": "string",
                     "enum": [
@@ -499,6 +516,47 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "stonebot_propagate_layout_adjustment",
+        "description": (
+            "After the user saves a manually adjusted nested DXF, propagate "
+            "the chosen reference Sheet_n layout to sheets with an identical "
+            "part-shape inventory. Only whole-GROUP translations are applied; "
+            "part geometry, numbering, holes and rotations are unchanged. "
+            "Each target sheet is validated for bounds and overlap and is "
+            "skipped atomically on failure. This never changes sheet count."
+        ),
+        "inputSchema": _object_schema(
+            {
+                "job_id": _job_id(),
+                "adjusted_dxf_path": {
+                    "type": "string",
+                    "minLength": 1,
+                },
+                "reference_sheet": {
+                    "type": "integer",
+                    "minimum": 1,
+                },
+                "output_directory": {
+                    "type": "string",
+                    "minLength": 1,
+                },
+                "overwrite": {"type": "boolean", "default": False},
+            },
+            [
+                "job_id",
+                "adjusted_dxf_path",
+                "reference_sheet",
+                "output_directory",
+            ],
+        ),
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        },
+    },
+    {
         "name": "stonebot_advance_until_gate",
         "description": (
             "Compact-profile wrapper for one explicit human confirmation. "
@@ -765,6 +823,7 @@ def next_actions(stage: str, *, nesting_configured: bool) -> list[str]:
     if stage == "completed":
         return [
             "stonebot_generate_textured_drawing",
+            "stonebot_propagate_layout_adjustment",
             "stonebot_job_status",
         ]
     if stage == "cancelled":

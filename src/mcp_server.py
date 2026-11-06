@@ -183,6 +183,9 @@ class MCPServer:
             "stonebot_generate_textured_drawing": (
                 self.service.generate_textured_drawing
             ),
+            "stonebot_propagate_layout_adjustment": (
+                self.service.propagate_layout_adjustment
+            ),
             "stonebot_export_word_report": (
                 self.service.export_word_report
             ),

@@ -14,6 +14,7 @@ from typing import Any
 from pydantic import Field, model_validator
 
 from src.contracts import ConfirmedDrawing, Contract
+from src.saw_process import SawClearance, calculate_saw_clearance
 
 
 class CuttingProcess(str, Enum):
@@ -30,6 +31,22 @@ class OversizeMode(str, Enum):
 class SharedEdgeMode(str, Enum):
     STRAIGHT = "straight"
     ANY_CONTOUR = "any_contour"
+
+
+class CircularSawPolicy(Contract):
+    """Bridge-saw geometry used only after minimum-sheet selection."""
+
+    diameter_mm: float = Field(gt=0)
+    plunge_extra_mm: float = Field(default=2.0, ge=0)
+    safety_margin_mm: float = Field(default=0.0, ge=0)
+
+    def clearance_for_thickness(self, thickness_mm: float) -> SawClearance:
+        return calculate_saw_clearance(
+            self.diameter_mm,
+            thickness_mm,
+            plunge_extra_mm=self.plunge_extra_mm,
+            safety_margin_mm=self.safety_margin_mm,
+        )
 
 
 class SheetSpec(Contract):
@@ -116,6 +133,7 @@ class ProcessPolicy(Contract):
     shared_edge_mode: SharedEdgeMode = SharedEdgeMode.STRAIGHT
     kerf_mm: float = Field(default=0.0, ge=0)
     min_gap_mm: float = Field(default=0.0, ge=0)
+    circular_saw: CircularSawPolicy | None = None
 
     @classmethod
     def bridge(
@@ -125,6 +143,7 @@ class ProcessPolicy(Contract):
         min_gap_mm: float = 0.0,
         rotation_degrees: list[float] | None = None,
         allow_shared_edge: bool = True,
+        circular_saw: CircularSawPolicy | None = None,
     ) -> "ProcessPolicy":
         return cls(
             process=CuttingProcess.BRIDGE,
@@ -134,6 +153,7 @@ class ProcessPolicy(Contract):
             shared_edge_mode=SharedEdgeMode.STRAIGHT,
             kerf_mm=kerf_mm,
             min_gap_mm=min_gap_mm,
+            circular_saw=circular_saw,
         )
 
     @classmethod
@@ -183,6 +203,10 @@ class ProcessPolicy(Contract):
                     raise ValueError(
                         "bridge rotation angles must be multiples of 90 degrees"
                     )
+        elif self.circular_saw is not None:
+            raise ValueError(
+                "circular saw clearance is only applicable to bridge process"
+            )
         return self
 
     def validation_errors(self) -> list[str]:
@@ -214,6 +238,12 @@ class NestingRequest(Contract):
         errors = self.process.validation_errors()
         if errors:
             raise ValueError("; ".join(errors))
+        if self.process.circular_saw is not None:
+            # Raises a Pydantic-facing ValueError for an impossible blade
+            # diameter/depth combination before any nesting starts.
+            self.process.circular_saw.clearance_for_thickness(
+                self.sheet.thickness_mm
+            )
         return self
 
 

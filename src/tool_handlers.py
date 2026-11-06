@@ -55,6 +55,16 @@ from src.workflow import (
     resolve_drawing_profile,
     validate_mixed_nesting,
 )
+from src.saw_process import diagnose_saw_access
+
+
+def _saw_clearance_mm(ctx: JobContext) -> float | None:
+    policy = ctx.process_policy
+    if policy is None or policy.circular_saw is None:
+        return None
+    return policy.circular_saw.clearance_for_thickness(
+        ctx.thickness_mm,
+    ).clearance_mm
 
 
 def _set_input_path(ctx: JobContext, args: dict[str, Any]) -> str:
@@ -435,6 +445,7 @@ def _nest_parts(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
                 }
 
     optimizer_stats: dict[str, Any] = {}
+    saw_clearance_mm = _saw_clearance_mm(ctx)
     outcome = nest_groups(
         ctx.parts,
         groups,
@@ -463,6 +474,7 @@ def _nest_parts(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
         low_fill_rework=low_fill_rework,
         low_fill_threshold=low_fill_threshold,
         candidate_mode=candidate_mode,
+        saw_clearance_mm=saw_clearance_mm,
     )
     ctx.nesting_outcome = outcome
     ctx.result = outcome.result
@@ -490,8 +502,18 @@ def _postprocess(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
             "edge_contact_mm": 0.0,
             "through_cut_mm": 0.0,
         }
+        saw_clearance_mm = _saw_clearance_mm(ctx)
+        if saw_clearance_mm is not None:
+            ctx.manufacturing_metrics["saw_access"] = diagnose_saw_access(
+                ctx.result.sheets,
+                saw_clearance_mm,
+            ).as_dict()
     else:
-        ctx.manufacturing_metrics = postprocess_result(ctx.result, profile)
+        ctx.manufacturing_metrics = postprocess_result(
+            ctx.result,
+            profile,
+            saw_clearance_mm=_saw_clearance_mm(ctx),
+        )
     # 统一验证器：完整性/编号唯一/几何/材料不共板/孔洞跟随/刀缝材料。
     # ctx.validation_errors 是"阻塞出图"的总集，write_dxf 会据此拒绝写文件。
     categories = run_full_validation(ctx)
@@ -618,6 +640,16 @@ def _write_report(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
         sheet_oversize=sheet_oversize,
         usable_size=usable_size,
         usable_includes_oversize=usable_includes_oversize,
+        saw_clearance=(
+            ctx.process_policy.circular_saw.clearance_for_thickness(
+                ctx.thickness_mm
+            )
+            if (
+                ctx.process_policy is not None
+                and ctx.process_policy.circular_saw is not None
+            )
+            else None
+        ),
     )
     Path(path).write_text(
         json.dumps(report, ensure_ascii=False, indent=2),

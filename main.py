@@ -63,7 +63,9 @@ from src.workflow import (
     _split_normal_parts_by_group,
 )
 from src.nesting_reviewer import find_reductions
+from src.nesting_contracts import CircularSawPolicy
 from src.postprocess import estimate_kerf_material, validate_kerf_material
+from src.saw_process import diagnose_saw_access
 from src.spec_list import (
     build_spec_list,
     extract_annotations_from_file,
@@ -159,6 +161,27 @@ def parse_args():
                         "nfp_lite=增加轮廓顶点接触候选，可进入凹槽")
     p.add_argument("--min-gap", type=float, default=None,
                    help="最小切割间距 mm")
+    p.add_argument(
+        "--circular-saw-diameter",
+        "--saw-diameter",
+        dest="circular_saw_diameter",
+        type=float,
+        default=None,
+        help=("圆盘锯直径 mm。桥切时用于同板数下的内部切点让刀诊断；"
+              "不会因此自动增加大板数"),
+    )
+    p.add_argument(
+        "--saw-plunge-extra",
+        type=float,
+        default=2.0,
+        help="圆盘锯切透后继续下切到加工台的余量，默认 2mm",
+    )
+    p.add_argument(
+        "--saw-safety-margin",
+        type=float,
+        default=0.0,
+        help="在计算让刀宽度之外额外保留的安全量 mm，默认 0",
+    )
     p.add_argument("--group", type=str, default=None,
                    choices=[None, "one_set_per_sheet"],
                    help="分组模式")
@@ -707,6 +730,7 @@ def _auto_reduce_sheets(result, profile, material_summary, manufacturing_metrics
                          max_nodes_per_donor: int = 3000,
                          time_budget_s: float = 0.0,
                          per_donor_time_s: float | None = None,
+                         saw_clearance_mm: float | None = None,
                          stats: dict | None = None):
     """后处理后回看排板结果，把能合并的板并掉。
 
@@ -760,7 +784,11 @@ def _auto_reduce_sheets(result, profile, material_summary, manufacturing_metrics
 
     # 合并后重新压实并校验，不通过就回退到原排板
     try:
-        new_metrics = postprocess_result(reduced, profile)
+        new_metrics = postprocess_result(
+            reduced,
+            profile,
+            saw_clearance_mm=saw_clearance_mm,
+        )
         errors = validate_mixed_nesting(reduced, min_gap=profile.min_gap)
     except Exception as exc:  # noqa: BLE001
         print(f"回看结果不可用（{exc}），保留原排板。")
@@ -800,6 +828,9 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         kerf_reserve_mm: float = 0.0,
         sheet_oversize: tuple[float, float] | None = None,
         usable_includes_oversize: bool = False,
+        circular_saw_diameter: float | None = None,
+        saw_plunge_extra: float = 2.0,
+        saw_safety_margin: float = 0.0,
         output_root: Path | None = None,
         auto_review: bool = True,
         review_budget_s: float = 120.0,
@@ -842,6 +873,11 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
             "--texture-patterns 需要完整的排板、后处理和原位 DXF 输出，"
             "不能与 --report-only / --check-only 同时使用"
         )
+    if circular_saw_diameter is not None and profile.uses_deepnest:
+        raise ValueError(
+            "--circular-saw-diameter 只适用于桥切工艺；"
+            "水刀/激光不使用圆盘锯让刀规则"
+        )
     if bridge_template:
         if profile.uses_deepnest:
             raise ValueError("--bridge-template 当前只支持桥切工艺")
@@ -871,6 +907,20 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         thickness_from_args
         or profile.sheet_thickness
         or 20.0
+    )
+    saw_spec = (
+        CircularSawPolicy(
+            diameter_mm=circular_saw_diameter,
+            plunge_extra_mm=saw_plunge_extra,
+            safety_margin_mm=saw_safety_margin,
+        )
+        if circular_saw_diameter is not None
+        else None
+    )
+    saw_clearance = (
+        saw_spec.clearance_for_thickness(effective_thickness)
+        if saw_spec is not None
+        else None
     )
 
     # ── 大板口径 + 打印约束摘要 ──
@@ -915,6 +965,14 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
               f"{nesting_height_mm:.0f}mm")
         if kerf_mm > 0:
             print(f"刀缝: {kerf_mm:.0f}mm 仅记录，水刀/激光刀缝不计入材料校验")
+    if saw_clearance is not None:
+        print(
+            "圆盘锯让刀: "
+            f"直径 {saw_clearance.diameter_mm:.0f}mm，"
+            f"下切深度 {saw_clearance.plunge_depth_mm:.1f}mm，"
+            f"半弦让刀宽度 {saw_clearance.clearance_mm:.2f}mm"
+            "（仅在最少板数相同时参与择优，不自动增加板数）"
+        )
 
     # ── 读取 DXF / 匹配画像 / 编号 / 材料分组 ──
     prepared = prepare_drawing(
@@ -1191,6 +1249,11 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
             rect_fast=rect_fast,
             low_fill_rework=low_fill_rework,
             low_fill_threshold=low_fill_threshold,
+            saw_clearance_mm=(
+                saw_clearance.clearance_mm
+                if saw_clearance is not None
+                else None
+            ),
             workers=parallel_workers,
         )
     if nesting is None:
@@ -1208,6 +1271,11 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
             rect_fast=rect_fast,
             low_fill_rework=low_fill_rework,
             low_fill_threshold=low_fill_threshold,
+            saw_clearance_mm=(
+                saw_clearance.clearance_mm
+                if saw_clearance is not None
+                else None
+            ),
         )
     result = nesting.result
     print(f"布局来源: 模板 {layout_source}" if template_result
@@ -1262,8 +1330,21 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
             "edge_contact_mm": 0.0,
             "through_cut_mm": 0.0,
         }
+        if saw_clearance is not None:
+            manufacturing_metrics["saw_access"] = diagnose_saw_access(
+                result.sheets,
+                saw_clearance.clearance_mm,
+            ).as_dict()
     else:
-        manufacturing_metrics = postprocess_result(result, profile)
+        manufacturing_metrics = postprocess_result(
+            result,
+            profile,
+            saw_clearance_mm=(
+                saw_clearance.clearance_mm
+                if saw_clearance is not None
+                else None
+            ),
+        )
 
     # ── 回看排板结果：基于压实后的图形，能合并的少量板就合并 ──
     review_candidates: list = []
@@ -1292,6 +1373,11 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         ) = _auto_reduce_sheets(
             result, profile, material_summary, manufacturing_metrics,
             time_budget_s=review_budget_s,
+            saw_clearance_mm=(
+                saw_clearance.clearance_mm
+                if saw_clearance is not None
+                else None
+            ),
             stats=optimizer_stats,
         )
     kerf_metrics = (
@@ -1336,6 +1422,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         errors, manufacturing_metrics, sheet_oversize=(oversize_x, oversize_y),
         usable_size=(nesting_width_mm, nesting_height_mm),
         usable_includes_oversize=caliber.usable_includes_oversize,
+        saw_clearance=saw_clearance,
     )
     check_payload["forced_closure_count"] = len(forced_closure_parts)
     check_payload["forced_closure_parts"] = forced_closure_parts
@@ -1430,6 +1517,7 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
         sheet_oversize=(oversize_x, oversize_y),
         usable_size=(nesting_width_mm, nesting_height_mm),
         usable_includes_oversize=caliber.usable_includes_oversize,
+        saw_clearance=saw_clearance,
         optimizer_stats=optimizer_stats,
     )
     report["forced_closure_parts"] = forced_closure_parts
@@ -1830,6 +1918,9 @@ def main():
         kerf_reserve_mm=args.kerf_reserve,
         sheet_oversize=sheet_oversize,
         usable_includes_oversize=args.usable_includes_oversize,
+        circular_saw_diameter=args.circular_saw_diameter,
+        saw_plunge_extra=args.saw_plunge_extra,
+        saw_safety_margin=args.saw_safety_margin,
         auto_review=not args.no_auto_review,
         review_budget_s=args.review_budget,
         use_template=args.use_template,

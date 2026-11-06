@@ -29,6 +29,21 @@ stonebot_analyze_drawing
 The three confirmation calls correspond to the existing drawing, board-count
 and final-output gates. Agent prose cannot bypass those gates.
 
+## Circular-saw secondary policy
+
+Bridge jobs may include `circular_saw_diameter_mm`, `saw_plunge_extra_mm`
+(default 2) and `saw_safety_margin_mm` (default 0).  The core calculates:
+
+```text
+H = thickness + plunge_extra
+clearance = sqrt(diameter * H - H * H) + safety_margin
+```
+
+The result is an internal-plunge clearance, not a global `min_gap` and not
+kerf.  It is compared only after total sheet count: minimum sheets always win,
+then same-count layouts with fewer insufficient reflex cut points win.  A
+clearance deficit is reported but never silently adds another sheet.
+
 ## Harness portability
 
 The plugin publishes a portable Agent contract at
@@ -118,6 +133,22 @@ allowance. One pattern may be reused for every sheet of the mapped material.
 This milestone does not support natural-stone per-sheet images, per-sheet
 edge recognition or defect avoidance. Those belong to a separate future
 workflow and must not be passed to the artificial-stone texture tool.
+
+## Manual layout adjustment propagation
+
+After completion, `stonebot_propagate_layout_adjustment` accepts a nested DXF
+that the user saved after moving whole part GROUPs on one reference sheet.
+The service:
+
+- matches boards by sheet dimensions and the multiset of canonical part shapes;
+- applies the reference sheet's relative translations to identical inventories;
+- leaves part geometry, numbers, holes and rotations unchanged;
+- validates bounds, overlap, label ownership and hole ownership before moving
+  each target sheet;
+- skips a target atomically when validation fails;
+- writes a new DXF plus JSON manifest into a user-selected directory.
+
+This never changes the sheet count and never edits the user's adjusted input.
 
 ## Isolation
 
