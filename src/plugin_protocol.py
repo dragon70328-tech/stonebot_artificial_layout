@@ -599,6 +599,63 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "stonebot_repair_saw_clearance",
+        "description": (
+            "Move whole part GROUPs within the existing sheets to remove "
+            "circular-saw neighbour-cutting risks. Sheet count, part count, "
+            "geometry, numbering, holes and rotations are unchanged. Each "
+            "candidate is checked for sheet bounds, overlap and optional "
+            "minimum gap. Unsafe sheets remain unchanged and are reported as "
+            "unresolved. Writes a new DXF and JSON repair manifest."
+        ),
+        "inputSchema": _object_schema(
+            {
+                "job_id": _job_id(),
+                "nested_dxf_path": {"type": "string", "minLength": 1},
+                "diameter_mm": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                },
+                "thickness_mm": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                },
+                "plunge_extra_mm": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 2,
+                },
+                "safety_margin_mm": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0,
+                },
+                "min_gap_mm": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0,
+                },
+                "max_moves_per_sheet": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 12,
+                },
+                "output_directory": {
+                    "type": "string",
+                    "minLength": 1,
+                },
+                "overwrite": {"type": "boolean", "default": False},
+            },
+            ["job_id", "diameter_mm", "output_directory"],
+        ),
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        },
+    },
+    {
         "name": "stonebot_advance_until_gate",
         "description": (
             "Compact-profile wrapper for one explicit human confirmation. "
@@ -850,6 +907,7 @@ def next_actions(stage: str, *, nesting_configured: bool) -> list[str]:
             "stonebot_configure_nesting",
             "stonebot_rollback_nesting",
             "stonebot_audit_saw_clearance",
+            "stonebot_repair_saw_clearance",
             "stonebot_confirm_nesting",
             "stonebot_advance_until_gate",
             "stonebot_cancel_job",
@@ -859,6 +917,7 @@ def next_actions(stage: str, *, nesting_configured: bool) -> list[str]:
             "stonebot_configure_nesting",
             "stonebot_rollback_nesting",
             "stonebot_audit_saw_clearance",
+            "stonebot_repair_saw_clearance",
             "stonebot_choose_output_directory",
             "stonebot_finalize_job",
             "stonebot_advance_until_gate",
@@ -869,6 +928,7 @@ def next_actions(stage: str, *, nesting_configured: bool) -> list[str]:
             "stonebot_generate_textured_drawing",
             "stonebot_propagate_layout_adjustment",
             "stonebot_audit_saw_clearance",
+            "stonebot_repair_saw_clearance",
             "stonebot_job_status",
         ]
     if stage == "cancelled":

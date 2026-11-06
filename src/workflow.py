@@ -980,7 +980,6 @@ def nest_groups_parallel(parts, groups, width_mm, height_mm,
 
 def postprocess_result(result, profile, saw_clearance_mm=None) -> dict:
     """Run slide/align/gap post-processing in place and return metrics."""
-    manufacturing_metrics = {"edge_contact_mm": 0.0, "through_cut_mm": 0.0}
     if profile.slide_to_edge or profile.align_edges or profile.min_gap > 0:
         for sheet in result.sheets:
             pp = PostProcessor(sheet.width, sheet.height)
@@ -990,9 +989,27 @@ def postprocess_result(result, profile, saw_clearance_mm=None) -> dict:
                 align=profile.align_edges,
                 gap_mm=profile.min_gap,
             )
-            metrics = pp.measure([sheet])
-            manufacturing_metrics["edge_contact_mm"] += metrics["edge_contact_mm"]
-            manufacturing_metrics["through_cut_mm"] += metrics["through_cut_mm"]
+    manufacturing_metrics = measure_manufacturing_metrics(result)
+    if saw_clearance_mm is not None:
+        saw_access = diagnose_saw_access(
+            result.sheets,
+            saw_clearance_mm,
+        )
+        manufacturing_metrics["saw_access"] = saw_access.as_dict()
+    return manufacturing_metrics
+
+
+def measure_manufacturing_metrics(result) -> dict:
+    """Measure current layout quality without moving any part."""
+    manufacturing_metrics = {
+        "edge_contact_mm": 0.0,
+        "through_cut_mm": 0.0,
+    }
+    for sheet in result.sheets:
+        pp = PostProcessor(sheet.width, sheet.height)
+        metrics = pp.measure([sheet])
+        manufacturing_metrics["edge_contact_mm"] += metrics["edge_contact_mm"]
+        manufacturing_metrics["through_cut_mm"] += metrics["through_cut_mm"]
     from src.rect_nesting import rectangles_are_guillotine
 
     non_guillotine_sheets = 0
@@ -1012,12 +1029,6 @@ def postprocess_result(result, profile, saw_clearance_mm=None) -> dict:
     manufacturing_metrics["guillotine_cuttable"] = (
         non_guillotine_sheets == 0
     )
-    if saw_clearance_mm is not None:
-        saw_access = diagnose_saw_access(
-            result.sheets,
-            saw_clearance_mm,
-        )
-        manufacturing_metrics["saw_access"] = saw_access.as_dict()
     return manufacturing_metrics
 
 

@@ -51,6 +51,7 @@ from src.workflow import (
     build_report,
     combine_nesting_results,
     material_group_for_number,
+    measure_manufacturing_metrics,
     nesting_group_key,
     packing_group_for_material,
     nest_groups,
@@ -66,6 +67,7 @@ from src.nesting_reviewer import find_reductions
 from src.nesting_contracts import CircularSawPolicy
 from src.postprocess import estimate_kerf_material, validate_kerf_material
 from src.saw_process import diagnose_saw_access
+from src.saw_repair import repair_nesting_result_saw_clearance
 from src.spec_list import (
     build_spec_list,
     extract_annotations_from_file,
@@ -1379,6 +1381,27 @@ def run(dxf_path: str, width: float, height: float, thickness: float,
                 else None
             ),
             stats=optimizer_stats,
+        )
+    saw_repair_summary = None
+    if saw_clearance is not None:
+        saw_repair_summary = repair_nesting_result_saw_clearance(
+            result,
+            clearance_mm=saw_clearance.clearance_mm,
+            min_gap_mm=profile.min_gap,
+            max_moves_per_sheet=12,
+        )
+        manufacturing_metrics = measure_manufacturing_metrics(result)
+        saw_access = diagnose_saw_access(
+            result.sheets,
+            saw_clearance.clearance_mm,
+        )
+        manufacturing_metrics["saw_access"] = saw_access.as_dict()
+        optimizer_stats["saw_repair"] = saw_repair_summary.as_dict()
+        print(
+            "圆盘锯自动修复: "
+            f"{saw_repair_summary.before_insufficient} -> "
+            f"{saw_repair_summary.after_insufficient} 个不足切点，"
+            f"调整 {len(saw_repair_summary.updated_sheets)} 张板"
         )
     kerf_metrics = (
         estimate_kerf_material(result.sheets, kerf_mm)

@@ -189,6 +189,9 @@ class MCPServer:
             "stonebot_audit_saw_clearance": (
                 self.service.audit_saw_clearance
             ),
+            "stonebot_repair_saw_clearance": (
+                self.service.repair_saw_clearance
+            ),
             "stonebot_export_word_report": (
                 self.service.export_word_report
             ),

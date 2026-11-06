@@ -56,6 +56,7 @@ from src.workflow import (
     validate_mixed_nesting,
 )
 from src.saw_process import diagnose_saw_access
+from src.saw_repair import repair_nesting_result_saw_clearance
 
 
 def _saw_clearance_mm(ctx: JobContext) -> float | None:
@@ -514,6 +515,19 @@ def _postprocess(ctx: JobContext, args: dict[str, Any]) -> dict[str, Any]:
             profile,
             saw_clearance_mm=_saw_clearance_mm(ctx),
         )
+    saw_clearance_mm = _saw_clearance_mm(ctx)
+    if saw_clearance_mm is not None:
+        saw_repair = repair_nesting_result_saw_clearance(
+            ctx.result,
+            clearance_mm=saw_clearance_mm,
+            min_gap_mm=profile.min_gap,
+            max_moves_per_sheet=12,
+        )
+        ctx.manufacturing_metrics["saw_repair"] = saw_repair.as_dict()
+        ctx.manufacturing_metrics["saw_access"] = diagnose_saw_access(
+            ctx.result.sheets,
+            saw_clearance_mm,
+        ).as_dict()
     # 统一验证器：完整性/编号唯一/几何/材料不共板/孔洞跟随/刀缝材料。
     # ctx.validation_errors 是"阻塞出图"的总集，write_dxf 会据此拒绝写文件。
     categories = run_full_validation(ctx)

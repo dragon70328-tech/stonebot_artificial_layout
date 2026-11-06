@@ -169,6 +169,18 @@ The same audit is available from the CLI:
   "排板.dxf" --diameter 350 --thickness 20 --fail-on-risk
 ```
 
+`stonebot_repair_saw_clearance` performs deterministic local repair while
+holding the sheet count and part inventory fixed.  It translates whole part
+GROUPs, validates bounds/overlap/min-gap for every candidate, and writes a new
+DXF only after all accepted sheet moves are planned.  A sheet that cannot be
+improved is left unchanged and listed as unresolved.
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 scripts\repair_saw_clearance.py `
+  "排板.dxf" --diameter 350 --thickness 20 `
+  --output-dxf "排板_让刀修复.dxf"
+```
+
 ## Isolation
 
 Development uses a separate workspace copy so the stable working repository

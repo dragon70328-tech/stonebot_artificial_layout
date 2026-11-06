@@ -41,6 +41,7 @@ from src.plugin_delivery import (
 from src.plugin_protocol import SCHEMA_VERSION, next_actions
 from src.layout_adjustment import propagate_adjusted_layout
 from src.saw_audit import audit_nested_saw_clearance
+from src.saw_repair import repair_nested_saw_clearance
 from src.profile_learning import (
     accept_profile_patch,
     list_profile_overrides,
@@ -808,6 +809,93 @@ class PluginJobService:
             "safe": report["safe"],
             "audit": report,
         }
+
+    def repair_saw_clearance(
+        self,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Repair an existing nested DXF without changing its sheet count."""
+        job_id = self._require_job_id(args)
+        runtime, manifest = self._runtime_and_manifest(job_id)
+        self._require_stage(
+            runtime,
+            {
+                WorkflowStage.NESTED_REPORTED,
+                WorkflowStage.POSTPROCESS_CONFIRMED,
+                WorkflowStage.COMPLETED,
+            },
+        )
+        nested_path = Path(
+            str(args.get("nested_dxf_path") or runtime.nested_path or "")
+        ).expanduser().resolve()
+        if not nested_path.is_file():
+            raise StonebotProtocolError(
+                "NESTED_DXF_NOT_FOUND",
+                f"排板 DXF 不存在: {nested_path}",
+                allowed_actions=["stonebot_repair_saw_clearance"],
+            )
+        output_directory = str(
+            args.get("output_directory") or ""
+        ).strip()
+        if not output_directory:
+            raise StonebotProtocolError(
+                "OUTPUT_DIRECTORY_REQUIRED",
+                "修复让刀碰撞前必须选择保存文件夹。",
+                allowed_actions=["stonebot_choose_output_directory"],
+            )
+        try:
+            target_dir = resolve_output_directory(output_directory)
+            output_dxf = target_dir / f"{nested_path.stem}_让刀修复.dxf"
+            output_manifest = output_dxf.with_suffix(".json")
+            overwrite = bool(args.get("overwrite", False))
+            if output_dxf.exists() and not overwrite:
+                raise FileExistsError(f"目标文件已存在: {output_dxf}")
+            if output_manifest.exists() and not overwrite:
+                raise FileExistsError(
+                    f"目标清单已存在: {output_manifest}"
+                )
+            repaired = repair_nested_saw_clearance(
+                nested_path,
+                output_dxf,
+                diameter_mm=float(args["diameter_mm"]),
+                thickness_mm=float(
+                    args.get("thickness_mm") or runtime.context.thickness_mm
+                ),
+                plunge_extra_mm=float(
+                    args.get("plunge_extra_mm", 2.0)
+                ),
+                safety_margin_mm=float(
+                    args.get("safety_margin_mm", 0.0)
+                ),
+                min_gap_mm=float(args.get("min_gap_mm", 0.0)),
+                max_moves_per_sheet=int(
+                    args.get("max_moves_per_sheet", 12)
+                ),
+            )
+            payload = repaired.as_dict()
+            output_manifest.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:  # noqa: BLE001 - service boundary
+            raise StonebotProtocolError(
+                "SAW_REPAIR_FAILED",
+                f"圆盘锯让刀修复失败：{exc}",
+                details={"nested_dxf_path": str(nested_path)},
+                allowed_actions=[
+                    "stonebot_repair_saw_clearance",
+                    "stonebot_audit_saw_clearance",
+                ],
+            ) from exc
+        manifest["saw_repair"] = {
+            **payload,
+            "repair_manifest": str(output_manifest),
+            "created_at": _utc_now(),
+        }
+        self._save_manifest(manifest)
+        state = self._public_state(runtime, manifest)
+        state["saw_repair"] = manifest["saw_repair"]
+        return state
 
     def export_word_report(
         self,

@@ -48,6 +48,7 @@ stonebot_artificial_layout/
     nesting_contracts.py # SheetSpec / ProcessPolicy / NestingRequest / NestingRevision
     saw_process.py      # 圆盘锯让刀公式、内部凹切点局部可达性诊断
     saw_audit.py        # 既有排板DXF的圆盘锯邻板碰撞审计
+    saw_repair.py       # 固定板数下的圆盘锯碰撞局部平移修复
     contracts.py        # 读图数据契约（Pydantic，审图/复检状态），SCHEMA_VERSION
     correction_contracts.py / recognized_contract.py / recognition_contracts.py
     project_config.py   # ProjectConfig（sheet/profile/optimizer/reader）
@@ -349,6 +350,9 @@ DXF 交付。
   最少用板数为最高目标；只有板数相同时，才优先选择让刀点更少不足、让刀通道
   更大的布局。让刀不足不得静默通过，但不得自动增加大板数；用户可另行要求比较
   N+1 张方案。刀缝、让尺和让刀空间是三个独立概念。
+- **固定板数自动修复**：指定圆盘锯参数时，后处理和减板完成后执行局部平移修复。
+  只移动整件规格板，保持形状、编号、孔洞和旋转；每个候选先校验边界、重叠和
+  最小间距。无法改善的大板保持原样并列入 `unresolved_sheets`，总板数不增加。
 - `--sheet-oversize`：大板让尺，如 `30` 或 `30,30`，**每维度总量 +30（不是每边
   +30）**。让尺是标称之外的实物余量，只为消化刀缝：默认既不进零件可利用尺寸，
   也不进 DXF 外框，只把刀缝材料校验的允许尺寸放宽到实物尺寸（可利用 + 让尺）。

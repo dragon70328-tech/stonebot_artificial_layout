@@ -526,7 +526,11 @@ def _group_by_shape_key(
     return dict(grouped)
 
 
-def _validate_sheet(sheet: NestedSheetLayout) -> list[str]:
+def _validate_sheet(
+    sheet: NestedSheetLayout,
+    *,
+    min_gap_mm: float = 0.0,
+) -> list[str]:
     errors: list[str] = []
     number_counts = Counter(part.number for part in sheet.parts)
     if len(number_counts) != len(sheet.parts):
@@ -570,14 +574,23 @@ def _validate_sheet(sheet: NestedSheetLayout) -> list[str]:
 
     for left_index, left in enumerate(sheet.parts):
         for right in sheet.parts[left_index + 1:]:
-            if (
-                left.outer_polygon.intersection(
-                    right.outer_polygon
-                ).area
-                > 1e-6
-            ):
+            overlap = left.outer_polygon.intersection(
+                right.outer_polygon
+            ).area
+            if overlap > 1e-6:
                 errors.append(
                     f"{left.number} overlaps {right.number}"
+                )
+            elif (
+                min_gap_mm > 0
+                and left.outer_polygon.distance(
+                    right.outer_polygon
+                )
+                < min_gap_mm - _TOLERANCE_MM
+            ):
+                errors.append(
+                    f"{left.number} is closer than {min_gap_mm:g}mm "
+                    f"to {right.number}"
                 )
     return errors
 
