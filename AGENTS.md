@@ -47,6 +47,7 @@ stonebot_artificial_layout/
     constraints.py      # NestingProfile、预置模板、标准板规格
     nesting_contracts.py # SheetSpec / ProcessPolicy / NestingRequest / NestingRevision
     saw_process.py      # 圆盘锯让刀公式、内部凹切点局部可达性诊断
+    saw_audit.py        # 既有排板DXF的圆盘锯邻板碰撞审计
     contracts.py        # 读图数据契约（Pydantic，审图/复检状态），SCHEMA_VERSION
     correction_contracts.py / recognized_contract.py / recognition_contracts.py
     project_config.py   # ProjectConfig（sheet/profile/optimizer/reader）

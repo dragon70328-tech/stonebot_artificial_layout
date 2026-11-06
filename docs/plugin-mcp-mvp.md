@@ -150,6 +150,25 @@ The service:
 
 This never changes the sheet count and never edits the user's adjusted input.
 
+## Circular-saw audit
+
+`stonebot_audit_saw_clearance` audits an existing nested DXF without changing
+it.  Given the blade diameter and sheet thickness, it calculates the half-chord
+at `thickness + plunge_extra`, checks pronounced outer reflex cut points
+against other parts on the same sheet, and returns:
+
+- overall `safe` result and minimum neighbour clearance;
+- sheet-level checked/insufficient counts;
+- affected `part -> neighbour` pairs with coordinates and deficits;
+- an explicit limitation note because this is not a full CAM simulation.
+
+The same audit is available from the CLI:
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 scripts\audit_saw_clearance.py `
+  "排板.dxf" --diameter 350 --thickness 20 --fail-on-risk
+```
+
 ## Isolation
 
 Development uses a separate workspace copy so the stable working repository

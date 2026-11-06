@@ -557,6 +557,48 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "stonebot_audit_saw_clearance",
+        "description": (
+            "Audit a nested DXF for circular-saw neighbour-cutting risk. "
+            "The check uses the blade half-chord at the requested cutting "
+            "depth and tests pronounced outer reflex cut points against other "
+            "parts on the same sheet. It returns structured hit pairs, sheet "
+            "metrics and a conservative limitation note; it does not modify "
+            "the DXF."
+        ),
+        "inputSchema": _object_schema(
+            {
+                "job_id": _job_id(),
+                "nested_dxf_path": {"type": "string", "minLength": 1},
+                "diameter_mm": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                },
+                "thickness_mm": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                },
+                "plunge_extra_mm": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 2,
+                },
+                "safety_margin_mm": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0,
+                },
+            },
+            ["job_id", "diameter_mm"],
+        ),
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    },
+    {
         "name": "stonebot_advance_until_gate",
         "description": (
             "Compact-profile wrapper for one explicit human confirmation. "
@@ -807,6 +849,7 @@ def next_actions(stage: str, *, nesting_configured: bool) -> list[str]:
         return [
             "stonebot_configure_nesting",
             "stonebot_rollback_nesting",
+            "stonebot_audit_saw_clearance",
             "stonebot_confirm_nesting",
             "stonebot_advance_until_gate",
             "stonebot_cancel_job",
@@ -815,6 +858,7 @@ def next_actions(stage: str, *, nesting_configured: bool) -> list[str]:
         return [
             "stonebot_configure_nesting",
             "stonebot_rollback_nesting",
+            "stonebot_audit_saw_clearance",
             "stonebot_choose_output_directory",
             "stonebot_finalize_job",
             "stonebot_advance_until_gate",
@@ -824,6 +868,7 @@ def next_actions(stage: str, *, nesting_configured: bool) -> list[str]:
         return [
             "stonebot_generate_textured_drawing",
             "stonebot_propagate_layout_adjustment",
+            "stonebot_audit_saw_clearance",
             "stonebot_job_status",
         ]
     if stage == "cancelled":

@@ -40,6 +40,7 @@ from src.plugin_delivery import (
 )
 from src.plugin_protocol import SCHEMA_VERSION, next_actions
 from src.layout_adjustment import propagate_adjusted_layout
+from src.saw_audit import audit_nested_saw_clearance
 from src.profile_learning import (
     accept_profile_patch,
     list_profile_overrides,
@@ -756,6 +757,57 @@ class PluginJobService:
         state = self._public_state(runtime, manifest)
         state["layout_adjustment"] = manifest["layout_adjustment"]
         return state
+
+    def audit_saw_clearance(
+        self,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Audit an existing nested DXF for neighbour-cutting risks."""
+        job_id = self._require_job_id(args)
+        runtime, _manifest = self._runtime_and_manifest(job_id)
+        self._require_stage(
+            runtime,
+            {
+                WorkflowStage.NESTED_REPORTED,
+                WorkflowStage.POSTPROCESS_CONFIRMED,
+                WorkflowStage.COMPLETED,
+            },
+        )
+        nested_path = Path(
+            str(args.get("nested_dxf_path") or runtime.nested_path or "")
+        ).expanduser().resolve()
+        if not nested_path.is_file():
+            raise StonebotProtocolError(
+                "NESTED_DXF_NOT_FOUND",
+                f"排板 DXF 不存在: {nested_path}",
+                allowed_actions=["stonebot_audit_saw_clearance"],
+            )
+        try:
+            report = audit_nested_saw_clearance(
+                nested_path,
+                diameter_mm=float(args["diameter_mm"]),
+                thickness_mm=float(
+                    args.get("thickness_mm") or runtime.context.thickness_mm
+                ),
+                plunge_extra_mm=float(
+                    args.get("plunge_extra_mm", 2.0)
+                ),
+                safety_margin_mm=float(
+                    args.get("safety_margin_mm", 0.0)
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - audit boundary
+            raise StonebotProtocolError(
+                "SAW_AUDIT_FAILED",
+                f"圆盘锯碰撞审计失败：{exc}",
+                details={"nested_dxf_path": str(nested_path)},
+                allowed_actions=["stonebot_audit_saw_clearance"],
+            ) from exc
+        return {
+            "audit_completed": True,
+            "safe": report["safe"],
+            "audit": report,
+        }
 
     def export_word_report(
         self,
