@@ -13,6 +13,8 @@ from pathlib import Path
 import ezdxf
 from ezdxf import bbox
 
+from src.dxf_reader import iter_expanded_entities
+
 
 def _escape_text(value: str | None) -> str:
     return html.escape("" if value is None else str(value), quote=True)
@@ -78,8 +80,7 @@ def write_dxf_overview_svg(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     doc = ezdxf.readfile(str(source_filepath))
-    msp = doc.modelspace()
-    entities = list(msp)
+    entities = list(iter_expanded_entities(doc))
 
     if not entities:
         min_x = min_y = 0.0

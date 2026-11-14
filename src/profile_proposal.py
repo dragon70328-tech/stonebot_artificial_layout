@@ -36,7 +36,7 @@ from src.drawing_profile import (
     audit_drawing,
     read_dxf_with_profile,
 )
-from src.dxf_reader import _linetype_name
+from src.dxf_reader import _linetype_name, iter_expanded_entities
 
 _CONTINUOUS = "CONTINUOUS"
 
@@ -104,7 +104,7 @@ def _closed_shape_stats(doc) -> dict[str, Any]:
     unclosed_gaps: dict[str, list[float]] = {}
     linetype_counts: Counter[str] = Counter()
 
-    for entity in doc.modelspace():
+    for entity in iter_expanded_entities(doc):
         dxftype = entity.dxftype()
         if dxftype not in _SHAPE_TYPES:
             continue
@@ -163,7 +163,7 @@ def _is_number_candidate(text: str) -> bool:
 def _text_stats(doc) -> dict[str, Any]:
     """按图层统计 TEXT/MTEXT：总数、编号候选、字高。"""
     per_layer: dict[str, dict[str, Any]] = {}
-    for entity in doc.modelspace():
+    for entity in iter_expanded_entities(doc):
         if entity.dxftype() not in ("TEXT", "MTEXT"):
             continue
         layer = getattr(entity.dxf, "layer", "0") or "0"
@@ -420,6 +420,9 @@ def propose_profile(
     fingerprint = analyze_drawing(filepath)
     shape_stats = _closed_shape_stats(doc)
     text_stats = _text_stats(doc)
+    insert_count = sum(
+        1 for entity in doc.modelspace() if entity.dxftype() == "INSERT"
+    )
 
     # 规格件图层：封闭图形（不含圆，圆按孔洞处理）最多的图层。
     panel_counts = {
@@ -462,7 +465,7 @@ def propose_profile(
     has_hatch = bool(fingerprint.get("has_hatch"))
     hatch_layers: Counter[str] = Counter()
     if has_hatch:
-        for entity in doc.modelspace():
+        for entity in iter_expanded_entities(doc):
             if entity.dxftype() == "HATCH":
                 hatch_layers[getattr(entity.dxf, "layer", "0") or "0"] += 1
 
@@ -496,6 +499,7 @@ def propose_profile(
         "label_pattern": label["pattern"],
         "assignment_mode": "point_then_bbox",
         "build_hierarchy": circles_total > 0,
+        "expand_insert_blocks": insert_count > 0,
         "conflict_resolution": "random",
         "closed_tolerance": closed_tolerance,
         "exclude_entity_types": [],
@@ -521,6 +525,7 @@ def propose_profile(
         "text_layer_totals": {
             layer: stats["total"] for layer, stats in text_stats.items()
         },
+        "insert_count": insert_count,
         "number_candidate_counts": number_counts,
         "number_samples": {
             layer: sorted(set(text_stats[layer]["candidates"]))[:8]
@@ -590,6 +595,11 @@ def _build_questions(
 ) -> list[str]:
     questions: list[str] = []
     counts = draft.get("expected_counts") or {}
+    if draft.get("expand_insert_blocks"):
+        questions.append(
+            f"图纸含 {evidence.get('insert_count', 0)} 个块引用，"
+            "提议展开 INSERT 参与识别——请确认注释块、符号块不会被误判为规格件。"
+        )
     questions.append(
         f"识别规格件 {counts.get('panels', '?')} 件、"
         f"孔洞 {counts.get('holes', '?')} 个"

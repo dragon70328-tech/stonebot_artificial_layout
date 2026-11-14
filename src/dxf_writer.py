@@ -627,6 +627,62 @@ def _write_numbered_from_source(
     has_material = bool(colors)
     for index, part in enumerate(parts):
         group_entities: list = []
+        # INSERT-contained entities have virtual instance handles that do not
+        # exist in the source modelspace. Preserve the source block reference
+        # and add a semantic OUTER/HOLES overlay for the recognised instance.
+        if not by_part[index]["outer"]:
+            outer_for_overlay = _largest_polygon(part.outer_polygon)
+            if outer_for_overlay is not None:
+                overlay = _add_outline_entities(
+                    msp,
+                    part,
+                    outer_for_overlay.exterior,
+                    "OUTER",
+                )
+                material = (getattr(part, "material_group", None) or "").strip()
+                for entity in overlay:
+                    entity.dxf.color = colors.get(material, WHITE)
+                by_part[index]["outer"].extend(overlay)
+
+        if not by_part[index]["holes"] and part.holes:
+            hole_shapes = list(getattr(part, "hole_shapes", None) or [])
+            for hole_index, hole in enumerate(part.holes):
+                spec = (
+                    hole_shapes[hole_index]
+                    if hole_index < len(hole_shapes)
+                    else None
+                )
+                if isinstance(spec, dict) and spec.get("type") == "circle":
+                    entity = msp.add_circle(
+                        spec["center"],
+                        spec["radius"],
+                        dxfattribs={"layer": "HOLES", "color": 256},
+                    )
+                elif isinstance(spec, dict) and spec.get("type") in {
+                    "ellipse",
+                    "spline",
+                }:
+                    entity = _add_curve_entity(
+                        msp,
+                        spec,
+                        "HOLES",
+                        color=256,
+                    )
+                elif isinstance(spec, dict) and spec.get("type") == "polyline":
+                    entity = msp.add_lwpolyline(
+                        _polyline_points_with_bulges(spec),
+                        format="xyb",
+                        close=bool(spec.get("closed", True)),
+                        dxfattribs={"layer": "HOLES", "color": 256},
+                    )
+                else:
+                    entity = msp.add_lwpolyline(
+                        [(x, y) for x, y in hole.exterior.coords],
+                        dxfattribs={"layer": "HOLES", "color": 256},
+                    )
+                if entity is not None:
+                    by_part[index]["holes"].append(entity)
+
         group_entities.extend(by_part[index]["outer"])
         group_entities.extend(by_part[index]["holes"])
 

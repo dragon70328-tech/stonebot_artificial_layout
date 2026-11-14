@@ -14,6 +14,7 @@ import ezdxf
 from ezdxf import bbox
 
 from src.contracts import DrawingIssue
+from src.dxf_reader import iter_expanded_entities
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -70,8 +71,7 @@ def write_issue_evidence_svg(
         return []
 
     doc = ezdxf.readfile(str(source_filepath))
-    msp = doc.modelspace()
-    entities = list(msp)
+    entities = list(iter_expanded_entities(doc))
     results: list[dict[str, str]] = []
 
     for issue in issues_with_coordinates:

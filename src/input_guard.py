@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from src.dxf_reader import iter_expanded_entities
+
 
 class DXFInputError(ValueError):
     """Raised when a DXF input exceeds an intake quota."""
@@ -63,7 +65,11 @@ def guarded_read(
             f"parse time {elapsed:.1f}s exceeds {limits.max_parse_seconds}s"
         )
 
-    entity_count = len(doc.modelspace()) if doc is not None else 0
+    entity_count = (
+        len(list(iter_expanded_entities(doc, include_inserts=True)))
+        if doc is not None
+        else 0
+    )
     if entity_count > limits.max_entities:
         raise DXFInputError(
             f"entity count {entity_count} exceeds {limits.max_entities}"

@@ -91,6 +91,89 @@
         "numbers": 6
       },
       "notes": "LINE+ARC 双线绘制：线网络模式 + `exclude_colors: [2,3,6]` 排除磨边/示意线（M_LINE/X5_LINE/R_LINE 颜色），得到 6 件精确成品（XST-1 800x430、XST-4 800x450 各带 Ø25+Ø50 孔，XST-2/5 792x100、XST-3 405x100、XST-6 417x100）。用户确认台面下沿两端 25mm 台阶是真实前沿造型。"
+    },
+    {
+      "file": "Block D - 6F大堂地台石 廠方切石圖.dxf",
+      "sha256": "7284bd94182bf28fcbfd4a7651d4db9eeb83e2612ee874561f234c0b846887af",
+      "bytes": 6521897,
+      "role": "raw upload (HATCH/LWPOLYLINE 网格和异形分件)",
+      "source": "用户图纸目录（临时文件/AI识图文件），2026-11-14 补入回归夹具",
+      "drawing_profile": "blockd_6f_lobby.json",
+      "expected_counts": {
+        "panels": 52,
+        "holes": 0,
+        "numbers": 52
+      },
+      "notes": "2026-11-14 按 case source_sha256 从历史图纸目录找回并接入 CI。"
+    },
+    {
+      "file": "东莞奥特莱斯1.dxf",
+      "sha256": "aa2bbfc43910e43adeccb89903299b75c3508b385d2bea4046f9c7a0f7d3ebd1",
+      "bytes": 891603,
+      "role": "raw upload (分缝面板和编号/箱号)",
+      "source": "用户图纸目录（临时文件/AI识图文件），2026-11-14 补入回归夹具",
+      "drawing_profile": "dongguan_outlets.json",
+      "expected_counts": {
+        "panels": 776,
+        "holes": 0,
+        "numbers": 53
+      },
+      "notes": "案例级 exclude_entity_handles=24E3 由 test_validated_cases 应用；numbers 的历史 53 与当前已匹配编号面板数 776 登记为 known_delta。"
+    },
+    {
+      "file": "东莞奥特莱斯2.dxf",
+      "sha256": "6b444b236d31a2a5c923ba60651d2265217020c1b0a550446fea6da993ffc504",
+      "bytes": 2095535,
+      "role": "raw upload (1109 件异形水刀真实样本)",
+      "source": "用户图纸目录（临时文件/AI识图文件），2026-11-14 补入回归夹具",
+      "drawing_profile": "dongguan_outlets.json",
+      "expected_counts": {
+        "panels": 1109,
+        "holes": 0,
+        "numbers": 93
+      },
+      "notes": "numbers 的历史 93 与当前已匹配编号面板数 1109 登记为 known_delta；2026-09-19 编号修正日志已确认 1109 个原编号。"
+    },
+    {
+      "file": "福州万象城1.1.dxf",
+      "sha256": "bb61cb3f90c4a92215e1af1dd8d9e9d179aaea2bfacf02a56bcbc429d2ae5639",
+      "bytes": 2342549,
+      "role": "raw upload (LINE 网格重建 8001 件)",
+      "source": "用户图纸目录（临时文件/AI识图文件），2026-11-14 补入回归夹具",
+      "drawing_profile": "fuzhou_wanxiangcheng1_1.json",
+      "expected_counts": {
+        "panels": 8001,
+        "holes": 171
+      },
+      "notes": "2026-11-14 按 case source_sha256 找回，现有读图结果与案例声明一致。"
+    },
+    {
+      "file": "水星项目户型及排板.dxf",
+      "sha256": "20c4112632a3071214d4075487447adb509259d1bf750d1fcade821027e66c26",
+      "bytes": 11501510,
+      "role": "raw upload (水星项目原始图)",
+      "source": "用户图纸目录（临时文件/AI识图文件），2026-11-14 补入回归夹具",
+      "drawing_profile": "mercury.json",
+      "expected_counts": {
+        "panels": 1258,
+        "holes": 0,
+        "numbers": 1258
+      },
+      "notes": "与既有 mercury_numbered_原位.dxf 是不同版本；本文件对应 validated_cases/mercury.json 的 source_sha256。"
+    },
+    {
+      "file": "排版图 26.07.13.St. John Street Suites.ID Drawings.IFC FINAL.dxf",
+      "sha256": "c98ae4a031c692e75573b173fc8db7281fb30b07346101c559c14c00f63d451b",
+      "bytes": 6910329,
+      "role": "raw upload (IFC FINAL 排板图)",
+      "source": "用户图纸目录（临时文件/AI识图文件），2026-11-14 补入回归夹具",
+      "drawing_profile": "st_john_street_suites.json",
+      "expected_counts": {
+        "panels": 754,
+        "holes": 0,
+        "numbers": 754
+      },
+      "notes": "2026-11-14 按 case source_sha256 找回，现有读图结果与案例声明一致。"
     }
   ]
 }

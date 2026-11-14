@@ -111,6 +111,7 @@ stonebot_artificial_layout/
 | `docs/saas-architecture-goal.md` | 平台长期架构与五个支柱（判断代码改动的标准） |
 | `docs/saas-setup.md` | 当前搭建/运行/环境变量/租户认证 |
 | `docs/drawing-intake-subsystem.md` | 读图子系统设计（DXF 唯一输入） |
+| `docs/insert-block-recognition.md` | INSERT/嵌套块/MINSERT 展开规则与画像开关 |
 | `docs/process-aware-nesting-improvement-plan.md` | 统一工艺排板改进计划（契约、刀缝、版本重排） |
 | `docs/ai-workflow-improvement-plan.md` | 对话式排板工作流 |
 | `docs/constraint-externalization.md` | 约束外置到 JSON/YAML |
@@ -136,6 +137,13 @@ stonebot_artificial_layout/
 5. 若自动匹配到 `drawing_profiles/*.json` 图纸画像，则 `panel_layer`、
    `hatch_layer`、`use_hatch`、`exclude_entity_types`、`closed_tolerance`
    由画像提供，覆盖上述通用默认值。
+6. `INSERT` 块引用（含嵌套块与 MINSERT 行列阵列）在读图阶段展开为虚拟实体：
+   无画像的通用 `read_dxf` 默认展开；画像读图默认保持历史行为，只有画像显式
+   设置 `expand_insert_blocks=true` 才展开，避免项目图中的注释块/符号块被误判。
+   块内 `0` 层和 `BYBLOCK` 图层/颜色继承外层引用；每个实例生成稳定的虚拟
+   handle。循环块、超过 32 层嵌套或超过 20 万展开实体必须 fail closed。
+   原位 DXF 仍保留源图中的真实 `INSERT`，仅对有识别结果但没有直接源句柄的
+   实例补 OUTER/HOLES 核对几何。
 
 ### Step 2: 构建面板层级（外轮廓 vs 孔洞）
 

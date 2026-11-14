@@ -26,6 +26,8 @@ from typing import Any
 
 import ezdxf
 
+from src.dxf_reader import iter_expanded_entities
+
 # ---------------------------------------------------------------------------
 # 图纸文字要求提取（表面处理 / 磨边 / 纹理走向）
 # ---------------------------------------------------------------------------
@@ -74,7 +76,7 @@ def extract_annotations(doc) -> dict[str, Any]:
     """
     values: dict[str, list[str]] = {attr: [] for attr in _ANNOTATION_ATTRS}
     evidence: dict[str, list[str]] = {attr: [] for attr in _ANNOTATION_ATTRS}
-    for entity in doc.modelspace():
+    for entity in iter_expanded_entities(doc):
         if entity.dxftype() not in ("TEXT", "MTEXT"):
             continue
         try:

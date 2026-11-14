@@ -35,6 +35,7 @@ from .dxf_reader import (
     _lwpolyline_points,
     attach_source_curves,
     extract_closed_entity_candidates,
+    iter_expanded_entities,
 )
 
 
@@ -87,6 +88,9 @@ class DrawingProfile:
     closed_tolerance: float = 0.01
     exclude_entity_types: list[str] = field(default_factory=list)
     exclude_entity_handles: list[str] = field(default_factory=list)
+    # 项目画像默认保持历史行为；块结构图纸显式开启后才展开 INSERT。
+    # 无画像的通用 read_dxf 路径始终展开块引用。
+    expand_insert_blocks: bool = False
     # 按 ACI 颜色排除"标注/示意线"：如磨边示意线（M_LINE 颜色 2）、X5_LINE 颜色 6、
     # R_LINE 颜色 3。雪花白洗手台就是靠颜色区分"零件外框（BYLAYER 7）"与
     # "磨边/示意线"——不排除时，示意线与外框相交的角落会被当成缺口（立板两端
@@ -205,6 +209,13 @@ class DrawingIssue:
         )
 
 
+def _iter_profile_entities(doc, profile: DrawingProfile):
+    """Yield block leaves only when the matched profile explicitly enables it."""
+    if profile.expand_insert_blocks:
+        return iter_expanded_entities(doc)
+    return iter(doc.modelspace())
+
+
 def load_profile(path: str | Path) -> DrawingProfile:
     """从 JSON 文件加载一个画像。"""
     path = Path(path)
@@ -229,7 +240,7 @@ def fingerprint_from_doc(doc, source_path: str | Path) -> dict[str, Any]:
     与 :func:`analyze_drawing` 同源：后者只是"打开文件再调用本函数"的薄封装。
     已经拿在手里的文档（回填、画像提议）可直接复用，避免为大图重复读一遍。
     """
-    entities = list(doc.modelspace())
+    entities = list(iter_expanded_entities(doc, include_inserts=True))
 
     entity_counts = Counter(entity.dxftype() for entity in entities)
     layer_counts = Counter(
@@ -658,7 +669,7 @@ def _extract_grid_panels(
     axis_tolerance = max(profile.closed_tolerance, 0.5)
     segments: list[tuple[str, tuple[tuple[float, float], tuple[float, float]]]] = []
 
-    for entity in doc.modelspace():
+    for entity in _iter_profile_entities(doc, profile):
         if entity.dxftype() != "LWPOLYLINE":
             continue
         layer = getattr(entity.dxf, "layer", "0") or "0"
@@ -742,7 +753,7 @@ def _extract_grid_panels(
     split_layer_names = set(profile.grid_split_layers) if profile.grid_split_layers else set()
     candidate_layers = set(layer_names) | split_layer_names
     candidate_polys: list[tuple[Polygon, str, str]] = []
-    for entity in doc.modelspace():
+    for entity in _iter_profile_entities(doc, profile):
         if entity.dxftype() != "LWPOLYLINE":
             continue
         layer = getattr(entity.dxf, "layer", "0") or "0"
@@ -1110,7 +1121,7 @@ def _extract_line_network_panels(
     excluded_colors = {int(value) for value in profile.exclude_colors}
     lines: list[LineString] = []
 
-    for entity in doc.modelspace():
+    for entity in _iter_profile_entities(doc, profile):
         dtype = entity.dxftype()
         layer = getattr(entity.dxf, "layer", "0") or "0"
         if layer in excluded_layers or layer not in layer_names:
@@ -1231,7 +1242,7 @@ def _has_hatch_entities(
     if not profile.use_hatch:
         return False
     hatch_layer = profile.hatch_layer or None
-    for entity in doc.modelspace():
+    for entity in _iter_profile_entities(doc, profile):
         if entity.dxftype() != "HATCH":
             continue
         if hatch_layer is None:
@@ -1293,7 +1304,7 @@ def _extract_profile_panels_impl(
 
     if profile.use_hatch:
         hatch_layer = profile.hatch_layer or None
-        for entity in doc.modelspace():
+        for entity in _iter_profile_entities(doc, profile):
             if entity.dxftype() != "HATCH":
                 continue
             layer = getattr(entity.dxf, "layer", "0") or "0"
@@ -1335,6 +1346,7 @@ def _extract_profile_panels_impl(
         hole_layers=profile.hole_layers,
         exclude_colors=profile.exclude_colors or None,
         layer_filter_mode="hint",
+        expand_insert_blocks=profile.expand_insert_blocks,
     )
     classified_candidates = classify_candidates(
         raw_candidates,
@@ -1442,7 +1454,7 @@ def _extract_profile_panels_impl(
     fallback_line_entities = []
     excluded_linetypes = {value.upper() for value in profile.exclude_linetypes}
     allowed_panel_layers = _profile_panel_layers(profile)
-    for entity in doc.modelspace():
+    for entity in _iter_profile_entities(doc, profile):
         if entity.dxftype() != "LINE":
             continue
         layer = getattr(entity.dxf, "layer", "0") or "0"
@@ -1585,7 +1597,7 @@ def _assign_profile_holes(
         return
 
     assigned_handles: set[str] = set()
-    for entity in doc.modelspace():
+    for entity in _iter_profile_entities(doc, profile):
         dtype = entity.dxftype()
         if dtype == "CIRCLE":
             hole_polygon = _entity_to_polygon(entity)
@@ -1650,7 +1662,7 @@ def _collect_profile_number_texts(
     preferred: list[dict[str, Any]] = []
     fallback: list[dict[str, Any]] = []
 
-    for entity in doc.modelspace():
+    for entity in _iter_profile_entities(doc, profile):
         if entity.dxftype() not in ("TEXT", "MTEXT"):
             continue
         layer = getattr(entity.dxf, "layer", "0") or "0"
@@ -1694,7 +1706,7 @@ def _collect_zone_texts(
     pattern = profile.compiled_zone_label_pattern()
     texts: list[dict[str, Any]] = []
 
-    for entity in doc.modelspace():
+    for entity in _iter_profile_entities(doc, profile):
         if entity.dxftype() not in ("TEXT", "MTEXT"):
             continue
         layer = getattr(entity.dxf, "layer", "0") or "0"
@@ -1798,7 +1810,7 @@ def collect_column_materials(
 
     level_marks: list[dict[str, Any]] = []
     material_marks: list[dict[str, Any]] = []
-    for entity in doc.modelspace():
+    for entity in _iter_profile_entities(doc, profile):
         if entity.dxftype() not in ("TEXT", "MTEXT"):
             continue
         layer = getattr(entity.dxf, "layer", "0") or "0"
@@ -2365,7 +2377,11 @@ def read_dxf_with_profile(
             }
         )
     # 源实体类型（圆/圆弧）挂到零件上，供原位 DXF 如实复写
-    attach_source_curves(parts_data, doc)
+    attach_source_curves(
+        parts_data,
+        doc,
+        expand_insert_blocks=profile.expand_insert_blocks,
+    )
     from src.material_thickness import attach_thickness
 
     attach_thickness(parts_data, doc)
@@ -2449,12 +2465,17 @@ def _add_machine_readiness_issues(
 
 def _add_curve_fidelity_issues(
     doc: ezdxf.document.Drawing,
+    profile: DrawingProfile,
     panels: list[dict[str, Any]],
     issues: list[DrawingIssue],
 ) -> None:
     """曲线保真兜底：贴合零件轮廓却写不回原样的曲线必须报出来。"""
     try:
-        attach_source_curves(panels, doc)
+        attach_source_curves(
+            panels,
+            doc,
+            expand_insert_blocks=profile.expand_insert_blocks,
+        )
     except Exception:  # noqa: BLE001 - 审图兜底不得阻断主流程
         return
     issues.extend(curve_fidelity_issues(panels))
@@ -2467,7 +2488,7 @@ def _add_entity_filter_issues(
 ) -> None:
     excluded_types = set(profile.exclude_entity_types)
 
-    for entity in doc.modelspace():
+    for entity in _iter_profile_entities(doc, profile):
         dtype = entity.dxftype()
         layer = getattr(entity.dxf, "layer", "0") or "0"
         coordinates = _entity_coordinates(entity)
@@ -2493,7 +2514,7 @@ def _add_unclosed_polyline_issues(
 ) -> None:
     excluded_linetypes = {value.upper() for value in profile.exclude_linetypes}
     allowed_panel_layers = _profile_panel_layers(profile)
-    for entity in doc.modelspace():
+    for entity in _iter_profile_entities(doc, profile):
         if entity.dxftype() not in ("LWPOLYLINE", "POLYLINE"):
             continue
         layer = getattr(entity.dxf, "layer", "0") or "0"
@@ -2523,7 +2544,7 @@ def _add_line_chain_issues(
     lines = []
     allowed_panel_layers = _profile_panel_layers(profile)
     excluded_linetypes = {value.upper() for value in profile.exclude_linetypes}
-    for entity in doc.modelspace():
+    for entity in _iter_profile_entities(doc, profile):
         if entity.dxftype() != "LINE":
             continue
         layer = getattr(entity.dxf, "layer", "0") or "0"
@@ -2570,7 +2591,7 @@ def _add_invalid_geometry_issues(
 ) -> None:
     excluded_linetypes = {value.upper() for value in profile.exclude_linetypes}
     allowed_panel_layers = _profile_panel_layers(profile)
-    for entity in doc.modelspace():
+    for entity in _iter_profile_entities(doc, profile):
         if entity.dxftype() not in ("LWPOLYLINE", "POLYLINE"):
             continue
         layer = getattr(entity.dxf, "layer", "0") or "0"
@@ -2713,7 +2734,7 @@ def _add_hole_outside_panel_issues(
 
     excluded_types = set(profile.exclude_entity_types)
     hole_layers = set(profile.hole_layers)
-    for entity in doc.modelspace():
+    for entity in _iter_profile_entities(doc, profile):
         if entity.dxftype() != "CIRCLE":
             continue
         layer = getattr(entity.dxf, "layer", "0") or "0"
@@ -3152,7 +3173,7 @@ def audit_drawing(
     _add_small_area_issues(panels, profile, issues)
     _add_hole_outside_panel_issues(doc, profile, panels, issues)
     _add_panel_confidence_issues(panels, profile, issues)
-    _add_curve_fidelity_issues(doc, panels, issues)
+    _add_curve_fidelity_issues(doc, profile, panels, issues)
     _add_machine_readiness_issues(doc, profile, panels, issues)
 
     texts = _collect_profile_number_texts(doc, profile)

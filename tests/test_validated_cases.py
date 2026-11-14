@@ -49,8 +49,17 @@ def _load_cases() -> list[tuple[str, dict]]:
     return cases
 
 
-def _read_counts(path: Path, profile_name: str) -> dict[str, int]:
+def _read_counts(
+    path: Path,
+    profile_name: str,
+    case_overrides: dict | None = None,
+) -> dict[str, int]:
     profile = load_profile(PROFILES_DIR / f"{profile_name}.json")
+    case_overrides = case_overrides or {}
+    if "exclude_entity_handles" in case_overrides:
+        profile.exclude_entity_handles = list(
+            case_overrides.get("exclude_entity_handles") or []
+        )
     parts, _doc = read_dxf_with_profile(path, profile)
     return {
         "panels": len(parts),
@@ -82,7 +91,11 @@ def test_case_counts_match_library(case_id, case):
         pytest.skip(f"{case_id}：{reason}，本案例暂不在门禁内")
 
     expected = case.get("expected_counts") or {}
-    actual = _read_counts(fixture, str(case.get("profile_name") or case_id))
+    actual = _read_counts(
+        fixture,
+        str(case.get("profile_name") or case_id),
+        case,
+    )
     deltas = case.get("known_deltas") or {}
     mismatches: dict[str, dict] = {}
     accepted: list[str] = []

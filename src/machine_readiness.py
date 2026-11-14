@@ -12,6 +12,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from src.dxf_reader import iter_expanded_entities
+
 
 _CUT_TYPES = {"LINE", "LWPOLYLINE", "POLYLINE", "ARC", "CIRCLE", "SPLINE", "ELLIPSE"}
 _SIGNATURE_TYPES = {"LINE", "LWPOLYLINE", "ARC", "CIRCLE"}
@@ -143,7 +145,7 @@ def findings(
             for box in bounds
         )
 
-    for entity in doc.modelspace():
+    for entity in iter_expanded_entities(doc):
         dtype = entity.dxftype()
         layer = str(getattr(entity.dxf, "layer", "0") or "0")
         if layer.upper() in {"DEFPOINTS"}:

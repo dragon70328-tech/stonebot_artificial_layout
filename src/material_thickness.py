@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from src.dxf_reader import iter_expanded_entities
+
 
 DEFAULT_THICKNESS_MM = 20.0
 
@@ -25,7 +27,7 @@ def _texts(doc) -> list[str]:
     values: list[str] = []
     if doc is None:
         return values
-    for entity in doc.modelspace():
+    for entity in iter_expanded_entities(doc):
         try:
             if entity.dxftype() == "TEXT":
                 values.append(str(entity.dxf.text or ""))

@@ -1,6 +1,7 @@
 """DXF 文件解析：提取封闭图形，构建规格板（含挖孔）"""
 
 import ezdxf
+import hashlib
 import math
 from shapely.geometry import Polygon, Point, MultiPolygon
 from shapely.ops import unary_union
@@ -8,6 +9,200 @@ from ezdxf.entities import Ellipse, LWPolyline, Polyline, Circle, Arc, Spline
 from ezdxf.math import bulge_to_arc
 import numpy as np
 import re
+
+
+MAX_BLOCK_EXPAND_DEPTH = 32
+MAX_EXPANDED_ENTITIES = 200_000
+
+
+def _resolve_block_layer(raw_layer: str | None, inherited_layer: str) -> str:
+    """Resolve the AutoCAD layer-0 and BYBLOCK layer inheritance rules."""
+    value = str(raw_layer or "0")
+    if value in {"0", "BYBLOCK"}:
+        return inherited_layer
+    return value
+
+
+def _resolve_block_color(raw_color, inherited_color: int) -> int:
+    """Resolve BYBLOCK (ACI 0) color from the containing INSERT."""
+    try:
+        value = int(raw_color)
+    except (TypeError, ValueError):
+        return inherited_color
+    if value in {0, -1}:
+        return inherited_color
+    return value
+
+
+def _resolve_insert_context(doc, insert, inherited) -> tuple[str, int, str]:
+    """Return the effective layer/color/linetype context for an INSERT."""
+    layer = _resolve_block_layer(
+        getattr(insert.dxf, "layer", "0"),
+        inherited[0],
+    )
+    color = _resolve_block_color(
+        getattr(insert.dxf, "color", 256),
+        inherited[1],
+    )
+    raw_linetype = str(getattr(insert.dxf, "linetype", "BYLAYER") or "BYLAYER")
+    if raw_linetype.upper() == "BYBLOCK":
+        linetype = inherited[2]
+    elif raw_linetype.upper() == "BYLAYER":
+        try:
+            linetype = str(doc.layers.get(layer).dxf.linetype or "CONTINUOUS")
+        except Exception:
+            linetype = "CONTINUOUS"
+    else:
+        linetype = raw_linetype
+    return layer, color, linetype
+
+
+def _apply_block_context(entity, context: tuple[str, int, str]) -> None:
+    """Apply inherited block attributes to a temporary virtual entity."""
+    layer, color, linetype = context
+    entity.dxf.layer = _resolve_block_layer(
+        getattr(entity.dxf, "layer", "0"),
+        layer,
+    )
+    entity.dxf.color = _resolve_block_color(
+        getattr(entity.dxf, "color", 256),
+        color,
+    )
+    if str(getattr(entity.dxf, "linetype", "BYLAYER") or "BYLAYER").upper() == "BYBLOCK":
+        entity.dxf.linetype = linetype
+
+
+def _virtual_handle(path: str) -> str:
+    """Stable instance-level handle for a virtual block entity."""
+    return hashlib.sha256(path.encode("utf-8")).hexdigest()[:16].upper()
+
+
+def _iter_insert_leaves(
+    doc,
+    insert,
+    *,
+    path: str,
+    block_stack: tuple[str, ...],
+    inherited_context: tuple[str, int, str],
+    depth: int,
+):
+    """Expand one INSERT, including nested blocks and MINSERT arrays."""
+    block_name = str(
+        getattr(insert.dxf, "name", "")
+        or getattr(insert.dxf, "block_name", "")
+        or ""
+    )
+    if block_name in block_stack:
+        chain = " -> ".join((*block_stack, block_name))
+        raise ValueError(f"cyclic DXF block reference detected: {chain}")
+    if depth >= MAX_BLOCK_EXPAND_DEPTH:
+        raise ValueError(
+            "DXF block nesting exceeds safety limit "
+            f"{MAX_BLOCK_EXPAND_DEPTH}: {path}"
+        )
+
+    row_count = max(1, int(getattr(insert.dxf, "row_count", 1) or 1))
+    column_count = max(1, int(getattr(insert.dxf, "column_count", 1) or 1))
+    try:
+        occurrences = (
+            list(insert.multi_insert())
+            if row_count * column_count > 1
+            else [insert]
+        )
+    except Exception as exc:
+        raise ValueError(
+            f"failed to expand MINSERT {block_name!r} at {path}: {exc}"
+        ) from exc
+
+    for occurrence_index, occurrence in enumerate(occurrences):
+        occurrence_path = (
+            f"{path}/occ[{occurrence_index}]"
+            f"/row[{occurrence_index // column_count}]"
+            f"/col[{occurrence_index % column_count}]"
+        )
+        try:
+            children = list(occurrence.virtual_entities())
+        except Exception as exc:
+            raise ValueError(
+                f"failed to expand block {block_name!r} at {occurrence_path}: {exc}"
+            ) from exc
+
+        occurrence_context = _resolve_insert_context(
+            doc,
+            occurrence,
+            inherited_context,
+        )
+        next_stack = (*block_stack, block_name)
+        for child_index, child in enumerate(children):
+            child_path = (
+                f"{occurrence_path}/entity[{child_index}]"
+                f":{child.dxftype()}"
+            )
+            _apply_block_context(child, occurrence_context)
+            if child.dxftype() == "INSERT":
+                yield from _iter_insert_leaves(
+                    doc,
+                    child,
+                    path=child_path,
+                    block_stack=next_stack,
+                    inherited_context=occurrence_context,
+                    depth=depth + 1,
+                )
+                continue
+            child.dxf.handle = _virtual_handle(child_path)
+            setattr(child, "_stonebot_block_path", child_path)
+            yield child
+
+
+def iter_expanded_entities(doc, *, include_inserts: bool = False):
+    """Yield modelspace entities with INSERT blocks expanded to leaf entities.
+
+    Direct modelspace entities retain their original handles. Virtual block
+    leaves receive deterministic instance-level handles, so multiple INSERT
+    occurrences of the same block can participate in numbering and curve
+    fidelity mapping without colliding.
+
+    The original Drawing is never modified: the writing path still copies and
+    preserves the source INSERT entities.
+    """
+    cache_attr = (
+        "_stonebot_expanded_entities_with_inserts"
+        if include_inserts
+        else "_stonebot_expanded_entities"
+    )
+    cached = getattr(doc, cache_attr, None)
+    if cached is not None:
+        yield from cached
+        return
+
+    expanded = []
+    root_context = ("0", 256, "BYLAYER")
+    for entity_index, entity in enumerate(doc.modelspace()):
+        if entity.dxftype() != "INSERT":
+            expanded.append(entity)
+        else:
+            if include_inserts:
+                expanded.append(entity)
+            handle = str(getattr(entity.dxf, "handle", "") or "")
+            path = f"msp[{entity_index}]:INSERT:{handle}"
+            expanded.extend(
+                _iter_insert_leaves(
+                    doc,
+                    entity,
+                    path=path,
+                    block_stack=(),
+                    inherited_context=root_context,
+                    depth=0,
+                )
+            )
+        if len(expanded) > MAX_EXPANDED_ENTITIES:
+            raise ValueError(
+                "expanded DXF exceeds safety limit "
+                f"{MAX_EXPANDED_ENTITIES} entities"
+            )
+
+    setattr(doc, cache_attr, expanded)
+    yield from expanded
 
 
 def _bulge_arc_points(start_point, end_point, bulge: float,
@@ -521,7 +716,8 @@ def extract_closed_entity_candidates(doc,
                                      exclude_handles = None,
                                      hole_layers = None,
                                      exclude_colors = None,
-                                     layer_filter_mode: str = "strict"):
+                                     layer_filter_mode: str = "strict",
+                                     expand_insert_blocks: bool = False):
     """提取封闭实体候选，同时保留 handle、图层和线型信息。
 
     ``strict`` 保持旧行为，只保留 panel_layers 中实体。对于通用图纸和画像
@@ -545,9 +741,13 @@ def extract_closed_entity_candidates(doc,
     excluded_layer_set = set(exclude_layers or [])
     excluded_color_set = {int(value) for value in (exclude_colors or [])}
     results = []
-    msp = doc.modelspace()
 
-    for entity in msp:
+    entities = (
+        iter_expanded_entities(doc)
+        if expand_insert_blocks
+        else doc.modelspace()
+    )
+    for entity in entities:
         layer = getattr(entity.dxf, "layer", "0") or "0"
         handle = getattr(entity.dxf, "handle", None)
         if exclude_handles is not None and handle in exclude_handles:
@@ -599,7 +799,8 @@ def extract_closed_polygons(doc,
                              exclude_handles = None,
                              hole_layers = None,
                              exclude_colors = None,
-                             layer_filter_mode: str = "strict"):
+                             layer_filter_mode: str = "strict",
+                             expand_insert_blocks: bool = False):
     return [
         (item["polygon"], item["handle"])
         for item in extract_closed_entity_candidates(
@@ -612,6 +813,7 @@ def extract_closed_polygons(doc,
             hole_layers=hole_layers,
             exclude_colors=exclude_colors,
             layer_filter_mode=layer_filter_mode,
+            expand_insert_blocks=expand_insert_blocks,
         )
     ]
 
@@ -639,7 +841,11 @@ def _sample_arc(spec: dict, samples: int = 24) -> list[tuple[float, float]]:
     return points
 
 
-def collect_source_curves(doc) -> dict[str, dict]:
+def collect_source_curves(
+    doc,
+    *,
+    expand_insert_blocks: bool = True,
+) -> dict[str, dict]:
     """源图里可以"如实复写"的曲线：CIRCLE / ARC / 带圆弧段的 LWPOLYLINE。
 
     LWPOLYLINE 的 bulge 段在几何计算里会被采样成折线（排板需要精确多边形），
@@ -649,7 +855,12 @@ def collect_source_curves(doc) -> dict[str, dict]:
     specs: dict[str, dict] = {}
     if doc is None:
         return specs
-    for entity in doc.modelspace():
+    entities = (
+        iter_expanded_entities(doc)
+        if expand_insert_blocks
+        else doc.modelspace()
+    )
+    for entity in entities:
         handle = str(getattr(entity.dxf, "handle", "") or "")
         if not handle:
             continue
@@ -837,7 +1048,13 @@ def _arcs_on_ring(ring, arc_specs: list[dict], tol: float = SOURCE_CURVE_TOL_MM)
     return matched
 
 
-def attach_source_curves(parts_data: list[dict], doc, tol: float = SOURCE_CURVE_TOL_MM) -> None:
+def attach_source_curves(
+    parts_data: list[dict],
+    doc,
+    tol: float = SOURCE_CURVE_TOL_MM,
+    *,
+    expand_insert_blocks: bool = True,
+) -> None:
     """给零件的轮廓/孔洞挂上"源实体类型"（圆/圆弧如实复写用）。
 
     原位 DXF 是给人核对与量尺寸的：源图里是 CIRCLE 的孔/外形要写成真圆，
@@ -849,7 +1066,10 @@ def attach_source_curves(parts_data: list[dict], doc, tol: float = SOURCE_CURVE_
     剩余部分仍写折线）、``hole_shapes``（与 ``holes`` 一一对应，圆孔标记，
     非圆孔为 None）。
     """
-    specs = collect_source_curves(doc)
+    specs = collect_source_curves(
+        doc,
+        expand_insert_blocks=expand_insert_blocks,
+    )
     if not specs:
         return
 
@@ -1158,8 +1378,7 @@ def _collect_number_texts(doc,
     pattern = re.compile(label_pattern) if label_pattern else None
     texts = []
     seen = set()
-    msp = doc.modelspace()
-    for entity in msp:
+    for entity in iter_expanded_entities(doc):
         if entity.dxftype() not in ("TEXT", "MTEXT"):
             continue
         layer = getattr(entity.dxf, "layer", "0") or "0"
@@ -1395,7 +1614,8 @@ def read_dxf(filepath: str,
     polygons = extract_closed_polygons(doc,
                                         panel_layers=panel_layers,
                                         exclude_layers=exclude_layers,
-                                        exclude_linetypes=exclude_linetypes)
+                                        exclude_linetypes=exclude_linetypes,
+                                        expand_insert_blocks=True)
 
     if not polygons:
         return [], doc
@@ -1414,7 +1634,7 @@ def read_dxf(filepath: str,
     )
 
     room_labels = _collect_room_texts(
-        doc.modelspace(),
+        iter_expanded_entities(doc),
         room_label_keyword=room_label_keyword,
         room_label_exclude_keyword=room_label_exclude_keyword,
         room_label_normalizations=room_label_normalizations,

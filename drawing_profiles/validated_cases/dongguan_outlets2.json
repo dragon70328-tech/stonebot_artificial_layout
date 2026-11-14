@@ -29,6 +29,12 @@
     "holes": 0,
     "numbers": 93
   },
+  "known_deltas": {
+    "numbers": {
+      "actual": 1109,
+      "reason": "历史 93 是早期唯一材料/形状编号口径；2026-09-19 编号修正工作日志已确认 1109 个面板均获得原编号。当前门禁按已匹配 original_number 的面板数统计。"
+    }
+  },
   "audit_ignore_rules": [
     {
       "issue_type": "duplicate_label",

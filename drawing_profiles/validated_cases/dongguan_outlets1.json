@@ -28,6 +28,12 @@
     "holes": 0,
     "numbers": 53
   },
+  "known_deltas": {
+    "numbers": {
+      "actual": 776,
+      "reason": "历史 53 是早期候选编号统计口径；当前门禁按已匹配到 original_number 的面板数统计。画像的 751 个箱号标签和 25 个编号标签均落在石材分缝面板内，实际 776 件均获得原编号。"
+    }
+  },
   "audit_ignore_rules": [],
   "exclude_entity_handles": [
     "24E3"
