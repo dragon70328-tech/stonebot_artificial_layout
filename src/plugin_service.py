@@ -42,6 +42,7 @@ from src.plugin_delivery import (
 )
 from src.plugin_protocol import PLUGIN_VERSION, SCHEMA_VERSION, next_actions
 from src.layout_adjustment import propagate_adjusted_layout
+from src.licensing import LicenseGuard, LicenseRequiredError
 from src.saw_audit import audit_nested_saw_clearance
 from src.saw_repair import repair_nested_saw_clearance
 from src.profile_learning import (
@@ -116,6 +117,7 @@ class PluginJobService:
         data_root: str | Path | None = None,
         *,
         directory_picker: Callable[[str], str | None] | None = None,
+        license_guard: LicenseGuard | None = None,
     ) -> None:
         configured = os.environ.get("STONEBOT_MCP_DATA_ROOT")
         self.data_root = Path(
@@ -128,6 +130,7 @@ class PluginJobService:
         self._jobs: dict[str, AgentRuntime] = {}
         self._manifests: dict[str, dict[str, Any]] = {}
         self._directory_picker = directory_picker or choose_directory_dialog
+        self.license_guard = license_guard
 
     # ------------------------------------------------------------------
     # Public tool methods
@@ -565,6 +568,19 @@ class PluginJobService:
             )
         ):
             return self._public_state(runtime, manifest)
+        if self.license_guard is not None:
+            try:
+                self.license_guard.require_production_access()
+            except LicenseRequiredError as exc:
+                raise StonebotProtocolError(
+                    "LICENSE_REQUIRED",
+                    "当前设备没有可用于生产交付的有效许可。",
+                    details=exc.status.to_dict(),
+                    allowed_actions=[
+                        "stonebot_license_status",
+                        "stonebot_job_status",
+                    ],
+                ) from exc
         if runtime.session.stage != WorkflowStage.COMPLETED:
             self._require_stage(
                 runtime,
@@ -1197,6 +1213,27 @@ class PluginJobService:
             ) from exc
         self._sync_manifest(job_id, runtime)
         return self._public_state(runtime, manifest)
+
+    def license_status(self, _args: dict[str, Any] | None = None) -> dict[str, Any]:
+        status = (
+            self.license_guard.status()
+            if self.license_guard is not None
+            else None
+        )
+        return {
+            "ok": True,
+            "enforced": self.license_guard is not None,
+            "license": (
+                status.to_dict()
+                if status is not None
+                else {
+                    "state": "disabled",
+                    "valid": True,
+                    "production_allowed": True,
+                    "reason": "no license guard configured",
+                }
+            ),
+        }
 
     def export_task_capsule(self, args: dict[str, Any]) -> dict[str, Any]:
         """Export the complete resumable job state as a portable capsule."""
@@ -2032,6 +2069,11 @@ class PluginJobService:
             ),
             "nesting_configured": bool(
                 manifest.get("nesting_configured")
+            ),
+            "license": (
+                self.license_guard.status().to_dict()
+                if self.license_guard is not None
+                else None
             ),
             "summary": summary,
             "validation_errors": list(runtime.context.validation_errors),

@@ -220,6 +220,7 @@ class MCPServer:
                 self.service.rollback_profile_override
             ),
             "stonebot_job_status": self.service.job_status,
+            "stonebot_license_status": self.service.license_status,
             "stonebot_export_task_capsule": (
                 self.service.export_task_capsule
             ),

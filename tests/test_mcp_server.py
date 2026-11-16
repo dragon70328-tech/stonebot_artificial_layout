@@ -32,6 +32,17 @@ class FakeService:
             "next_actions": ["stonebot_confirm_drawing"],
         }
 
+    def license_status(self, args):
+        return {
+            "ok": True,
+            "enforced": True,
+            "license": {
+                "state": "active",
+                "valid": True,
+                "production_allowed": True,
+            },
+        }
+
     def get_agent_contract(self, args):
         return {"ok": True, **agent_contract(args.get("profile", "full"))}
 
@@ -181,6 +192,26 @@ def test_mcp_dispatches_task_capsule_export():
     assert result["structuredContent"]["capsule_path"].endswith(
         "job.capsule"
     )
+
+
+def test_mcp_dispatches_license_status():
+    server = MCPServer(FakeService())
+
+    response = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 33,
+            "method": "tools/call",
+            "params": {
+                "name": "stonebot_license_status",
+                "arguments": {},
+            },
+        }
+    )
+
+    result = response["result"]
+    assert result["isError"] is False
+    assert result["structuredContent"]["license"]["state"] == "active"
 
 
 def test_mcp_marks_blocked_stonebot_state_as_tool_error():

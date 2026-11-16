@@ -16,6 +16,7 @@ from src.local_runtime import (  # noqa: E402
     RuntimeAlreadyRunning,
     acquire_runtime_instance,
 )
+from src.licensing import build_license_guard  # noqa: E402
 from src.mcp_server import serve_stdio  # noqa: E402
 from src.plugin_service import PluginJobService  # noqa: E402
 
@@ -33,6 +34,14 @@ def main(argv: list[str] | None = None) -> int:
         choices=("full", "compact"),
         default="full",
     )
+    parser.add_argument(
+        "--license-public-key-file",
+        help="Base64 Ed25519 public key used to verify local entitlements.",
+    )
+    parser.add_argument(
+        "--device-name",
+        default=None,
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -43,8 +52,20 @@ def main(argv: list[str] | None = None) -> int:
     layout = LocalRuntimeLayout.resolve(args.root).ensure()
     try:
         with acquire_runtime_instance(layout):
+            license_guard = None
+            public_key_text = args.license_public_key_file
+            if public_key_text:
+                license_guard = build_license_guard(
+                    layout,
+                    Path(public_key_text).read_text(encoding="utf-8").strip(),
+                    enforcement=True,
+                    display_name=args.device_name,
+                )
             serve_stdio(
-                service=PluginJobService(layout.data_dir),
+                service=PluginJobService(
+                    layout.data_dir,
+                    license_guard=license_guard,
+                ),
                 tool_profile=args.tool_profile,
             )
     except RuntimeAlreadyRunning:

@@ -93,6 +93,18 @@ class LocalRuntimeLayout:
         return self.data_dir / "plugins"
 
     @property
+    def license_dir(self) -> Path:
+        return self.data_dir / "license"
+
+    @property
+    def device_identity_path(self) -> Path:
+        return self.license_dir / "device.json"
+
+    @property
+    def entitlement_path(self) -> Path:
+        return self.license_dir / "entitlement.json"
+
+    @property
     def versions_dir(self) -> Path:
         return self.root / "versions"
 
@@ -137,6 +149,7 @@ class LocalRuntimeLayout:
             self.artifacts_dir,
             self.profiles_dir,
             self.plugins_dir,
+            self.license_dir,
             self.versions_dir,
             self.updates_dir,
             self.downloads_dir,
@@ -157,6 +170,7 @@ class LocalRuntimeLayout:
             "artifacts": str(self.artifacts_dir),
             "profiles": str(self.profiles_dir),
             "plugins": str(self.plugins_dir),
+            "license": str(self.license_dir),
             "versions": str(self.versions_dir),
             "updates": str(self.updates_dir),
             "logs": str(self.logs_dir),

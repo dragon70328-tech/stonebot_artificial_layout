@@ -850,6 +850,20 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "stonebot_license_status",
+        "description": (
+            "Return the local device entitlement state, expiry, grace period "
+            "and whether production delivery is currently allowed."
+        ),
+        "inputSchema": _object_schema({}),
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    },
+    {
         "name": "stonebot_export_task_capsule",
         "description": (
             "Export the complete resumable job state, confirmed drawing, "
