@@ -44,6 +44,8 @@ stonebot_artificial_layout/
     visual_renderer.py  # 整图 SVG 渲染
     local_runtime.py    # 本地数据根、单实例锁、Runtime 目录布局
     task_capsule.py     # 可迁移任务胶囊、哈希校验、安全解压
+    release_manifest.py # Ed25519 签名发布清单和文件哈希
+    update_manager.py   # 发布下载、staging、原子切换和回滚
     # ── 领域/契约 domain ──
     models.py           # Part / Sheet / NestingResult
     constraints.py      # NestingProfile、预置模板、标准板规格
@@ -115,6 +117,7 @@ stonebot_artificial_layout/
 | `docs/drawing-intake-subsystem.md` | 读图子系统设计（DXF 唯一输入） |
 | `docs/insert-block-recognition.md` | INSERT/嵌套块/MINSERT 展开规则与画像开关 |
 | `docs/local-runtime-foundation.md` | 本地数据根、单实例锁和任务胶囊基础 |
+| `docs/secure-updates.md` | 签名发布清单、安全解压、原子更新和回滚 |
 | `docs/process-aware-nesting-improvement-plan.md` | 统一工艺排板改进计划（契约、刀缝、版本重排） |
 | `docs/ai-workflow-improvement-plan.md` | 对话式排板工作流 |
 | `docs/constraint-externalization.md` | 约束外置到 JSON/YAML |

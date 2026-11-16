@@ -93,6 +93,26 @@ class LocalRuntimeLayout:
         return self.data_dir / "plugins"
 
     @property
+    def versions_dir(self) -> Path:
+        return self.root / "versions"
+
+    @property
+    def updates_dir(self) -> Path:
+        return self.root / "updates"
+
+    @property
+    def downloads_dir(self) -> Path:
+        return self.updates_dir / "downloads"
+
+    @property
+    def update_staging_dir(self) -> Path:
+        return self.updates_dir / "staging"
+
+    @property
+    def current_release_path(self) -> Path:
+        return self.root / "current.json"
+
+    @property
     def logs_dir(self) -> Path:
         return self.data_dir / "logs"
 
@@ -117,6 +137,10 @@ class LocalRuntimeLayout:
             self.artifacts_dir,
             self.profiles_dir,
             self.plugins_dir,
+            self.versions_dir,
+            self.updates_dir,
+            self.downloads_dir,
+            self.update_staging_dir,
             self.logs_dir,
             self.config_dir,
         ):
@@ -133,6 +157,8 @@ class LocalRuntimeLayout:
             "artifacts": str(self.artifacts_dir),
             "profiles": str(self.profiles_dir),
             "plugins": str(self.plugins_dir),
+            "versions": str(self.versions_dir),
+            "updates": str(self.updates_dir),
             "logs": str(self.logs_dir),
             "config": str(self.config_dir),
         }
