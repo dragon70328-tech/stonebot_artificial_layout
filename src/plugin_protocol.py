@@ -850,6 +850,55 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "stonebot_export_task_capsule",
+        "description": (
+            "Export the complete resumable job state, confirmed drawing, "
+            "nesting revisions and referenced artifacts as one "
+            "checksum-verified portable capsule. Use for moving a task to "
+            "another computer or a user-selected backup location."
+        ),
+        "inputSchema": _object_schema(
+            {
+                "job_id": _job_id(),
+                "destination": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Absolute or working-directory path for the capsule archive.",
+                },
+            },
+            ["job_id", "destination"],
+        ),
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        },
+    },
+    {
+        "name": "stonebot_import_task_capsule",
+        "description": (
+            "Verify and import a portable task capsule into this local "
+            "Runtime. Restores the original job stage and rewrites artifact "
+            "paths to the current installation. It never runs capsule code."
+        ),
+        "inputSchema": _object_schema(
+            {
+                "capsule_path": {
+                    "type": "string",
+                    "minLength": 1,
+                },
+            },
+            ["capsule_path"],
+        ),
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        },
+    },
+    {
         "name": "stonebot_list_jobs",
         "description": "List jobs stored by this Stonebot plugin service.",
         "inputSchema": _object_schema(

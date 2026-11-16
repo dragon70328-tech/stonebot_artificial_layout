@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,7 @@ from src.nesting_contracts import (
     SheetSpec,
 )
 from src.plugin_context import (
+    context_snapshot as build_context_snapshot,
     save_context_snapshot,
     restore_context_snapshot,
 )
@@ -38,7 +40,7 @@ from src.plugin_delivery import (
     export_word_report,
     resolve_output_directory,
 )
-from src.plugin_protocol import SCHEMA_VERSION, next_actions
+from src.plugin_protocol import PLUGIN_VERSION, SCHEMA_VERSION, next_actions
 from src.layout_adjustment import propagate_adjusted_layout
 from src.saw_audit import audit_nested_saw_clearance
 from src.saw_repair import repair_nested_saw_clearance
@@ -56,8 +58,14 @@ from src.profile_learning import (
 )
 from src.session_store import WorkflowSessionStore
 from src.slab_texture import generate_textured_package
+from src.task_capsule import (
+    create_task_capsule,
+    extract_task_capsule,
+    inspect_task_capsule,
+    remap_json_paths,
+)
 from src.units import UnitSystem
-from src.workflow_session import WorkflowStage
+from src.workflow_session import WorkflowSession, WorkflowStage
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -1189,6 +1197,268 @@ class PluginJobService:
             ) from exc
         self._sync_manifest(job_id, runtime)
         return self._public_state(runtime, manifest)
+
+    def export_task_capsule(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Export the complete resumable job state as a portable capsule."""
+        job_id = self._require_job_id(args)
+        raw_destination = str(
+            args.get("destination") or args.get("capsule_path") or ""
+        ).strip()
+        if not raw_destination:
+            raise StonebotProtocolError(
+                "CAPSULE_DESTINATION_REQUIRED",
+                "导出任务胶囊必须提供 destination。",
+                allowed_actions=["stonebot_export_task_capsule"],
+            )
+        destination = Path(raw_destination).expanduser()
+        runtime, manifest = self._runtime_and_manifest(job_id)
+        self._sync_manifest(job_id, runtime)
+
+        source_path = Path(
+            runtime.context.dxf_path or manifest.get("dxf_path") or ""
+        )
+        if not source_path.is_file():
+            raise StonebotProtocolError(
+                "CAPSULE_INPUT_MISSING",
+                f"任务输入 DXF 不存在，不能生成可迁移胶囊: {source_path}",
+                allowed_actions=["stonebot_job_status"],
+            )
+
+        files: dict[str, Path] = {"input_dxf": source_path}
+
+        def add_file(role: str, raw_path: Any) -> None:
+            if not raw_path:
+                return
+            candidate = Path(str(raw_path))
+            if candidate.is_file():
+                files[role] = candidate
+
+        for role, raw_path in (
+            ("numbered_dxf", runtime.context.numbered_dxf_path),
+            ("nested_dxf", runtime.context.nested_dxf_path),
+            ("report", runtime.context.report_path),
+            ("check", runtime.context.check_path),
+            (
+                "recognition_confirmation",
+                runtime.context.recognition_confirmation_artifact_path,
+            ),
+        ):
+            add_file(role, raw_path)
+
+        if runtime.context.confirmed_drawing is not None:
+            add_file(
+                "confirmed_drawing",
+                runtime.context.confirmed_drawing.artifact_path,
+            )
+        for revision in runtime.context.nesting_revisions or []:
+            revision_id = str(revision.revision_id)
+            add_file(
+                f"nesting_revision_{_safe_id(revision_id, 'revision')}",
+                runtime.context.nesting_revision_paths.get(revision_id),
+            )
+        for role, raw_path in (
+            (manifest.get("delivery") or {}).get("artifacts") or {}
+        ).items():
+            add_file(f"delivery_{_safe_id(str(role), 'artifact')}", raw_path)
+        add_file("word_report", (manifest.get("word_report") or {}).get("path"))
+        for role, raw_path in (
+            manifest.get("texture_package") or {}
+        ).items():
+            add_file(f"texture_{_safe_id(str(role), 'artifact')}", raw_path)
+
+        capsule_path = create_task_capsule(
+            destination,
+            job_manifest=manifest,
+            context_snapshot=build_context_snapshot(runtime.context),
+            files=files,
+            state_payloads={
+                "workflow_session": runtime.session.to_dict(),
+            },
+            runtime_metadata={
+                "plugin_version": PLUGIN_VERSION,
+                "schema_version": SCHEMA_VERSION,
+                "active_revision_id": runtime.context.active_revision_id,
+                "certified": bool(runtime.context.certified),
+            },
+        )
+        info = inspect_task_capsule(capsule_path)
+        return {
+            "ok": True,
+            "job_id": job_id,
+            "capsule_path": str(capsule_path),
+            "capsule_id": info.manifest.get("capsule_id"),
+            "capsule_digest": info.manifest.get("capsule_digest"),
+            "stage": info.stage,
+            "file_count": len(info.files),
+            "total_bytes": info.manifest.get("total_bytes"),
+        }
+
+    def import_task_capsule(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Import a verified capsule into this Runtime's local job store."""
+        raw_capsule = str(args.get("capsule_path") or "")
+        if not raw_capsule:
+            raise StonebotProtocolError(
+                "CAPSULE_PATH_REQUIRED",
+                "导入任务胶囊必须提供 capsule_path。",
+                allowed_actions=["stonebot_import_task_capsule"],
+            )
+        capsule_path = Path(raw_capsule).expanduser().resolve()
+        try:
+            info = inspect_task_capsule(capsule_path)
+        except Exception as exc:  # noqa: BLE001 - untrusted archive boundary
+            raise StonebotProtocolError(
+                "CAPSULE_INVALID",
+                f"任务胶囊校验失败: {exc}",
+                allowed_actions=["stonebot_import_task_capsule"],
+            ) from exc
+        job_id = info.job_id
+        if not job_id:
+            raise StonebotProtocolError(
+                "CAPSULE_INVALID",
+                "任务胶囊缺少 job_id。",
+            )
+        job_dir = self.jobs_root / _safe_id(job_id, "invalid")
+        if job_dir.exists():
+            raise StonebotProtocolError(
+                "CAPSULE_JOB_EXISTS",
+                f"本机已经存在同 ID 任务: {job_id}",
+                allowed_actions=["stonebot_job_status", "stonebot_list_jobs"],
+            )
+
+        try:
+            imported = extract_task_capsule(capsule_path, job_dir)
+            manifest_payload = json.loads(
+                imported.manifest_path.read_text(encoding="utf-8")
+            )
+            context_path = imported.root / "state" / "context_snapshot.json"
+            context_payload = json.loads(
+                context_path.read_text(encoding="utf-8")
+            )
+            session_path = imported.state.get("workflow_session")
+            if session_path is None:
+                raise ValueError("workflow_session state is missing")
+            session_payload = json.loads(
+                session_path.read_text(encoding="utf-8")
+            )
+            session = WorkflowSession.from_dict(session_payload)
+            if session.session_id != job_id:
+                raise ValueError(
+                    "session_id does not match capsule job_id"
+                )
+            input_path = imported.files.get("input_dxf")
+            if input_path is None or not input_path.is_file():
+                raise ValueError("input_dxf file is missing")
+
+            output_dir = job_dir / "run"
+            replacements: dict[str, str | Path] = {}
+            for old_key, new_path in (
+                (manifest_payload.get("dxf_path"), input_path),
+                (manifest_payload.get("output_dir"), output_dir),
+            ):
+                if old_key:
+                    replacements[str(old_key)] = new_path
+
+            artifact_roles = {
+                "numbered_dxf",
+                "nested_dxf",
+                "report",
+                "check",
+                "recognition_confirmation",
+            }
+            artifacts = context_payload.get("artifacts") or {}
+            for role in artifact_roles:
+                old_path = artifacts.get(role)
+                new_path = imported.files.get(role)
+                if old_path and new_path:
+                    replacements[str(old_path)] = new_path
+
+            confirmed = context_payload.get("confirmed_drawing") or {}
+            if (
+                confirmed.get("artifact_path")
+                and imported.files.get("confirmed_drawing")
+            ):
+                replacements[str(confirmed["artifact_path"])] = imported.files[
+                    "confirmed_drawing"
+                ]
+
+            revision_paths = context_payload.get("nesting_revision_paths") or {}
+            for revision_id, old_path in revision_paths.items():
+                role = (
+                    "nesting_revision_"
+                    + _safe_id(str(revision_id), "revision")
+                )
+                new_path = imported.files.get(role)
+                if old_path and new_path:
+                    replacements[str(old_path)] = new_path
+
+            for role, old_path in (
+                (manifest_payload.get("delivery") or {}).get("artifacts") or {}
+            ).items():
+                capsule_role = (
+                    "delivery_" + _safe_id(str(role), "artifact")
+                )
+                new_path = imported.files.get(capsule_role)
+                if old_path and new_path:
+                    replacements[str(old_path)] = new_path
+            word_report = manifest_payload.get("word_report") or {}
+            if word_report.get("path") and imported.files.get("word_report"):
+                replacements[str(word_report["path"])] = imported.files[
+                    "word_report"
+                ]
+            for role, old_path in (
+                manifest_payload.get("texture_package") or {}
+            ).items():
+                capsule_role = (
+                    "texture_" + _safe_id(str(role), "artifact")
+                )
+                new_path = imported.files.get(capsule_role)
+                if old_path and new_path:
+                    replacements[str(old_path)] = new_path
+
+            local_manifest = remap_json_paths(
+                manifest_payload,
+                replacements,
+            )
+            local_context = remap_json_paths(
+                context_payload,
+                replacements,
+            )
+            local_manifest["job_id"] = job_id
+            local_manifest["dxf_path"] = str(input_path)
+            local_manifest["output_dir"] = str(output_dir)
+            local_manifest["stage"] = session.current_stage
+            local_manifest["updated_at"] = _utc_now()
+            local_manifest["imported_capsule"] = {
+                "capsule_id": info.manifest.get("capsule_id"),
+                "capsule_digest": info.manifest.get("capsule_digest"),
+                "imported_at": _utc_now(),
+            }
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (job_dir / "manifest.json").write_text(
+                json.dumps(local_manifest, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            (job_dir / "context.json").write_text(
+                json.dumps(local_context, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            WorkflowSessionStore(output_dir).save(session)
+            self._manifests[job_id] = local_manifest
+            self._jobs.pop(job_id, None)
+            runtime, manifest = self._runtime_and_manifest(job_id)
+            state = self._public_state(runtime, manifest)
+            state["imported_capsule"] = local_manifest["imported_capsule"]
+            return state
+        except StonebotProtocolError:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise
+        except Exception as exc:  # noqa: BLE001 - untrusted capsule boundary
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise StonebotProtocolError(
+                "CAPSULE_IMPORT_FAILED",
+                f"任务胶囊无法恢复: {exc}",
+                allowed_actions=["stonebot_import_task_capsule"],
+            ) from exc
 
     # ------------------------------------------------------------------
     # Runtime construction and configuration

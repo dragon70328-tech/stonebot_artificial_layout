@@ -46,6 +46,14 @@ class FakeService:
             },
         }
 
+    def export_task_capsule(self, args):
+        return {
+            "ok": True,
+            "job_id": args["job_id"],
+            "capsule_path": args["destination"],
+            "stage": "audited",
+        }
+
     def __getattr__(self, name):
         def unexpected(_args):
             raise AssertionError(f"unexpected tool: {name}")
@@ -147,6 +155,31 @@ def test_mcp_dispatches_artificial_stone_texture_tool():
     assert (
         result["structuredContent"]["texture_package"]["texture_count"]
         == 1
+    )
+
+
+def test_mcp_dispatches_task_capsule_export():
+    server = MCPServer(FakeService())
+
+    response = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 32,
+            "method": "tools/call",
+            "params": {
+                "name": "stonebot_export_task_capsule",
+                "arguments": {
+                    "job_id": "job-1",
+                    "destination": "C:/temp/job.capsule",
+                },
+            },
+        }
+    )
+
+    result = response["result"]
+    assert result["isError"] is False
+    assert result["structuredContent"]["capsule_path"].endswith(
+        "job.capsule"
     )
 
 
