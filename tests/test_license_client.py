@@ -78,6 +78,8 @@ def test_license_client_login_and_authenticated_usage(tmp_path, monkeypatch):
     )
     assert login["trial_remaining"] == 3
     assert client.current_session().account_id == "account-1"
+    session_text = store.path.read_text(encoding="utf-8")
+    assert "session-token-1234567890" not in session_text
 
     reserved = client.reserve_use(job_id="job-1", input_sha256="a" * 64)
     assert reserved["authorization_id"] == "use-1"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import base64
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,12 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from src.secure_storage import (
+    dpapi_available,
+    protect_secret,
+    unprotect_secret,
+)
 
 
 class LicenseClientError(RuntimeError):
@@ -58,10 +65,25 @@ class LocalSessionStore:
             + timedelta(seconds=max(1, int(expires_in))),
         )
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        serialized = session.model_dump_json().encode("utf-8")
+        if dpapi_available():
+            envelope = {
+                "schema_version": 1,
+                "protection": "windows-dpapi",
+                "payload": base64.b64encode(
+                    protect_secret(serialized)
+                ).decode("ascii"),
+            }
+        else:
+            envelope = {
+                "schema_version": 1,
+                "protection": "file-permissions",
+                "payload": base64.b64encode(serialized).decode("ascii"),
+            }
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         temporary.write_text(
             json.dumps(
-                session.model_dump(mode="json"),
+                envelope,
                 ensure_ascii=False,
                 indent=2,
                 sort_keys=True,
@@ -84,9 +106,19 @@ class LocalSessionStore:
                 "本机尚未登录 StoneBot 账号",
             )
         try:
-            return ClientSession.model_validate_json(
-                self.path.read_text(encoding="utf-8")
-            )
+            text = self.path.read_text(encoding="utf-8")
+            payload = json.loads(text)
+            if isinstance(payload, dict) and "protection" in payload:
+                raw = base64.b64decode(
+                    str(payload["payload"]),
+                    validate=True,
+                )
+                if payload["protection"] == "windows-dpapi":
+                    raw = unprotect_secret(raw)
+                elif payload["protection"] != "file-permissions":
+                    raise ValueError("unsupported session protection")
+                return ClientSession.model_validate_json(raw)
+            return ClientSession.model_validate(payload)
         except Exception as exc:
             raise LicenseClientError(
                 "SESSION_INVALID",

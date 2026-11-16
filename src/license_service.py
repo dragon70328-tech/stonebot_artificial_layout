@@ -158,6 +158,7 @@ class LicenseService:
         key_id: str,
         sender: CodeSender,
         code_pepper: str,
+        max_devices_per_account: int = 2,
     ) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -170,6 +171,7 @@ class LicenseService:
         self.key_id = key_id
         self.sender = sender
         self.code_pepper = code_pepper.encode("utf-8")
+        self.max_devices_per_account = max(1, int(max_devices_per_account))
         self._lock = threading.RLock()
         self._init_schema()
 
@@ -266,6 +268,7 @@ class LicenseService:
                     expires_at REAL NOT NULL,
                     grace_until REAL NOT NULL,
                     token_json TEXT NOT NULL,
+                    order_no TEXT,
                     revoked_at REAL
                 );
 
@@ -279,6 +282,16 @@ class LicenseService:
                 );
                 """
             )
+            columns = {
+                row["name"]
+                for row in self.conn.execute(
+                    "PRAGMA table_info(entitlements)"
+                ).fetchall()
+            }
+            if "order_no" not in columns:
+                self.conn.execute(
+                    "ALTER TABLE entitlements ADD COLUMN order_no TEXT"
+                )
 
     def request_code(
         self,
@@ -795,7 +808,7 @@ class LicenseService:
                     nonce=secrets.token_hex(16),
                     key_id=self.key_id,
                 ).sign(self.private_key)
-                self._store_entitlement(token, now)
+                self._store_entitlement(token, now, order_no=order_no)
                 self.conn.execute(
                     "UPDATE orders SET status='activated' WHERE order_no=?",
                     (order_no,),
@@ -816,6 +829,216 @@ class LicenseService:
         if row is None:
             raise LicenseApiError(404, "ORDER_NOT_FOUND", "订单不存在")
         return {key: row[key] for key in row.keys()}
+
+    def list_accounts(
+        self,
+        *,
+        query: str = "",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict:
+        limit = min(200, max(1, int(limit)))
+        offset = max(0, int(offset))
+        pattern = f"%{query.strip()}%"
+        rows = self.conn.execute(
+            """
+            SELECT account_id, email, phone, status, created_at
+            FROM accounts
+            WHERE ?='' OR email LIKE ? OR phone LIKE ? OR account_id LIKE ?
+            ORDER BY created_at DESC LIMIT ? OFFSET ?
+            """,
+            (query.strip(), pattern, pattern, pattern, limit, offset),
+        ).fetchall()
+        return {
+            "ok": True,
+            "items": [dict(row) for row in rows],
+            "limit": limit,
+            "offset": offset,
+        }
+
+    def list_devices(self, account_id: str) -> dict:
+        rows = self.conn.execute(
+            """
+            SELECT account_id, installation_id, display_name,
+                   first_seen, last_seen, revoked_at
+            FROM devices WHERE account_id=?
+            ORDER BY first_seen
+            """,
+            (account_id,),
+        ).fetchall()
+        return {"ok": True, "items": [dict(row) for row in rows]}
+
+    def list_orders(
+        self,
+        *,
+        account_id: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict:
+        limit = min(200, max(1, int(limit)))
+        offset = max(0, int(offset))
+        clauses = []
+        values: list[object] = []
+        if account_id:
+            clauses.append("account_id=?")
+            values.append(account_id)
+        if status:
+            clauses.append("status=?")
+            values.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self.conn.execute(
+            f"""
+            SELECT * FROM orders {where}
+            ORDER BY created_at DESC LIMIT ? OFFSET ?
+            """,
+            (*values, limit, offset),
+        ).fetchall()
+        return {
+            "ok": True,
+            "items": [dict(row) for row in rows],
+            "limit": limit,
+            "offset": offset,
+        }
+
+    def list_entitlements(
+        self,
+        account_id: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict:
+        limit = min(200, max(1, int(limit)))
+        offset = max(0, int(offset))
+        rows = self.conn.execute(
+            """
+            SELECT license_id, account_id, device_id, plan, order_no,
+                   issued_at, expires_at, grace_until, revoked_at
+            FROM entitlements WHERE account_id=?
+            ORDER BY issued_at DESC LIMIT ? OFFSET ?
+            """,
+            (account_id, limit, offset),
+        ).fetchall()
+        return {
+            "ok": True,
+            "items": [dict(row) for row in rows],
+            "limit": limit,
+            "offset": offset,
+        }
+
+    def unbind_device(
+        self,
+        *,
+        account_id: str,
+        installation_id: str,
+        actor: str,
+    ) -> dict:
+        now = _now_ts()
+        with self._lock, self.conn:
+            row = self.conn.execute(
+                """
+                SELECT 1 FROM devices
+                WHERE account_id=? AND installation_id=?
+                """,
+                (account_id, installation_id),
+            ).fetchone()
+            if row is None:
+                raise LicenseApiError(404, "DEVICE_NOT_FOUND", "设备不存在")
+            self.conn.execute(
+                """
+                UPDATE devices SET revoked_at=?
+                WHERE account_id=? AND installation_id=?
+                """,
+                (now, account_id, installation_id),
+            )
+            self.conn.execute(
+                """
+                UPDATE sessions SET revoked_at=?
+                WHERE account_id=? AND installation_id=?
+                  AND revoked_at IS NULL
+                """,
+                (now, account_id, installation_id),
+            )
+            self._audit(
+                actor,
+                "unbind_device",
+                installation_id,
+                {"account_id": account_id},
+            )
+        return {
+            "ok": True,
+            "account_id": account_id,
+            "installation_id": installation_id,
+            "revoked": True,
+        }
+
+    def refund_order(self, *, order_no: str, actor: str) -> dict:
+        now = _now_ts()
+        with self._lock, self.conn:
+            order = self.conn.execute(
+                "SELECT * FROM orders WHERE order_no=?",
+                (order_no,),
+            ).fetchone()
+            if order is None:
+                raise LicenseApiError(404, "ORDER_NOT_FOUND", "订单不存在")
+            if order["status"] == "refunded":
+                return {"ok": True, **dict(order)}
+            if order["status"] not in {"paid", "activated"}:
+                raise LicenseApiError(
+                    409,
+                    "ORDER_NOT_REFUNDABLE",
+                    "订单状态不允许退款",
+                )
+            self.conn.execute(
+                "UPDATE orders SET status='refunded' WHERE order_no=?",
+                (order_no,),
+            )
+            self.conn.execute(
+                """
+                UPDATE entitlements SET revoked_at=?
+                WHERE order_no=? AND revoked_at IS NULL
+                """,
+                (now, order_no),
+            )
+            self._audit(actor, "refund_order", order_no, {})
+            refreshed = self.conn.execute(
+                "SELECT * FROM orders WHERE order_no=?",
+                (order_no,),
+            ).fetchone()
+        return {"ok": True, **dict(refreshed)}
+
+    def revoke_entitlement(
+        self,
+        *,
+        license_id: str,
+        actor: str,
+    ) -> dict:
+        now = _now_ts()
+        with self._lock, self.conn:
+            row = self.conn.execute(
+                "SELECT * FROM entitlements WHERE license_id=?",
+                (license_id,),
+            ).fetchone()
+            if row is None:
+                raise LicenseApiError(
+                    404,
+                    "ENTITLEMENT_NOT_FOUND",
+                    "许可不存在",
+                )
+            self.conn.execute(
+                """
+                UPDATE entitlements SET revoked_at=COALESCE(revoked_at, ?)
+                WHERE license_id=?
+                """,
+                (now, license_id),
+            )
+            self._audit(
+                actor,
+                "revoke_entitlement",
+                license_id,
+                {"account_id": row["account_id"]},
+            )
+        return {"ok": True, "license_id": license_id, "revoked": True}
 
     def authenticate_session(
         self,
@@ -894,6 +1117,27 @@ class LicenseService:
                 "DEVICE_BOUND_TO_OTHER_ACCOUNT",
                 "该设备已经绑定其他账号",
             )
+        existing = self.conn.execute(
+            """
+            SELECT 1 FROM devices
+            WHERE account_id=? AND installation_id=?
+            """,
+            (account_id, installation_id),
+        ).fetchone()
+        if existing is None:
+            active_count = self.conn.execute(
+                """
+                SELECT COUNT(*) AS total FROM devices
+                WHERE account_id=? AND revoked_at IS NULL
+                """,
+                (account_id,),
+            ).fetchone()
+            if int(active_count["total"]) >= self.max_devices_per_account:
+                raise LicenseApiError(
+                    409,
+                    "DEVICE_LIMIT_REACHED",
+                    "账号可绑定设备数量已达上限",
+                )
         self.conn.execute(
             """
             INSERT INTO devices (
@@ -1027,16 +1271,26 @@ class LicenseService:
             nonce=secrets.token_hex(16),
             key_id=self.key_id,
         ).sign(self.private_key)
-        self._store_entitlement(token, now)
+        self._store_entitlement(
+            token,
+            now,
+            order_no=entitlement_row["order_no"],
+        )
         return token
 
-    def _store_entitlement(self, token: EntitlementToken, now: float) -> None:
+    def _store_entitlement(
+        self,
+        token: EntitlementToken,
+        now: float,
+        *,
+        order_no: str | None = None,
+    ) -> None:
         self.conn.execute(
             """
             INSERT INTO entitlements (
                 license_id, account_id, device_id, plan,
-                issued_at, expires_at, grace_until, token_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                issued_at, expires_at, grace_until, token_json, order_no
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 token.license_id,
@@ -1049,6 +1303,7 @@ class LicenseService:
                     (token.grace_until or token.expires_at).timestamp()
                 ),
                 token.model_dump_json(),
+                order_no,
             ),
         )
 
@@ -1201,6 +1456,10 @@ class ConfirmOrderBody(BaseModel):
     actor: str = Field(default="admin", min_length=1, max_length=100)
 
 
+class ActorBody(BaseModel):
+    actor: str = Field(default="admin", min_length=1, max_length=100)
+
+
 class ActivateOrderBody(BaseModel):
     order_no: str
     activation_code: str = Field(min_length=6, max_length=6)
@@ -1312,6 +1571,60 @@ def create_license_app(
             actor="admin",
         )
 
+    @app.get("/v1/admin/accounts")
+    def list_accounts(
+        query: str = "",
+        limit: int = 50,
+        offset: int = 0,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        require_admin(authorization)
+        return service.list_accounts(
+            query=query,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.get("/v1/admin/accounts/{account_id}/devices")
+    def list_devices(
+        account_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        require_admin(authorization)
+        return service.list_devices(account_id)
+
+    @app.post(
+        "/v1/admin/accounts/{account_id}/devices/{installation_id}/unbind"
+    )
+    def unbind_device(
+        account_id: str,
+        installation_id: str,
+        body: ActorBody,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        require_admin(authorization)
+        return service.unbind_device(
+            account_id=account_id,
+            installation_id=installation_id,
+            actor=body.actor,
+        )
+
+    @app.get("/v1/admin/orders")
+    def list_orders(
+        account_id: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        require_admin(authorization)
+        return service.list_orders(
+            account_id=account_id,
+            status=status,
+            limit=limit,
+            offset=offset,
+        )
+
     @app.post("/v1/admin/orders/{order_no}/confirm")
     def confirm_order(
         order_no: str,
@@ -1321,6 +1634,44 @@ def create_license_app(
         require_admin(authorization)
         return service.confirm_order(
             order_no=order_no,
+            actor=body.actor,
+        )
+
+    @app.post("/v1/admin/orders/{order_no}/refund")
+    def refund_order(
+        order_no: str,
+        body: ActorBody,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        require_admin(authorization)
+        return service.refund_order(
+            order_no=order_no,
+            actor=body.actor,
+        )
+
+    @app.get("/v1/admin/accounts/{account_id}/entitlements")
+    def list_entitlements(
+        account_id: str,
+        limit: int = 50,
+        offset: int = 0,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        require_admin(authorization)
+        return service.list_entitlements(
+            account_id,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.post("/v1/admin/entitlements/{license_id}/revoke")
+    def revoke_entitlement(
+        license_id: str,
+        body: ActorBody,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        require_admin(authorization)
+        return service.revoke_entitlement(
+            license_id=license_id,
             actor=body.actor,
         )
 

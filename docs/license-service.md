@@ -52,6 +52,14 @@ POST /v1/usage/release
 POST /v1/admin/orders
 POST /v1/admin/orders/{order_no}/confirm
 POST /v1/license/activate
+
+GET  /v1/admin/accounts
+GET  /v1/admin/accounts/{account_id}/devices
+POST /v1/admin/accounts/{account_id}/devices/{installation_id}/unbind
+GET  /v1/admin/orders
+POST /v1/admin/orders/{order_no}/refund
+GET  /v1/admin/accounts/{account_id}/entitlements
+POST /v1/admin/entitlements/{license_id}/revoke
 ```
 
 管理员接口使用：
@@ -80,6 +88,8 @@ data/license/session.json
 
 除登录接口外，试用预留/提交/释放和订单激活都使用该 Bearer Session。
 
+Windows 下 `session.json` 使用当前用户 DPAPI 加密；旧版明文会话仍可读取。
+
 ## 外部付款
 
 首版不接自动支付：
@@ -93,6 +103,16 @@ data/license/session.json
 ```
 
 同一外部付款流水号不能重复建单。
+
+退款会把订单标记为 `refunded`，并吊销该订单签发的 Entitlement。
+
+## 设备管理
+
+每个账号默认最多绑定 2 台活跃设备。管理员可以：
+
+- 查询账号设备；
+- 解绑设备；
+- 使该设备所有登录会话立即失效。
 
 ## 发送器
 
@@ -176,7 +196,7 @@ reserve
 ## 当前缺口
 
 - 尚未实现本地登录/激活 UI；
-- 设备解绑、退款、吊销和管理员页面尚未实现；
+- 已有设备解绑、退款和吊销 API，但尚未实现管理员页面；
 - 尚未接自动支付渠道；
-- `session.json` 仍使用用户目录权限保护，尚未接入 Windows DPAPI；
+- 非 Windows 平台的会话保护仍依赖文件权限；
 - 生产部署必须配置 HTTPS、限流、备份和监控。

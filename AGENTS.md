@@ -50,6 +50,7 @@ stonebot_artificial_layout/
     license_service.py  # 账号、验证码、试用计数、订单和许可签发服务
     license_delivery.py # SMTP 邮件和 HTTPS 短信发送适配器
     license_client.py   # 本地登录会话、试用预留和订单激活客户端
+    secure_storage.py   # Windows DPAPI 当前用户密钥保护
     # ── 领域/契约 domain ──
     models.py           # Part / Sheet / NestingResult
     constraints.py      # NestingProfile、预置模板、标准板规格

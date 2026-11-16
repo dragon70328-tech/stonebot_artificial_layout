@@ -193,6 +193,65 @@ def test_trial_three_jobs_then_paid_activation(tmp_path):
         assert paid_reserve.status_code == 200
         assert paid_reserve.json()["subscription"] is True
         assert paid_reserve.json()["entitlement"]
+
+        accounts = client.get(
+            "/v1/admin/accounts",
+            headers={"Authorization": "Bearer admin-secret"},
+            params={"query": "user@example.com"},
+        )
+        assert accounts.status_code == 200
+        assert accounts.json()["items"][0]["account_id"] == account_id
+        devices = client.get(
+            f"/v1/admin/accounts/{account_id}/devices",
+            headers={"Authorization": "Bearer admin-secret"},
+        )
+        assert devices.status_code == 200
+        assert devices.json()["items"][0]["installation_id"] == device_id
+        orders = client.get(
+            "/v1/admin/orders",
+            headers={"Authorization": "Bearer admin-secret"},
+        )
+        assert orders.status_code == 200
+        assert orders.json()["items"][0]["order_no"] == order_no
+        entitlements = client.get(
+            f"/v1/admin/accounts/{account_id}/entitlements",
+            headers={"Authorization": "Bearer admin-secret"},
+        )
+        assert entitlements.status_code == 200
+        assert any(
+            item["order_no"] == order_no
+            for item in entitlements.json()["items"]
+        )
+
+        refunded = client.post(
+            f"/v1/admin/orders/{order_no}/refund",
+            headers={"Authorization": "Bearer admin-secret"},
+            json={"actor": "refund-admin"},
+        )
+        assert refunded.status_code == 200
+        assert refunded.json()["status"] == "refunded"
+        after_refund = client.post(
+            "/v1/usage/reserve",
+            headers=session_headers,
+            json={"job_id": "job-5"},
+        )
+        assert after_refund.status_code == 403
+        assert after_refund.json()["error"]["code"] == "TRIAL_EXHAUSTED"
+
+        unbound = client.post(
+            f"/v1/admin/accounts/{account_id}/devices/{device_id}/unbind",
+            headers={"Authorization": "Bearer admin-secret"},
+            json={"actor": "support-admin"},
+        )
+        assert unbound.status_code == 200
+        assert unbound.json()["revoked"] is True
+        invalidated = client.post(
+            "/v1/usage/reserve",
+            headers=session_headers,
+            json={"job_id": "job-6"},
+        )
+        assert invalidated.status_code == 401
+        assert invalidated.json()["error"]["code"] == "SESSION_INVALID"
     finally:
         service.close()
 
