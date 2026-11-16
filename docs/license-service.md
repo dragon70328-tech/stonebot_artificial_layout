@@ -72,6 +72,14 @@ Authorization: Bearer <STONEBOT_LICENSE_ADMIN_TOKEN>
 
 预留 15 分钟后自动过期，不会永久占用次数。
 
+登录成功后服务端签发设备绑定会话：
+
+```text
+data/license/session.json
+```
+
+除登录接口外，试用预留/提交/释放和订单激活都使用该 Bearer Session。
+
 ## 外部付款
 
 首版不接自动支付：
@@ -130,10 +138,45 @@ python -X utf8 scripts\run_license_service.py
 
 默认只监听 `127.0.0.1:8120`。
 
+## 本地客户端
+
+`src/license_client.py` 提供：
+
+- 请求/验证登录验证码；
+- 保存设备会话；
+- 试用 reserve/commit/release；
+- 订单激活码兑换。
+
+命令行联调：
+
+```powershell
+python -X utf8 scripts\license_login.py `
+  --service-url https://license.example.com `
+  --identity-type email `
+  --destination user@example.com
+
+python -X utf8 scripts\license_activate.py `
+  --service-url https://license.example.com `
+  --order-no ord-xxxx
+
+python -X utf8 scripts\license_status.py `
+  --public-key-file .\license-public-key.txt
+```
+
+启用在线许可时，最终交付会：
+
+```text
+reserve
+-> 写正式文件
+-> commit
+```
+
+文件交付失败时调用 `release`；commit 失败会保留待重试记录。
+
 ## 当前缺口
 
-- Local Runtime 尚未自动调用 reserve/commit/release；
 - 尚未实现本地登录/激活 UI；
 - 设备解绑、退款、吊销和管理员页面尚未实现；
 - 尚未接自动支付渠道；
+- `session.json` 仍使用用户目录权限保护，尚未接入 Windows DPAPI；
 - 生产部署必须配置 HTTPS、限流、备份和监控。

@@ -16,6 +16,7 @@ from src.local_runtime import (  # noqa: E402
     RuntimeAlreadyRunning,
     acquire_runtime_instance,
 )
+from src.license_client import LicenseServiceClient, LocalSessionStore  # noqa: E402
 from src.licensing import build_license_guard  # noqa: E402
 from src.mcp_server import serve_stdio  # noqa: E402
 from src.plugin_service import PluginJobService  # noqa: E402
@@ -39,6 +40,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Base64 Ed25519 public key used to verify local entitlements.",
     )
     parser.add_argument(
+        "--license-service-url",
+        help="HTTPS License Service URL, or loopback HTTP for development.",
+    )
+    parser.add_argument(
         "--device-name",
         default=None,
     )
@@ -55,11 +60,24 @@ def main(argv: list[str] | None = None) -> int:
             license_guard = None
             public_key_text = args.license_public_key_file
             if public_key_text:
+                service_client = (
+                    LicenseServiceClient(
+                        args.license_service_url,
+                        LocalSessionStore(layout.session_path),
+                    )
+                    if args.license_service_url
+                    else None
+                )
                 license_guard = build_license_guard(
                     layout,
                     Path(public_key_text).read_text(encoding="utf-8").strip(),
                     enforcement=True,
                     display_name=args.device_name,
+                    service_client=service_client,
+                )
+            elif args.license_service_url:
+                parser.error(
+                    "--license-service-url requires --license-public-key-file"
                 )
             serve_stdio(
                 service=PluginJobService(

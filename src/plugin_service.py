@@ -8,6 +8,7 @@ nesting algorithms.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -42,7 +43,11 @@ from src.plugin_delivery import (
 )
 from src.plugin_protocol import PLUGIN_VERSION, SCHEMA_VERSION, next_actions
 from src.layout_adjustment import propagate_adjusted_layout
-from src.licensing import LicenseGuard, LicenseRequiredError
+from src.licensing import (
+    LicenseGuard,
+    LicenseRequiredError,
+    ProductionAuthorization,
+)
 from src.saw_audit import audit_nested_saw_clearance
 from src.saw_repair import repair_nested_saw_clearance
 from src.profile_learning import (
@@ -567,10 +572,30 @@ class PluginJobService:
                 for path in delivery.get("artifacts", {}).values()
             )
         ):
+            self._retry_pending_license_commit(manifest)
             return self._public_state(runtime, manifest)
+        authorization = None
         if self.license_guard is not None:
             try:
-                self.license_guard.require_production_access()
+                input_sha256 = None
+                recognized_drawing = getattr(
+                    runtime.context,
+                    "recognized_drawing",
+                    None,
+                )
+                if recognized_drawing is not None:
+                    input_sha256 = (
+                        recognized_drawing.input_digest
+                    )
+                source_path = Path(runtime.dxf_path)
+                if input_sha256 is None and source_path.is_file():
+                    input_sha256 = hashlib.sha256(
+                        source_path.read_bytes()
+                    ).hexdigest()
+                authorization = self.license_guard.begin_production(
+                    job_id=job_id,
+                    input_sha256=input_sha256,
+                )
             except LicenseRequiredError as exc:
                 raise StonebotProtocolError(
                     "LICENSE_REQUIRED",
@@ -581,14 +606,14 @@ class PluginJobService:
                         "stonebot_job_status",
                     ],
                 ) from exc
-        if runtime.session.stage != WorkflowStage.COMPLETED:
-            self._require_stage(
-                runtime,
-                {WorkflowStage.POSTPROCESS_CONFIRMED},
-            )
-            self._confirm(runtime, str(args.get("decision") or ""))
-            self._sync_manifest(job_id, runtime)
         try:
+            if runtime.session.stage != WorkflowStage.COMPLETED:
+                self._require_stage(
+                    runtime,
+                    {WorkflowStage.POSTPROCESS_CONFIRMED},
+                )
+                self._confirm(runtime, str(args.get("decision") or ""))
+                self._sync_manifest(job_id, runtime)
             delivered = deliver_dxf_artifacts(
                 numbered_source=(
                     runtime.context.numbered_dxf_path or ""
@@ -598,6 +623,8 @@ class PluginJobService:
                 overwrite=overwrite,
             )
         except Exception as exc:  # noqa: BLE001 - delivery boundary
+            if self.license_guard is not None:
+                self.license_guard.release_production(authorization)
             raise StonebotProtocolError(
                 "OUTPUT_DELIVERY_FAILED",
                 str(exc),
@@ -610,6 +637,15 @@ class PluginJobService:
                     "stonebot_job_status",
                 ],
             ) from exc
+        if self.license_guard is not None and authorization is not None:
+            try:
+                self.license_guard.commit_production(authorization)
+            except Exception as exc:  # noqa: BLE001 - licensing boundary
+                manifest["license_usage_pending"] = {
+                    "authorization_id": authorization.authorization_id,
+                    "subscription": authorization.subscription,
+                    "error": str(exc),
+                }
         try:
             from src.material_summary import write_material_summary_xlsx
 
@@ -627,6 +663,30 @@ class PluginJobService:
         }
         self._save_manifest(manifest)
         return self._public_state(runtime, manifest)
+
+    def _retry_pending_license_commit(
+        self,
+        manifest: dict[str, Any],
+    ) -> None:
+        pending = manifest.get("license_usage_pending")
+        if self.license_guard is None or not pending:
+            return
+        authorization_id = str(pending.get("authorization_id") or "")
+        if not authorization_id:
+            manifest.pop("license_usage_pending", None)
+            return
+        try:
+            self.license_guard.commit_production(
+                ProductionAuthorization(
+                    authorization_id=authorization_id,
+                    subscription=bool(pending.get("subscription", False)),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - retry remains pending
+            pending["error"] = str(exc)
+        else:
+            manifest.pop("license_usage_pending", None)
+        self._save_manifest(manifest)
 
     def generate_textured_drawing(
         self,

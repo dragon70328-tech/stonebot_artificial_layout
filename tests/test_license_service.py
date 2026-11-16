@@ -71,6 +71,9 @@ def test_trial_three_jobs_then_paid_activation(tmp_path):
         )
         account_id = login["account_id"]
         device_id = login["device_id"]
+        session_headers = {
+            "Authorization": f"Bearer {login['session_token']}"
+        }
         trial_token = EntitlementToken.model_validate(login["entitlement"])
         trial_status = verify_entitlement(
             trial_token,
@@ -80,14 +83,20 @@ def test_trial_three_jobs_then_paid_activation(tmp_path):
         assert trial_status.state == "active"
         assert trial_status.trial_remaining == 3
 
+        no_session = client.post(
+            "/v1/usage/reserve",
+            json={"job_id": "job-unauthenticated"},
+        )
+        assert no_session.status_code == 401
+        assert no_session.json()["error"]["code"] == "SESSION_REQUIRED"
+
         authorizations = []
         expected_remaining = [2, 1, 0]
         for index, remaining in enumerate(expected_remaining, start=1):
             reserved = client.post(
                 "/v1/usage/reserve",
+                headers=session_headers,
                 json={
-                    "account_id": account_id,
-                    "device_id": device_id,
                     "job_id": f"job-{index}",
                     "input_sha256": f"{index:064x}",
                 },
@@ -99,9 +108,8 @@ def test_trial_three_jobs_then_paid_activation(tmp_path):
             authorizations.append(payload["authorization_id"])
             committed = client.post(
                 "/v1/usage/commit",
+                headers=session_headers,
                 json={
-                    "account_id": account_id,
-                    "device_id": device_id,
                     "authorization_id": payload["authorization_id"],
                 },
             )
@@ -110,9 +118,8 @@ def test_trial_three_jobs_then_paid_activation(tmp_path):
 
         exhausted = client.post(
             "/v1/usage/reserve",
+            headers=session_headers,
             json={
-                "account_id": account_id,
-                "device_id": device_id,
                 "job_id": "job-4",
             },
         )
@@ -158,9 +165,8 @@ def test_trial_three_jobs_then_paid_activation(tmp_path):
 
         activated = client.post(
             "/v1/license/activate",
+            headers=session_headers,
             json={
-                "account_id": account_id,
-                "device_id": device_id,
                 "order_no": order_no,
                 "activation_code": activation_code,
             },
@@ -179,9 +185,8 @@ def test_trial_three_jobs_then_paid_activation(tmp_path):
 
         paid_reserve = client.post(
             "/v1/usage/reserve",
+            headers=session_headers,
             json={
-                "account_id": account_id,
-                "device_id": device_id,
                 "job_id": "job-4",
             },
         )
@@ -203,6 +208,9 @@ def test_wrong_code_and_wrong_activation_code_are_rejected(tmp_path):
         )
         account_id = login["account_id"]
         device_id = login["device_id"]
+        session_headers = {
+            "Authorization": f"Bearer {login['session_token']}"
+        }
         order = client.post(
             "/v1/admin/orders",
             headers={"Authorization": "Bearer admin-secret"},
@@ -226,9 +234,8 @@ def test_wrong_code_and_wrong_activation_code_are_rejected(tmp_path):
         wrong_code = "000000" if good_code != "000000" else "000001"
         rejected = client.post(
             "/v1/license/activate",
+            headers=session_headers,
             json={
-                "account_id": account_id,
-                "device_id": device_id,
                 "order_no": order["order_no"],
                 "activation_code": wrong_code,
             },

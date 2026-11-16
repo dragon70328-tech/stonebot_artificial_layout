@@ -105,6 +105,10 @@ class LocalRuntimeLayout:
         return self.license_dir / "entitlement.json"
 
     @property
+    def session_path(self) -> Path:
+        return self.license_dir / "session.json"
+
+    @property
     def versions_dir(self) -> Path:
         return self.root / "versions"
 

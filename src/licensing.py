@@ -48,6 +48,13 @@ class LicenseRequiredError(LicensingError):
         self.status = status
 
 
+@dataclass(frozen=True)
+class ProductionAuthorization:
+    authorization_id: str | None
+    trial_remaining: int | None = None
+    subscription: bool = False
+
+
 class LicenseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -352,12 +359,14 @@ class LicenseGuard:
         device_id: str,
         enforcement: bool = True,
         clock: Callable[[], datetime] | None = None,
+        service_client: Any | None = None,
     ) -> None:
         self.entitlement_store = entitlement_store
         self.public_key = public_key
         self.device_id = device_id
         self.enforcement = enforcement
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.service_client = service_client
 
     def status(self) -> LicenseStatus:
         if not self.enforcement:
@@ -391,6 +400,89 @@ class LicenseGuard:
             raise LicenseRequiredError(status)
         return status
 
+    def begin_production(
+        self,
+        *,
+        job_id: str,
+        input_sha256: str | None = None,
+    ) -> ProductionAuthorization | None:
+        if self.service_client is None:
+            self.require_production_access()
+            return None
+        try:
+            payload = self.service_client.reserve_use(
+                job_id=job_id,
+                input_sha256=input_sha256,
+            )
+        except Exception as exc:
+            code = str(getattr(exc, "code", "LICENSE_SERVICE_ERROR"))
+            message = str(getattr(exc, "message", str(exc)))
+            status = LicenseStatus(
+                state="blocked",
+                valid=False,
+                production_allowed=False,
+                reason=f"{code}: {message}",
+                device_id=self.device_id,
+            )
+            raise LicenseRequiredError(status) from exc
+        if not payload.get("allowed"):
+            raise LicenseRequiredError(
+                LicenseStatus(
+                    state="blocked",
+                    valid=False,
+                    production_allowed=False,
+                    reason=str(payload.get("reason") or "license service denied access"),
+                    device_id=self.device_id,
+                )
+            )
+        entitlement_data = payload.get("entitlement")
+        if entitlement_data:
+            token = EntitlementToken.model_validate(entitlement_data)
+            verified = verify_entitlement(
+                token,
+                self.public_key,
+                expected_device_id=self.device_id,
+                now=self.clock(),
+            )
+            if verified.state == "invalid":
+                raise LicenseRequiredError(verified)
+            self.entitlement_store.save(token)
+        return ProductionAuthorization(
+            authorization_id=(
+                str(payload["authorization_id"])
+                if payload.get("authorization_id")
+                else None
+            ),
+            trial_remaining=(
+                int(payload["trial_remaining"])
+                if payload.get("trial_remaining") is not None
+                else None
+            ),
+            subscription=bool(payload.get("subscription", False)),
+        )
+
+    def commit_production(
+        self,
+        authorization: ProductionAuthorization | None,
+    ) -> None:
+        if (
+            self.service_client is not None
+            and authorization is not None
+            and authorization.authorization_id
+        ):
+            self.service_client.commit_use(authorization.authorization_id)
+
+    def release_production(
+        self,
+        authorization: ProductionAuthorization | None,
+    ) -> None:
+        if (
+            self.service_client is not None
+            and authorization is not None
+            and authorization.authorization_id
+        ):
+            self.service_client.release_use(authorization.authorization_id)
+
 
 def build_license_guard(
     layout: LocalRuntimeLayout,
@@ -398,6 +490,7 @@ def build_license_guard(
     *,
     enforcement: bool = True,
     display_name: str | None = None,
+    service_client: Any | None = None,
 ) -> LicenseGuard:
     identity = DeviceIdentityStore(
         layout.device_identity_path
@@ -407,4 +500,5 @@ def build_license_guard(
         public_key=public_key_from_base64(public_key_text),
         device_id=identity.installation_id,
         enforcement=enforcement,
+        service_client=service_client,
     )

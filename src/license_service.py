@@ -210,6 +210,16 @@ class LicenseService:
                     PRIMARY KEY(account_id, installation_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS sessions (
+                    session_id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL,
+                    installation_id TEXT NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    created_at REAL NOT NULL,
+                    expires_at REAL NOT NULL,
+                    revoked_at REAL
+                );
+
                 CREATE TABLE IF NOT EXISTS trial_usages (
                     usage_id TEXT PRIMARY KEY,
                     account_id TEXT NOT NULL,
@@ -373,6 +383,11 @@ class LicenseService:
                     display_name,
                     now,
                 )
+                session_token = self._issue_session(
+                    account["account_id"],
+                    installation_id,
+                    now,
+                )
                 remaining = self._trial_remaining(
                     account["account_id"],
                     now,
@@ -401,6 +416,8 @@ class LicenseService:
             "ok": True,
             "account_id": account["account_id"],
             "device_id": installation_id,
+            "session_token": session_token,
+            "session_expires_in": 30 * 24 * 60 * 60,
             "trial_remaining": remaining,
             "entitlement": token.model_dump(mode="json"),
         }
@@ -446,24 +463,38 @@ class LicenseService:
                 if existing:
                     if existing["status"] == "committed":
                         remaining = self._trial_remaining(account_id, now)
+                        token = self._issue_trial_entitlement(
+                            account_id,
+                            device_id,
+                            remaining,
+                            now,
+                            lease_days=7,
+                        )
                         return {
                             "ok": True,
                             "allowed": True,
                             "already_consumed": True,
                             "trial_remaining": remaining,
+                            "entitlement": token.model_dump(mode="json"),
                         }
                     if (
                         existing["status"] == "reserved"
                         and float(existing["expires_at"]) >= now
                     ):
+                        remaining = self._trial_remaining(account_id, now)
+                        token = self._issue_trial_entitlement(
+                            account_id,
+                            device_id,
+                            remaining,
+                            now,
+                            lease_days=7,
+                        )
                         return {
                             "ok": True,
                             "allowed": True,
                             "authorization_id": existing["usage_id"],
-                            "trial_remaining": self._trial_remaining(
-                                account_id,
-                                now,
-                            ),
+                            "trial_remaining": remaining,
+                            "entitlement": token.model_dump(mode="json"),
                         }
                 used = self._count_trial_uses(account_id, now)
                 if used >= MAX_TRIAL_USES:
@@ -494,11 +525,19 @@ class LicenseService:
                     account_id,
                     now,
                 )
+                token = self._issue_trial_entitlement(
+                    account_id,
+                    device_id,
+                    remaining,
+                    now,
+                    lease_days=7,
+                )
         return {
             "ok": True,
             "allowed": True,
             "authorization_id": usage_id,
             "trial_remaining": remaining,
+            "entitlement": token.model_dump(mode="json"),
         }
 
     def commit_trial_use(
@@ -778,6 +817,33 @@ class LicenseService:
             raise LicenseApiError(404, "ORDER_NOT_FOUND", "订单不存在")
         return {key: row[key] for key in row.keys()}
 
+    def authenticate_session(
+        self,
+        token: str,
+        *,
+        now: float | None = None,
+    ) -> sqlite3.Row:
+        current = _now_ts() if now is None else now
+        row = self.conn.execute(
+            """
+            SELECT * FROM sessions
+            WHERE token_hash=? AND revoked_at IS NULL AND expires_at>=?
+            """,
+            (self._hash_session_token(token), current),
+        ).fetchone()
+        if row is None:
+            raise LicenseApiError(
+                401,
+                "SESSION_INVALID",
+                "登录会话无效或已过期",
+            )
+        self._require_device(
+            row["account_id"],
+            row["installation_id"],
+            current,
+        )
+        return row
+
     def _find_or_create_account(
         self,
         identity_type: str,
@@ -841,6 +907,38 @@ class LicenseService:
             """,
             (account_id, installation_id, display_name, now, now),
         )
+
+    def _issue_session(
+        self,
+        account_id: str,
+        installation_id: str,
+        now: float,
+    ) -> str:
+        token = secrets.token_urlsafe(32)
+        self.conn.execute(
+            """
+            INSERT INTO sessions (
+                session_id, account_id, installation_id,
+                token_hash, created_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _safe_id("session"),
+                account_id,
+                installation_id,
+                self._hash_session_token(token),
+                now,
+                now + 30 * 24 * 60 * 60,
+            ),
+        )
+        return token
+
+    def _hash_session_token(self, token: str) -> str:
+        return hmac.new(
+            self.code_pepper,
+            f"session:{token}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
 
     def _require_device(
         self,
@@ -1083,15 +1181,11 @@ class VerifyCodeBody(RequestCodeBody):
 
 
 class TrialReserveBody(BaseModel):
-    account_id: str
-    device_id: str
     job_id: str
     input_sha256: str | None = None
 
 
 class TrialAuthorizationBody(BaseModel):
-    account_id: str
-    device_id: str
     authorization_id: str
 
 
@@ -1108,8 +1202,6 @@ class ConfirmOrderBody(BaseModel):
 
 
 class ActivateOrderBody(BaseModel):
-    account_id: str
-    device_id: str
     order_no: str
     activation_code: str = Field(min_length=6, max_length=6)
 
@@ -1141,6 +1233,16 @@ def create_license_app(
         ):
             raise LicenseApiError(401, "ADMIN_UNAUTHORIZED", "管理员认证失败")
 
+    def require_session(authorization: str | None) -> sqlite3.Row:
+        prefix = "Bearer "
+        if authorization is None or not authorization.startswith(prefix):
+            raise LicenseApiError(
+                401,
+                "SESSION_REQUIRED",
+                "需要登录会话",
+            )
+        return service.authenticate_session(authorization[len(prefix):])
+
     @app.get("/health")
     def health() -> dict:
         return {"ok": True}
@@ -1164,16 +1266,40 @@ def create_license_app(
         )
 
     @app.post("/v1/usage/reserve")
-    def reserve_usage(body: TrialReserveBody) -> dict:
-        return service.reserve_trial_use(**body.model_dump())
+    def reserve_usage(
+        body: TrialReserveBody,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        session = require_session(authorization)
+        return service.reserve_trial_use(
+            account_id=session["account_id"],
+            device_id=session["installation_id"],
+            **body.model_dump(),
+        )
 
     @app.post("/v1/usage/commit")
-    def commit_usage(body: TrialAuthorizationBody) -> dict:
-        return service.commit_trial_use(**body.model_dump())
+    def commit_usage(
+        body: TrialAuthorizationBody,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        session = require_session(authorization)
+        return service.commit_trial_use(
+            account_id=session["account_id"],
+            device_id=session["installation_id"],
+            **body.model_dump(),
+        )
 
     @app.post("/v1/usage/release")
-    def release_usage(body: TrialAuthorizationBody) -> dict:
-        return service.release_trial_use(**body.model_dump())
+    def release_usage(
+        body: TrialAuthorizationBody,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        session = require_session(authorization)
+        return service.release_trial_use(
+            account_id=session["account_id"],
+            device_id=session["installation_id"],
+            **body.model_dump(),
+        )
 
     @app.post("/v1/admin/orders")
     def create_order(
@@ -1199,7 +1325,15 @@ def create_license_app(
         )
 
     @app.post("/v1/license/activate")
-    def activate_order(body: ActivateOrderBody) -> dict:
-        return service.activate_order(**body.model_dump())
+    def activate_order(
+        body: ActivateOrderBody,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        session = require_session(authorization)
+        return service.activate_order(
+            account_id=session["account_id"],
+            device_id=session["installation_id"],
+            **body.model_dump(),
+        )
 
     return app
