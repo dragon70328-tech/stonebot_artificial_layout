@@ -58,6 +58,14 @@ def test_convert_vector_pdf_to_single_layout(tmp_path):
     _make_four_board_pdf(source)
     model = analyze_pdf(source, [PageMap(1, "D1F", "D1F")])
     assert len(model.pages[0].cells) == 4
+    cells = model.pages[0].cells
+    for cell in cells:
+        assert abs(
+            (cell.rect_pt[2] - cell.rect_pt[0])
+            * model.pages[0].mm_per_pt
+            - 1197.0
+        ) < 1e-6
+    assert abs(cells[1].rect_pt[0] - cells[0].rect_pt[2]) < 1e-6
 
     audit = convert_model_to_dxf(model, output)
     assert audit.layout_count == 1
@@ -74,6 +82,19 @@ def test_convert_vector_pdf_to_single_layout(tmp_path):
     doc = ezdxf.readfile(output)
     assert "D1F" in doc.layouts.names()
     assert len(list(doc.groups)) == 4
+    left = [
+        entity
+        for entity in doc.groups.get("D1F-1")
+        if entity.dxftype() == "LWPOLYLINE"
+    ][0]
+    right = [
+        entity
+        for entity in doc.groups.get("D1F-2")
+        if entity.dxftype() == "LWPOLYLINE"
+    ][0]
+    assert max(point[0] for point in left.get_points()) == min(
+        point[0] for point in right.get_points()
+    )
 
 
 def test_circumcircle_and_bulge():

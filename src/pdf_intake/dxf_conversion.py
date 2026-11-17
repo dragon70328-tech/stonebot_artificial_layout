@@ -195,30 +195,41 @@ def _r450_parts(
 ) -> tuple[PartGeometry, PartGeometry, ArcGeometry]:
     if cell.arc is None:
         raise ValueError("没有 R450 曲线")
-    rect_left, bottom, rect_right, rect_top = _transform_rect(cell.rect_pt, page)
+    left, bottom, right, _ = _transform_rect(cell.rect_pt, page)
     top = bottom + cell.label.height_mm
     curve = _sample_curve(cell.arc.points, page)
-    start = curve[0]
-    middle = curve[len(curve) // 2]
-    end = curve[-1]
+    raw_start = curve[0]
+    raw_end = curve[-1]
     if cell.arc.side == "left":
-        left = start[0]
-        right = left + cell.label.width_mm
+        boundary = (left, raw_start[1])
+        flat_x = left + 450.0
     else:
-        right = start[0]
-        left = right - cell.label.width_mm
-    geometry = _circumcircle(start, middle, end)
-    if abs(geometry.radius - 450.0) > 3.0:
-        raise ValueError(
-            f"{page.page_map.floor}-{cell.label.number} 拟合半径 "
-            f"{geometry.radius:.2f}mm，明显不是 R450"
-        )
+        boundary = (right, raw_start[1])
+        flat_x = right - 450.0
+    direction = 1.0 if raw_end[1] >= boundary[1] else -1.0
+    flat = (flat_x, boundary[1] + direction * 450.0)
+    center = (flat[0], boundary[1])
+    if cell.arc.side == "left":
+        sweep_direction = -direction
+    else:
+        sweep_direction = direction
+    start_angle = math.atan2(
+        boundary[1] - center[1], boundary[0] - center[0]
+    )
+    middle_angle = start_angle + sweep_direction * math.pi / 4.0
+    middle = (
+        center[0] + 450.0 * math.cos(middle_angle),
+        center[1] + 450.0 * math.sin(middle_angle),
+    )
+    geometry = ArcGeometry(
+        center=center,
+        radius=450.0,
+        start=boundary,
+        middle=middle,
+        end=flat,
+    )
 
     if cell.arc.side == "left":
-        if abs(start[0] - left) > abs(end[0] - left):
-            start, end = end, start
-        boundary = (left, start[1])
-        flat = (end[0], end[1])
         reverse_bulge = geometry.bulge(flat, boundary)
         forward_bulge = geometry.bulge(boundary, flat)
         upper_vertices = (
@@ -236,10 +247,6 @@ def _r450_parts(
             (left, bottom, 0.0),
         )
     else:
-        if abs(start[0] - right) > abs(end[0] - right):
-            start, end = end, start
-        boundary = (right, start[1])
-        flat = (end[0], end[1])
         reverse_bulge = geometry.bulge(flat, boundary)
         forward_bulge = geometry.bulge(boundary, flat)
         upper_vertices = (
@@ -549,7 +556,7 @@ def _add_part(
     return outline, number, material
 
 
-def _add_arc_boundary(layout, arc: ArcGeometry) -> None:
+def _add_arc_boundary(layout, arc: ArcGeometry):
     start = arc.start_angle
     end = arc.end_angle
     cross = math.sin(math.radians(end - start))
@@ -557,7 +564,7 @@ def _add_arc_boundary(layout, arc: ArcGeometry) -> None:
         arc.start[1], arc.end[1]
     ):
         pass
-    layout.add_arc(
+    return layout.add_arc(
         center=arc.center,
         radius=arc.radius,
         start_angle=start,
@@ -752,9 +759,16 @@ def convert_model_to_dxf(
                     model.source_path,
                 )
                 part_count += 1
-            for arc in arcs:
-                _add_arc_boundary(msp, _offset_arc(arc, insert[0], insert[1]))
+            for arc, paired_parts in zip(arcs, r450_groups.values()):
+                arc_entity = _add_arc_boundary(
+                    msp,
+                    _offset_arc(arc, insert[0], insert[1]),
+                )
                 arc_count += 1
+                for part in paired_parts:
+                    part_group = doc.groups.get(part.number)
+                    if part_group is not None:
+                        part_group.extend((arc_entity,))
             for paired_parts in r450_groups.values():
                 xs = [
                     vertex[0] + insert[0]

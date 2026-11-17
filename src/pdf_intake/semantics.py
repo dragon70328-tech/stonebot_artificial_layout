@@ -183,7 +183,7 @@ def _column_centers(labels: list[BoardLabel]) -> list[float]:
 def _plan_lines(
     drawings: list[dict],
     column_centers: list[float],
-) -> tuple[BBox, list[float]]:
+) -> tuple[BBox, list[float], float]:
     pitch = median(
         [
             column_centers[index + 1] - column_centers[index]
@@ -216,18 +216,51 @@ def _plan_lines(
 
     if not vertical:
         raise ValueError("PDF 页面未识别到平面图竖向边界")
-    y_min = median([line[1] for line in vertical if line[2] - line[1] > 0.4 * 600])
-    y_max = median([line[2] for line in vertical if line[2] - line[1] > 0.4 * 600])
-    y_values = [line[0] for line in horizontal]
-    y_values.extend((y_min, y_max))
-    y_values = [value for value in y_values if y_min - 1.0 <= value <= y_max + 1.0]
-    boundaries = _cluster(y_values, 0.6)
-    return (nominal_x0, y_min, nominal_x1, y_max), boundaries
+    vertical_clusters: list[list[tuple[float, float, float]]] = []
+    for line in sorted(vertical):
+        if (
+            not vertical_clusters
+            or line[0] - vertical_clusters[-1][-1][0] > 0.5
+        ):
+            vertical_clusters.append([line])
+        else:
+            vertical_clusters[-1].append(line)
+    max_vertical_length = max(
+        line[2] - line[1] for line in vertical
+    )
+    spanning_clusters = [
+        group
+        for group in vertical_clusters
+        if max(line[2] - line[1] for line in group)
+        > 0.5 * max_vertical_length
+    ]
+    spanning_x = [
+        sum(line[0] for line in group) / len(group)
+        for group in spanning_clusters
+    ]
+    if len(spanning_x) < 3:
+        raise ValueError("PDF 页面未识别到三条连续列边界")
+    internal = sorted(spanning_x)[:4]
+    if len(internal) >= 4:
+        internal = internal[-3:]
+    pitch = median(
+        [internal[index + 1] - internal[index] for index in range(len(internal) - 1)]
+    )
+    if pitch <= 0:
+        raise ValueError("PDF 列边界间距无效")
+    x0 = internal[0] - pitch
+    x_boundaries = [x0 + index * pitch for index in range(5)]
+    spanning_lines = [
+        line for group in spanning_clusters for line in group
+    ]
+    y_min = min(line[1] for line in spanning_lines)
+    y_max = max(line[2] for line in spanning_lines)
+    return (x_boundaries[0], y_min, x_boundaries[-1], y_max), x_boundaries, pitch
 
 
 def _row_bands(
     labels: list[BoardLabel],
-    y_boundaries: list[float],
+    y_top: float,
     mm_per_pt: float,
 ) -> list[tuple[float, float, list[BoardLabel]]]:
     ordered_labels = sorted(labels, key=lambda label: label.center[1])
@@ -242,26 +275,12 @@ def _row_bands(
             clusters[-1].append(label)
 
     bands: list[tuple[float, float, list[BoardLabel]]] = []
+    top = y_top
     for cluster in clusters:
-        label = cluster[0]
-        y = label.center[1]
-        lower = max(
-            (boundary for boundary in y_boundaries if boundary <= y + 4.0),
-            default=None,
-        )
-        upper = min(
-            (boundary for boundary in y_boundaries if boundary >= y - 4.0),
-            default=None,
-        )
-        if lower is None or upper is None or upper - lower < 3.0:
-            previous_bottom = max(
-                (band[1] for band in bands), default=y_boundaries[-1]
-            )
-            top = previous_bottom - 1.0
-            bottom = top + label.height_mm / mm_per_pt
-        else:
-            top, bottom = lower, upper
+        row_height = median(label.height_mm for label in cluster) / mm_per_pt
+        bottom = top + row_height
         bands.append((top, bottom, cluster))
+        top = bottom
     return bands
 
 
@@ -431,23 +450,11 @@ def _analyze_page(page, page_map: PageMap) -> PageModel:
         raise ValueError(f"第 {page_map.page_number} 页未识别到板号和规格")
 
     column_centers = _column_centers(labels)
-    gaps = [
-        column_centers[index + 1] - column_centers[index]
-        for index in range(3)
-    ]
-    column_width = median(gaps)
+    plan_rect, x_boundaries, column_width = _plan_lines(
+        drawings, column_centers
+    )
     mm_per_pt = 1197.0 / column_width
-    plan_rect, y_boundaries = _plan_lines(drawings, column_centers)
-    row_bands = _row_bands(labels, y_boundaries, mm_per_pt)
-
-    x_boundaries = [
-        column_centers[0] - column_width / 2.0,
-        *[
-            (column_centers[index] + column_centers[index + 1]) / 2.0
-            for index in range(3)
-        ],
-        column_centers[-1] + column_width / 2.0,
-    ]
+    row_bands = _row_bands(labels, plan_rect[1], mm_per_pt)
 
     cells: list[BoardCell] = []
     for row_index, (top, bottom, row_labels) in enumerate(row_bands, start=1):
