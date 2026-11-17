@@ -207,7 +207,14 @@ def _r450_parts(
         boundary = (right, raw_start[1])
         flat_x = right - 450.0
     direction = 1.0 if raw_end[1] >= boundary[1] else -1.0
-    flat = (flat_x, boundary[1] + direction * 450.0)
+    if direction > 0:
+        flat_y = bottom + 725.0
+        boundary_y = flat_y - 450.0
+    else:
+        flat_y = top - 725.0
+        boundary_y = flat_y + 450.0
+    boundary = (boundary[0], boundary_y)
+    flat = (flat_x, flat_y)
     center = (flat[0], boundary[1])
     if cell.arc.side == "left":
         sweep_direction = -direction
@@ -252,13 +259,13 @@ def _r450_parts(
         upper_vertices = (
             (left, top, 0.0),
             (right, top, 0.0),
-            (right, boundary[1], reverse_bulge),
+            (right, boundary[1], forward_bulge),
             (flat[0], flat[1], 0.0),
             (left, flat[1], 0.0),
         )
         lower_vertices = (
             (left, flat[1], 0.0),
-            (flat[0], flat[1], forward_bulge),
+            (flat[0], flat[1], reverse_bulge),
             (right, boundary[1], 0.0),
             (right, bottom, 0.0),
             (left, bottom, 0.0),
@@ -388,6 +395,24 @@ def validate_model_geometry(model: PdfIntakeModel) -> list[str]:
             if area_delta > 5.0:
                 issues.append(
                     f"{lower.number}: R450 两块面积和偏离包络 {area_delta:.3f}mm²"
+                )
+            upper_bounds = [
+                (vertex[0], vertex[1]) for vertex in upper.vertices
+            ]
+            lower_bounds = [
+                (vertex[0], vertex[1]) for vertex in lower.vertices
+            ]
+            upper_height = max(y for _, y in upper_bounds) - min(
+                y for _, y in upper_bounds
+            )
+            lower_height = max(y for _, y in lower_bounds) - min(
+                y for _, y in lower_bounds
+            )
+            if min(upper_height, lower_height) < 725.0 - 1e-6 or min(
+                upper_height, lower_height
+            ) > 725.0 + 1e-6:
+                issues.append(
+                    f"{lower.number}: 725mm 弧形分块高度不等于 725.000mm"
                 )
             for part_number in (upper.number, lower.number):
                 if part_number in numbers:
@@ -659,6 +684,10 @@ def _configure_layers(doc) -> None:
     _layer(doc, "TEXT", 5)
     _layer(doc, "HATCH", 8)
     _layer(doc, "CHECK_ISSUES", 1)
+    control_layer = doc.layers.get("R450_BOUNDARY")
+    control_layer.dxf.color = 7
+    control_layer.off()
+    control_layer.freeze()
     if "STONEBOT" not in doc.appids:
         doc.appids.add("STONEBOT")
 
@@ -685,6 +714,15 @@ def convert_model_to_dxf(
     doc.header["$LUPREC"] = 2
     doc.header["$DWGCODEPAGE"] = "ANSI_936"
     _configure_layers(doc)
+    dimstyle = doc.dimstyles.add("STONEBOT_MM")
+    dimstyle.dxf.dimlfac = 1.0
+    dimstyle.dxf.dimscale = 1.0
+    dimstyle.dxf.dimlunit = 2
+    dimstyle.dxf.dimdec = 2
+    dimstyle.dxf.dimzin = 8
+    dimstyle.dxf.dimtxt = 60.0
+    dimstyle.dxf.dimasz = 40.0
+    doc.header["$DIMSTYLE"] = "STONEBOT_MM"
     existing_paper_layouts = [
         name for name in doc.layouts.names() if name.lower() != "model"
     ]
