@@ -127,3 +127,126 @@ def write_xlsx(
         archive.writestr("xl/styles.xml", _STYLES)
         archive.writestr("xl/worksheets/sheet1.xml", sheet)
     return destination
+
+
+def _sheet_xml(
+    rows: Iterable[Sequence[Any]],
+    *,
+    header: bool,
+    decimal_columns: Iterable[int],
+) -> str:
+    decimal = set(decimal_columns)
+    xml_rows: list[str] = []
+    row_count = 0
+    max_columns = 1
+    for row_index, values in enumerate(rows, start=1):
+        values = list(values)
+        row_count = row_index
+        max_columns = max(max_columns, len(values))
+        cells = []
+        for column_index, value in enumerate(values, start=1):
+            ref = f"{_column_letter(column_index)}{row_index}"
+            style = 0
+            if header and row_index == 1:
+                style = 1
+            elif column_index in decimal and isinstance(value, (int, float)):
+                style = 2
+            cells.append(_cell_xml(ref, value, style))
+        xml_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+    last_row = max(row_count, 1)
+    last_column = _column_letter(max_columns)
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<dimension ref="A1:{last_column}{last_row}"/>'
+        f'<cols><col min="1" max="{max_columns}" width="16" customWidth="1"/></cols>'
+        f'<sheetData>{"".join(xml_rows)}</sheetData>'
+        "</worksheet>"
+    )
+
+
+def write_xlsx_sheets(
+    path: str | Path,
+    sheets: Sequence[tuple[str, Iterable[Sequence[Any]]]],
+    *,
+    header: bool = True,
+    decimal_columns: Sequence[Iterable[int]] = (),
+) -> Path:
+    """写多工作表 .xlsx；每个工作表可设置各自的 1-based 小数列。"""
+    if not sheets:
+        raise ValueError("至少需要一个工作表")
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    safe_names: list[str] = []
+    for index, (name, _rows) in enumerate(sheets, start=1):
+        base = escape((name or f"Sheet{index}")[:31])
+        candidate = base
+        suffix = 2
+        while candidate in safe_names:
+            tail = f"_{suffix}"
+            candidate = base[: 31 - len(tail)] + tail
+            suffix += 1
+        safe_names.append(candidate)
+
+    content_overrides = "".join(
+        f'<Override PartName="/xl/worksheets/sheet{index}.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.'
+        'spreadsheetml.worksheet+xml"/>'
+        for index in range(1, len(sheets) + 1)
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-'
+        'package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.'
+        'openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        f"{content_overrides}"
+        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.'
+        'openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+        "</Types>"
+    )
+    workbook_sheets = "".join(
+        f'<sheet name="{name}" sheetId="{index}" r:id="rId{index}"/>'
+        for index, name in enumerate(safe_names, start=1)
+    )
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        f"<sheets>{workbook_sheets}</sheets></workbook>"
+    )
+    relationships = [
+        f'<Relationship Id="rId{index}" Type="http://schemas.openxmlformats.org/'
+        'officeDocument/2006/relationships/worksheet" '
+        f'Target="worksheets/sheet{index}.xml"/>'
+        for index in range(1, len(sheets) + 1)
+    ]
+    relationships.append(
+        f'<Relationship Id="rId{len(sheets) + 1}" Type="http://schemas.openxmlformats.org/'
+        'officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+    )
+    workbook_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        + "".join(relationships)
+        + "</Relationships>"
+    )
+    with ZipFile(destination, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", _ROOT_RELS)
+        archive.writestr("xl/workbook.xml", workbook)
+        archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+        archive.writestr("xl/styles.xml", _STYLES)
+        for index, (_name, rows) in enumerate(sheets, start=1):
+            columns = (
+                decimal_columns[index - 1]
+                if index - 1 < len(decimal_columns)
+                else ()
+            )
+            archive.writestr(
+                f"xl/worksheets/sheet{index}.xml",
+                _sheet_xml(rows, header=header, decimal_columns=columns),
+            )
+    return destination
