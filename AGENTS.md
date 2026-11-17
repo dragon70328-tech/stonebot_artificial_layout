@@ -16,8 +16,10 @@ Codex、DeepSeek Harness、Claude Code、Kimi Code 等对话平台。平台负�
 规划能力。AI 只生成结构化意图、配置、解释和受约束的动作，不直接执行生产代码。
 详见 `docs/product-direction-2026-10-30.md` 和 `docs/saas-architecture-goal.md`。
 
-当前读图范围仅 DXF 一种格式；DWG 转换与 PDF/手绘草图读图均已放弃
-（2026-08-19 范围调整，相关代码归档于 `_archive/legacy/intake_dwg_pdf/`）。
+生产读图主链路仍以 DXF 为唯一确认输入。2026-11-17 起增加**全矢量 CAD PDF 试点
+适配器**：`src/pdf_intake/` 将多页 PDF 的图框、文字轮廓、填充、尺寸和板号
+重建为一个多布局原位 DXF，并叠加可加工的 OUTER、材料、GROUP 和 R450 真弧。
+扫描 PDF/手绘草图仍不支持；PDF 结果必须通过回读和视觉复核后才能进入排板。
 
 ## Project Structure
 ```
@@ -43,6 +45,7 @@ stonebot_artificial_layout/
     visual_evidence.py  # 审图问题视觉证据（SVG 高亮）
     visual_renderer.py  # 整图 SVG 渲染
     local_runtime.py    # 本地数据根、单实例锁、Runtime 目录布局
+    pdf_intake/         # 全矢量多页 PDF -> 单一多布局原位 DXF（试点适配器）
     task_capsule.py     # 可迁移任务胶囊、哈希校验、安全解压
     release_manifest.py # Ed25519 签名发布清单和文件哈希
     update_manager.py   # 发布下载、staging、原子切换和回滚
@@ -123,6 +126,7 @@ stonebot_artificial_layout/
 | `docs/insert-block-recognition.md` | INSERT/嵌套块/MINSERT 展开规则与画像开关 |
 | `docs/local-runtime-foundation.md` | 本地数据根、单实例锁和任务胶囊基础 |
 | `docs/secure-updates.md` | 签名发布清单、安全解压、原子更新和回滚 |
+| `docs/pdf-vector-intake.md` | 全矢量 CAD PDF 的九页单 DXF、文字/填充/尺寸保留与 R450 规则 |
 | `docs/local-licensing-foundation.md` | 本地设备、签名许可、试用/订阅状态和交付门禁 |
 | `docs/license-service.md` | 账号验证码、三次试用、外部订单、激活码和许可签发 |
 | `docs/process-aware-nesting-improvement-plan.md` | 统一工艺排板改进计划（契约、刀缝、版本重排） |
